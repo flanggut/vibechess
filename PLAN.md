@@ -569,17 +569,19 @@ Deliverables:
 
 Can be done independently: yes.
 
-### WP02: Core Board and Move Types
+### WP02: Core Board and Move Types — Done
+
+Status: Done.
 
 Deliverables:
 
-- Board, square, piece, color, and move types.
-- 0..63 square indexing convention documented and tested.
-- Compact array/mailbox-style board state.
-- UCI long algebraic move string conversion.
-- Starting position setup.
-- Text board rendering helper.
-- Basic unit tests.
+- [x] Board, square, piece, color, and move types.
+- [x] 0..63 square indexing convention documented and tested.
+- [x] Compact array/mailbox-style board state.
+- [x] UCI long algebraic move string conversion.
+- [x] Starting position setup.
+- [x] Text board rendering helper.
+- [x] Basic unit tests.
 
 Depends on: WP01.
 
