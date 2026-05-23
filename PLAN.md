@@ -860,12 +860,16 @@ Success criteria:
 
 ## Documentation Plan
 
-- `README.md`: quickstart, commands, project status, Apple Silicon requirement.
-- `docs/architecture.md`: package and data-flow overview.
-- `docs/engine.md`: board representation, move generation, rules, and pragmatic draw semantics.
-- `docs/ai.md`: MCTS, neural model, action space, training pipeline.
-- `docs/swift-backend.md`: Swift acceleration design and parity strategy.
-- `data/README.md`: dataset/checkpoint storage policy and schema versions.
+Current documentation artifacts:
+
+- [x] `README.md`: quickstart, commands, project status, Apple Silicon requirement.
+- [x] `docs/architecture.md`: current package layout and component boundaries.
+- [x] `docs/engine.md`: board representation, move primitives, legal move generation, and perft.
+- [x] `docs/ai.md`: planned MCTS, neural model, action space, and training pipeline.
+- [x] `docs/swift-backend.md`: planned Swift acceleration design and parity strategy.
+- [x] `data/README.md`: future dataset/checkpoint storage policy and schema versions.
+
+These docs should be updated as each work package changes implemented behavior.
 
 ## Risks and Mitigations
 
@@ -886,8 +890,16 @@ Success criteria:
 
 ## Immediate Next Steps
 
+Completed:
+
 1. Create the Python project scaffold with `uv` and `pyproject.toml`.
 2. Add the `src/tinychess` package skeleton and CLI stub.
 3. Implement board, piece, square, and move primitives using the documented 0..63 convention.
 4. Add the first engine tests and fixture structure.
 5. Build legal move generation with perft-style validation and a lightweight perft benchmark before starting AI work.
+
+Next:
+
+1. Start WP04: game state and outcomes.
+2. Extend `Board.apply_move()` or wrap it in game-level APIs for history, clocks, outcomes, and pragmatic draw handling.
+3. Keep documentation updated as WP04 clarifies public engine APIs.
