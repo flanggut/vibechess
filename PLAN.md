@@ -599,17 +599,19 @@ Deliverables:
 
 Depends on: WP02.
 
-### WP04: Game State and Outcomes
+### WP04: Game State and Outcomes — Done
+
+Status: Done.
 
 Deliverables:
 
-- Move application.
-- Efficient state transition strategy for MCTS: copy-on-apply baseline and/or make-unmake design.
-- Game history.
-- Checkmate/stalemate detection.
-- Pragmatic draw tracking: halfmove clock, repetition, insufficient material.
-- Complete game simulation loop.
-- Lightweight random complete-game benchmark.
+- [x] Move application.
+- [x] Efficient state transition strategy for MCTS: copy-on-apply baseline and/or make-unmake design.
+- [x] Game history.
+- [x] Checkmate/stalemate detection.
+- [x] Pragmatic draw tracking: halfmove clock, repetition, insufficient material.
+- [x] Complete game simulation loop.
+- [x] Lightweight random complete-game benchmark.
 
 Depends on: WP03.
 

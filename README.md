@@ -9,8 +9,9 @@ Implemented:
 - WP01: Python project bootstrap.
 - WP02: Core board, square, piece, color, and move primitives.
 - WP03: Legal move generation, special moves, and perft benchmark.
+- WP04: Game state, history, outcomes, complete-game simulation, and random-game benchmark.
 
-Next planned work package: WP04, game state and outcomes.
+Next planned work package: WP05, FEN support.
 
 ## Requirements
 
@@ -32,6 +33,7 @@ uv run ruff check .
 uv run mypy
 uv run tinychess --help
 uv run python scripts/perft.py 3
+uv run python scripts/random_game.py --seed 7 --max-plies 40
 ```
 
 ## Current CLI
@@ -44,11 +46,15 @@ uv run tinychess --version
 ## Engine Example
 
 ```python
-from tinychess.engine import Board, legal_moves, perft
+from tinychess.engine import Board, Game, legal_moves, perft, random_move_selector, simulate_game
 
 board = Board.starting_position()
 print(len(legal_moves(board)))  # 20
 print(perft(board, 3))          # 8902
+
+# Simulate a deterministic random game with a ply cap.
+game = simulate_game(random_move_selector(seed=7), max_plies=40)
+print(len(game.moves), game.outcome.reason.value)
 ```
 
 ## Documentation

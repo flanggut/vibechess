@@ -45,7 +45,7 @@ Move objects do not perform legality checks themselves.
 
 ## Board State
 
-`Board` currently tracks the minimum state needed for legal move generation:
+`Board` tracks state needed for legal move generation:
 
 - `squares`
 - `side_to_move`
@@ -73,9 +73,9 @@ Implemented rules include:
 - Castling, including occupied path checks, attacked transit/destination checks, and in-check restrictions.
 - Filtering of moves that leave the moving side's king in check.
 
-## Minimal Move Application
+## Move Application and Transition Strategy
 
-`Board.apply_move(move)` exists to support legal move filtering and perft. It applies pseudo-legal moves and updates:
+`Board.apply_move(move)` applies a pseudo-legal move and returns a new immutable board snapshot. It updates:
 
 - piece placement
 - side to move
@@ -85,29 +85,60 @@ Implemented rules include:
 - en passant capture removal
 - castling rook movement
 
-It intentionally does **not** yet track:
+The current transition strategy is copy-on-apply. This is simple, safe, and sufficient for the reference implementation and early MCTS work. A make/unmake backend remains a future optimization candidate if benchmarks show board transitions dominate runtime.
 
-- game history
+## Game State and Outcomes
+
+`Game` lives in `tinychess.engine.game` and is exported from `tinychess.engine`.
+
+It tracks:
+
+- immutable position history
+- move history
 - halfmove clock
 - fullmove number
-- repetition
-- draw rules
-- checkmate/stalemate outcomes
+- repetition counts copied between game snapshots
+- optional forced outcome for ply-capped simulations
 
-Those belong to WP04.
+Primary APIs:
 
-## Perft
+- `Game.new(board=None)`
+- `game.board`
+- `game.legal_moves`
+- `game.outcome`
+- `game.play(move)`
+- `simulate_game(selector, game=None, max_plies=512)`
+- `random_move_selector(seed=None)`
+
+Outcomes use `Outcome` and `OutcomeReason`:
+
+- `CHECKMATE`
+- `STALEMATE`
+- `FIFTY_MOVE`
+- `REPETITION`
+- `INSUFFICIENT_MATERIAL`
+- `MAX_PLIES`
+
+Draw semantics are pragmatic for complete-game simulation. Repetition and fifty-move style draws are treated as automatic outcomes for now; strict FIDE claim-vs-automatic distinctions are deferred. `Game.play()` rejects moves once an outcome exists, even if the underlying board would still have legal moves.
+
+## Perft and Benchmarks
 
 Run tests:
 
 ```bash
-uv run pytest tests/test_legal_moves.py
+uv run pytest tests/test_legal_moves.py tests/test_game.py
 ```
 
 Run the lightweight perft benchmark:
 
 ```bash
 uv run python scripts/perft.py 3
+```
+
+Run a deterministic random complete-game benchmark:
+
+```bash
+uv run python scripts/random_game.py --seed 7 --max-plies 40
 ```
 
 Current known start-position counts covered by tests:
@@ -118,4 +149,4 @@ Current known start-position counts covered by tests:
 | 2 | 400 |
 | 3 | 8902 |
 
-The tests also include a Kiwipete-style castling position and focused special-rule coverage for castling, en passant, promotion, and check filtering.
+The tests also include a Kiwipete-style castling position and focused special-rule coverage for castling, en passant, promotion, check filtering, game history, checkmate, stalemate, halfmove draws, repetition draws, insufficient material, and complete-game simulation.
