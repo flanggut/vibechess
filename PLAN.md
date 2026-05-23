@@ -534,7 +534,7 @@ Planned dependency groups:
 Recommended commands:
 
 ```bash
-uv sync
+uv sync --dev
 uv run pytest
 uv run ruff check .
 uv run mypy src
@@ -555,15 +555,17 @@ swift build -c release
 
 ## Work Packages
 
-### WP01: Python Project Bootstrap
+### WP01: Python Project Bootstrap — Done
+
+Status: Done.
 
 Deliverables:
 
-- `pyproject.toml` with package metadata and tooling config.
-- `src/tinychess` package skeleton.
-- `tests` skeleton.
-- CLI entry point.
-- Basic CI-ready commands documented in README.
+- [x] `pyproject.toml` with package metadata and tooling config.
+- [x] `src/tinychess` package skeleton.
+- [x] `tests` skeleton.
+- [x] CLI entry point.
+- [x] Basic CI-ready commands documented in README.
 
 Can be done independently: yes.
 
