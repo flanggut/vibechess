@@ -82,7 +82,9 @@ def test_board_rejects_invalid_square_access(square: Square) -> None:
 
 
 def test_board_from_ascii_matches_starting_position() -> None:
-    assert board_from_ascii(STARTING_POSITION) == Board.starting_position()
+    board = board_from_ascii(STARTING_POSITION, castling_rights=frozenset("KQkq"))
+
+    assert board == Board.starting_position()
 
 
 @pytest.mark.parametrize("rows", ["08/8/8/8/8/8/8/8", "9/8/8/8/8/8/8/8"])

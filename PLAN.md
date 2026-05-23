@@ -585,15 +585,17 @@ Deliverables:
 
 Depends on: WP01.
 
-### WP03: Legal Move Generation
+### WP03: Legal Move Generation — Done
+
+Status: Done.
 
 Deliverables:
 
-- Pseudo-legal move generation.
-- Legal move filtering for check safety.
-- Castling, en passant, and promotion.
-- Perft-style tests with known positions.
-- Lightweight perft benchmark script or command.
+- [x] Pseudo-legal move generation.
+- [x] Legal move filtering for check safety.
+- [x] Castling, en passant, and promotion.
+- [x] Perft-style tests with known positions.
+- [x] Lightweight perft benchmark script or command.
 
 Depends on: WP02.
 
