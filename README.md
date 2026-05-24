@@ -11,8 +11,9 @@ Implemented:
 - WP03: Legal move generation, special moves, and perft benchmark.
 - WP04: Game state, history, outcomes, complete-game simulation, and random-game benchmark.
 - WP05: FEN parsing, serialization, round-trip tests, and fixture positions.
+- WP06: Bounded PGN/SAN parsing and writing.
 
-Next planned work package: WP06, PGN bounded basics.
+Next planned work package: WP07, terminal UI and CLI play loop.
 
 ## Requirements
 
@@ -47,12 +48,13 @@ uv run tinychess --version
 ## Engine Example
 
 ```python
-from tinychess.engine import Board, Game, legal_moves, parse_fen, perft, random_move_selector, simulate_game
+from tinychess.engine import Board, Game, legal_moves, parse_fen, parse_pgn, perft, random_move_selector, simulate_game
 
 board = Board.starting_position()
 print(len(legal_moves(board)))  # 20
 print(perft(board, 3))          # 8902
 print(parse_fen(board.to_fen()).board == board)  # True
+print(parse_pgn('[Result "*"]\n\n1. e4 e5 *').moves[0].to_uci())  # e2e4
 
 # Simulate a deterministic random game with a ply cap.
 game = simulate_game(random_move_selector(seed=7), max_plies=40)

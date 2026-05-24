@@ -628,16 +628,18 @@ Deliverables:
 
 Depends on: WP04.
 
-### WP06: PGN Bounded Basics
+### WP06: PGN Bounded Basics — Done
+
+Status: Done.
 
 Deliverables:
 
-- Mainline PGN move recording.
-- Basic PGN parser/writer.
-- SAN generation/parsing for bounded scope.
-- Result and common tag handling.
-- Tests with short sample games.
-- Explicit unsupported-feature behavior for comments, NAGs, variations, and clocks.
+- [x] Mainline PGN move recording.
+- [x] Basic PGN parser/writer.
+- [x] SAN generation/parsing for bounded scope.
+- [x] Result and common tag handling.
+- [x] Tests with short sample games.
+- [x] Explicit unsupported-feature behavior for comments, NAGs, variations, and clocks.
 
 Depends on: WP05.
 
@@ -904,6 +906,6 @@ Completed:
 
 Next:
 
-1. Start WP06: PGN bounded basics.
-2. Add mainline PGN move recording and basic parser/writer around the existing `Game` and FEN-capable position APIs.
-3. Keep documentation updated as PGN clarifies public engine APIs and unsupported-feature behavior.
+1. Start WP07: terminal UI and CLI play loop.
+2. Add human input parsing using UCI long algebraic moves and human-vs-human/random-vs-random modes.
+3. Keep documentation updated as CLI play commands and terminal behavior are implemented.

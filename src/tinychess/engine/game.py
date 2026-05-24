@@ -69,6 +69,19 @@ class Game:
             fullmove_number=self.fullmove_number,
         )
 
+    @classmethod
+    def from_pgn(cls, text: str) -> Game:
+        """Parse bounded PGN text and return the final game state."""
+        from tinychess.engine.pgn import parse_pgn
+
+        return parse_pgn(text).final_game
+
+    def to_pgn(self, *, tags: Mapping[str, str] | None = None, result: str | None = None) -> str:
+        """Serialize this game's mainline history to bounded PGN."""
+        from tinychess.engine.pgn import game_to_pgn
+
+        return game_to_pgn(self, tags=tags, result=result)
+
     @property
     def board(self) -> Board:
         """Return the current board."""

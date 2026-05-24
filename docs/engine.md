@@ -71,6 +71,18 @@ Full six-field FEN parsing and serialization lives in `tinychess.engine.fen` and
 
 `Board` stores placement, side to move, castling rights, and en-passant target. `FenPosition` and `Game` carry the halfmove clock and fullmove number. Serialization uses canonical castling order (`KQkq`) and `-` for absent castling rights or en-passant targets.
 
+## PGN and SAN Support
+
+Bounded PGN parsing/writing and SAN conversion lives in `tinychess.engine.pgn` and is exported from `tinychess.engine`:
+
+- `PgnGame(tags, moves, result, initial_game)`
+- `parse_pgn(text)` / `format_pgn(pgn_game)`
+- `game_to_pgn(game, tags=None, result=None)`
+- `move_to_san(board, move)` / `parse_san(board, san)`
+- `Game.from_pgn(text)` / `game.to_pgn(...)`
+
+Supported PGN scope is intentionally small: one mainline game, standard tag pairs, result tokens, FEN setup with `[SetUp "1"]` plus `[FEN "..."]`, and SAN for normal moves, captures, checks, mates, castling, promotions, and disambiguation. `Game.to_pgn()` automatically emits FEN setup tags for non-standard starting positions. SAN parsing is strict: when a legal move gives check or mate, the `+` or `#` suffix must be present. The parser rejects comments, semicolon comments, numeric annotation glyphs, recursive variations, clock annotations, and SAN annotation suffixes rather than silently ignoring them.
+
 ## Legal Move Generation
 
 Legal move generation lives in `tinychess.engine.legal_moves` and is exported from `tinychess.engine`:
@@ -141,7 +153,7 @@ Draw semantics are pragmatic for complete-game simulation. Repetition and fifty-
 Run tests:
 
 ```bash
-uv run pytest tests/test_legal_moves.py tests/test_game.py tests/test_fen.py
+uv run pytest tests/test_legal_moves.py tests/test_game.py tests/test_fen.py tests/test_pgn.py
 ```
 
 Run the lightweight perft benchmark:
@@ -164,4 +176,4 @@ Current known start-position counts covered by tests:
 | 2 | 400 |
 | 3 | 8902 |
 
-The tests also include a Kiwipete-style castling position and focused special-rule coverage for castling, en passant, promotion, check filtering, game history, checkmate, stalemate, halfmove draws, repetition draws, insufficient material, and complete-game simulation.
+The tests also include a Kiwipete-style castling position and focused special-rule coverage for castling, en passant, promotion, check filtering, game history, checkmate, stalemate, halfmove draws, repetition draws, insufficient material, complete-game simulation, FEN round-trips, and bounded PGN/SAN parsing and writing.
