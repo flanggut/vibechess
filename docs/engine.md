@@ -54,7 +54,22 @@ Move objects do not perform legality checks themselves.
 
 `Board.starting_position()` creates the standard chess start position with white to move and all castling rights.
 
-`board_from_ascii()` can create placement-oriented test boards from slash-separated rank rows. It is intentionally not full FEN support; full FEN is planned for WP05.
+`board_from_ascii()` can create placement-oriented test boards from slash-separated rank rows for concise tests.
+
+## FEN Support
+
+Full six-field FEN parsing and serialization lives in `tinychess.engine.fen` and is exported from `tinychess.engine`:
+
+- `STARTING_FEN` / `STANDARD_STARTING_FEN` / `STARTPOS_FEN`
+- `FenPosition(board, halfmove_clock, fullmove_number)`
+- `parse_fen(fen)`
+- `format_fen(position)`
+- `board_from_fen(fen)`
+- `board_to_fen(board, halfmove_clock=0, fullmove_number=1)`
+- `Board.from_fen(fen)` / `board.to_fen(...)`
+- `Game.from_fen(fen)` / `game.to_fen()`
+
+`Board` stores placement, side to move, castling rights, and en-passant target. `FenPosition` and `Game` carry the halfmove clock and fullmove number. Serialization uses canonical castling order (`KQkq`) and `-` for absent castling rights or en-passant targets.
 
 ## Legal Move Generation
 
@@ -126,7 +141,7 @@ Draw semantics are pragmatic for complete-game simulation. Repetition and fifty-
 Run tests:
 
 ```bash
-uv run pytest tests/test_legal_moves.py tests/test_game.py
+uv run pytest tests/test_legal_moves.py tests/test_game.py tests/test_fen.py
 ```
 
 Run the lightweight perft benchmark:

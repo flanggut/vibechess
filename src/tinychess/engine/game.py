@@ -46,6 +46,29 @@ class Game:
         start = Board.starting_position() if board is None else board
         return cls(positions=(start,), repetition_counts={_position_key(start): 1})
 
+    @classmethod
+    def from_fen(cls, fen: str) -> Game:
+        """Return a game initialized from a full six-field FEN string."""
+        from tinychess.engine.fen import parse_fen
+
+        position = parse_fen(fen)
+        return cls(
+            positions=(position.board,),
+            halfmove_clock=position.halfmove_clock,
+            fullmove_number=position.fullmove_number,
+            repetition_counts={_position_key(position.board): 1},
+        )
+
+    def to_fen(self) -> str:
+        """Serialize the current game position to full FEN."""
+        from tinychess.engine.fen import board_to_fen
+
+        return board_to_fen(
+            self.board,
+            halfmove_clock=self.halfmove_clock,
+            fullmove_number=self.fullmove_number,
+        )
+
     @property
     def board(self) -> Board:
         """Return the current board."""

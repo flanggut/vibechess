@@ -615,14 +615,16 @@ Deliverables:
 
 Depends on: WP03.
 
-### WP05: FEN Support
+### WP05: FEN Support — Done
+
+Status: Done.
 
 Deliverables:
 
-- Full FEN parser.
-- Full FEN serializer.
-- Round-trip tests.
-- Fixture positions for engine tests.
+- [x] Full FEN parser.
+- [x] Full FEN serializer.
+- [x] Round-trip tests.
+- [x] Fixture positions for engine tests.
 
 Depends on: WP04.
 
@@ -902,6 +904,6 @@ Completed:
 
 Next:
 
-1. Start WP04: game state and outcomes.
-2. Extend `Board.apply_move()` or wrap it in game-level APIs for history, clocks, outcomes, and pragmatic draw handling.
-3. Keep documentation updated as WP04 clarifies public engine APIs.
+1. Start WP06: PGN bounded basics.
+2. Add mainline PGN move recording and basic parser/writer around the existing `Game` and FEN-capable position APIs.
+3. Keep documentation updated as PGN clarifies public engine APIs and unsupported-feature behavior.

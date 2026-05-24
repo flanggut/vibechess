@@ -1,0 +1,41 @@
+[
+  {
+    "name": "startpos",
+    "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "side_to_move": "white",
+    "castling_rights": "KQkq",
+    "en_passant_target": null,
+    "halfmove_clock": 0,
+    "fullmove_number": 1,
+    "legal_move_count": 20
+  },
+  {
+    "name": "kiwipete_castling",
+    "fen": "r3k2r/p1ppqpb1/bn2pnp1/2pPN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+    "side_to_move": "white",
+    "castling_rights": "KQkq",
+    "en_passant_target": null,
+    "halfmove_clock": 0,
+    "fullmove_number": 1,
+    "legal_move_count": 48
+  },
+  {
+    "name": "en_passant_target",
+    "fen": "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 12",
+    "side_to_move": "white",
+    "castling_rights": "",
+    "en_passant_target": "d6",
+    "halfmove_clock": 0,
+    "fullmove_number": 12,
+    "legal_moves_include": ["e5d6"]
+  },
+  {
+    "name": "promotion_and_counters",
+    "fen": "4k3/P7/8/8/8/8/8/4K3 b - - 99 57",
+    "side_to_move": "black",
+    "castling_rights": "",
+    "en_passant_target": null,
+    "halfmove_clock": 99,
+    "fullmove_number": 57
+  }
+]

@@ -79,6 +79,23 @@ class Board:
 
         return board.with_pieces(placements.items())
 
+    @classmethod
+    def from_fen(cls, fen: str) -> Board:
+        """Parse a full six-field FEN string and return its board component."""
+        from tinychess.engine.fen import board_from_fen
+
+        return board_from_fen(fen)
+
+    def to_fen(self, *, halfmove_clock: int = 0, fullmove_number: int = 1) -> str:
+        """Serialize this board plus move counters to a full six-field FEN string."""
+        from tinychess.engine.fen import board_to_fen
+
+        return board_to_fen(
+            self,
+            halfmove_clock=halfmove_clock,
+            fullmove_number=fullmove_number,
+        )
+
     def piece_at(self, square: Square | str) -> Piece | None:
         """Return the piece at a square, or ``None`` if it is empty."""
         index = parse_square(square) if isinstance(square, str) else validate_square(square)
