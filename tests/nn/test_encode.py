@@ -1,3 +1,4 @@
+import mlx.core as mx
 import pytest
 
 from tinychess.engine import Game, Move, parse_square
@@ -14,6 +15,7 @@ from tinychess.nn import (
     legal_move_mask,
     move_to_action_index,
     tensor_shape,
+    to_mlx,
 )
 
 
@@ -21,31 +23,37 @@ def move(uci: str) -> Move:
     return Move.from_uci(uci)
 
 
+def scalar(value: object) -> float:
+    return float(value.item())  # type: ignore[attr-defined]
+
+
 def test_encoder_shape_and_starting_piece_values() -> None:
     tensor = encode_game(Game.new())
 
+    assert tensor.__class__.__module__.startswith("mlx.")
+    assert tensor.dtype == mx.float32
     assert tensor_shape(tensor) == TENSOR_SHAPE == (ENCODER_CHANNELS, 8, 8)
-    assert tensor[0][1][4] == 1.0  # white pawn e2
-    assert tensor[3][0][0] == 1.0  # white rook a1
-    assert tensor[5][0][4] == 1.0  # white king e1
-    assert tensor[6][6][4] == 1.0  # black pawn e7
-    assert tensor[9][7][7] == 1.0  # black rook h8
-    assert tensor[11][7][4] == 1.0  # black king e8
-    assert all(value == 0.0 for rank in tensor[12] for value in rank)  # white to move
+    assert scalar(tensor[0, 1, 4]) == 1.0  # white pawn e2
+    assert scalar(tensor[3, 0, 0]) == 1.0  # white rook a1
+    assert scalar(tensor[5, 0, 4]) == 1.0  # white king e1
+    assert scalar(tensor[6, 6, 4]) == 1.0  # black pawn e7
+    assert scalar(tensor[9, 7, 7]) == 1.0  # black rook h8
+    assert scalar(tensor[11, 7, 4]) == 1.0  # black king e8
+    assert scalar(mx.sum(tensor[12])) == 0.0  # white to move
     for channel in (13, 14, 15, 16):
-        assert all(value == 1.0 for rank in tensor[channel] for value in rank)
-    assert all(value == 0.0 for rank in tensor[18] for value in rank)
-    assert all(value == 0.01 for rank in tensor[19] for value in rank)
+        assert scalar(mx.sum(tensor[channel])) == 64.0
+    assert scalar(mx.sum(tensor[18])) == 0.0
+    assert scalar(mx.sum(tensor[19])) == pytest.approx(0.64)
 
 
 def test_encoder_side_en_passant_and_clocks() -> None:
     game = Game.from_fen("rnbqkbnr/pppp1ppp/8/4p3/3P4/8/PPP1PPPP/RNBQKBNR b KQkq d3 7 12")
     tensor = encode_game(game)
 
-    assert all(value == 1.0 for rank in tensor[12] for value in rank)
-    assert tensor[17][2][3] == 1.0  # d3
-    assert all(value == 0.07 for rank in tensor[18] for value in rank)
-    assert all(value == 0.12 for rank in tensor[19] for value in rank)
+    assert scalar(mx.sum(tensor[12])) == 64.0
+    assert scalar(tensor[17, 2, 3]) == 1.0  # d3
+    assert scalar(mx.sum(tensor[18])) == pytest.approx(4.48)
+    assert scalar(mx.sum(tensor[19])) == pytest.approx(7.68)
 
 
 @pytest.mark.parametrize(
@@ -134,28 +142,51 @@ def test_legal_move_mask_marks_exact_legal_indices_from_start() -> None:
     mask = legal_move_mask(game)
     legal_indices = {move_to_action_index(legal, game.board) for legal in game.legal_moves}
 
-    assert len(mask) == ACTION_SPACE_SIZE
-    assert sum(mask) == 20.0
-    assert {index for index, value in enumerate(mask) if value == 1.0} == legal_indices
-    assert mask[move_to_action_index(move("e2e4"), game.board)] == 1.0
-    assert mask[move_to_action_index(move("e2e5"), game.board)] == 0.0
+    assert mask.dtype == mx.float32
+    assert tensor_shape(mask) == (ACTION_SPACE_SIZE,)
+    assert scalar(mx.sum(mask)) == 20.0
+    active_indices = {index for index in range(ACTION_SPACE_SIZE) if scalar(mask[index]) == 1.0}
+    assert active_indices == legal_indices
+    assert scalar(mask[move_to_action_index(move("e2e4"), game.board)]) == 1.0
+    assert scalar(mask[move_to_action_index(move("e2e5"), game.board)]) == 0.0
 
 
 def test_legal_move_mask_includes_castling_and_underpromotions() -> None:
     castle_game = Game.from_fen("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1")
     castle_mask = legal_move_mask(castle_game)
-    assert castle_mask[move_to_action_index(move("e1g1"), castle_game.board)] == 1.0
-    assert castle_mask[move_to_action_index(move("e1c1"), castle_game.board)] == 1.0
+    assert scalar(castle_mask[move_to_action_index(move("e1g1"), castle_game.board)]) == 1.0
+    assert scalar(castle_mask[move_to_action_index(move("e1c1"), castle_game.board)]) == 1.0
 
     black_castle_game = Game.from_fen("r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 0 1")
     black_castle_mask = legal_move_mask(black_castle_game)
-    assert black_castle_mask[move_to_action_index(move("e8g8"), black_castle_game.board)] == 1.0
-    assert black_castle_mask[move_to_action_index(move("e8c8"), black_castle_game.board)] == 1.0
+    king_side_castle = move_to_action_index(move("e8g8"), black_castle_game.board)
+    queen_side_castle = move_to_action_index(move("e8c8"), black_castle_game.board)
+    assert scalar(black_castle_mask[king_side_castle]) == 1.0
+    assert scalar(black_castle_mask[queen_side_castle]) == 1.0
 
     promo_game = Game.from_fen("4k3/P7/8/8/8/8/8/4K3 w - - 0 1")
     promo_mask = legal_move_mask(promo_game)
     for uci in ("a7a8q", "a7a8n", "a7a8b", "a7a8r"):
-        assert promo_mask[move_to_action_index(move(uci), promo_game.board)] == 1.0
+        assert scalar(promo_mask[move_to_action_index(move(uci), promo_game.board)]) == 1.0
+
+
+def test_legal_move_mask_returns_zero_mlx_array_when_no_moves() -> None:
+    game = Game.from_fen("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1")
+    mask = legal_move_mask(game)
+
+    assert mask.dtype == mx.float32
+    assert tensor_shape(mask) == (ACTION_SPACE_SIZE,)
+    assert scalar(mx.sum(mask)) == 0.0
+
+
+def test_to_mlx_is_idempotent_for_mlx_arrays_and_converts_array_like_values() -> None:
+    tensor = encode_game(Game.new())
+
+    assert to_mlx(tensor) is tensor
+    converted = to_mlx([1.0, 0.0])
+    assert converted.__class__.__module__.startswith("mlx.")
+    assert converted.dtype == mx.float32
+    assert tensor_shape(converted) == (2,)
 
 
 def test_action_space_metadata() -> None:

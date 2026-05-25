@@ -23,7 +23,9 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
   "Operating System :: MacOS",
 ]
-dependencies = []
+dependencies = [
+  "mlx>=0.22",
+]
 
 [project.scripts]
 tinychess = "tinychess.cli:main"

@@ -96,11 +96,10 @@ print(len(game.moves), game.outcome.reason.value)
 move = MCTSPlayer(MCTSConfig(simulations=25, seed=1)).select_move(Game.new())
 print(move.to_uci())
 
-# WP11 neural-input foundations use plain Python tensors/masks and can be
-# converted to MLX arrays by tinychess.nn.to_mlx when MLX is installed.
+# WP11 neural-input foundations encode directly to MLX arrays.
 encoded = encode_game(Game.new())
 mask = legal_move_mask(Game.new())
-print(len(encoded), len(mask), ACTION_SPACE_SIZE)  # 20 4672 4672
+print(encoded.shape, mask.shape, ACTION_SPACE_SIZE)  # (20, 8, 8) (4672,) 4672
 ```
 
 ## Documentation

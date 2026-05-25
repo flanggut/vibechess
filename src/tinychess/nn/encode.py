@@ -1,14 +1,16 @@
-"""Position encoding and AlphaZero-style policy action mapping.
+"""MLX position encoding and AlphaZero-style policy action mapping.
 
-WP11 intentionally keeps this module independent of model/training code.  It uses
-plain Python numeric tensors so tests and engine integrations do not require MLX to
-be installed; callers on Apple Silicon can convert with :func:`to_mlx`.
+WP11 keeps move/action mapping independent of model/training code, but neural
+inputs are MLX-native: position encoders and legal masks return ``mlx.core``
+arrays directly instead of intermediate Python-list tensors.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TypeAlias
+from typing import Any, TypeAlias, cast
+
+import mlx.core as mx
 
 from tinychess.engine.board import Board
 from tinychess.engine.game import Game
@@ -26,7 +28,7 @@ POLICY_SHAPE = (BOARD_SIZE, ACTION_PLANES)
 ENCODER_CHANNELS = 20
 TENSOR_SHAPE = (ENCODER_CHANNELS, 8, 8)
 
-Tensor3D: TypeAlias = list[list[list[float]]]
+MLXArray: TypeAlias = Any
 
 _PIECE_CHANNELS: dict[tuple[Color, PieceType], int] = {
     (Color.WHITE, PieceType.PAWN): 0,
@@ -68,10 +70,11 @@ _KNIGHT_DELTAS: tuple[tuple[int, int], ...] = (
 _UNDERPROMOTION_TYPES = (PieceType.KNIGHT, PieceType.BISHOP, PieceType.ROOK)
 _UNDERPROMOTION_FILES = (0, -1, 1)  # forward, capture-left, capture-right from mover's view.
 _UNDERPROMOTION_OFFSET = 64
+_BOARD_GRID = mx.arange(BOARD_SIZE).reshape(8, 8)
 
 
-def encode_game(game: Game) -> Tensor3D:
-    """Encode the current game state as a ``[20][8][8]`` numeric tensor.
+def encode_game(game: Game) -> MLXArray:
+    """Encode the current game state as an MLX ``float32`` array of shape ``[20, 8, 8]``.
 
     Channels 0..11 are one-hot piece planes ordered white PNBRQK then black
     pnbrqk. Channel 12 is all ones when black is to move and zeros for white.
@@ -91,45 +94,44 @@ def encode_board(
     *,
     halfmove_clock: int = 0,
     fullmove_number: int = 1,
-) -> Tensor3D:
-    """Encode a board and optional clocks as a deterministic Python tensor."""
-    tensor = [
-        [[0.0 for _file in range(8)] for _rank in range(8)]
-        for _channel in range(ENCODER_CHANNELS)
-    ]
-
+) -> MLXArray:
+    """Encode a board and optional clocks directly into an MLX array."""
+    piece_squares: list[list[int]] = [[] for _channel in range(12)]
     for square, piece in board.occupied_squares():
         channel = _PIECE_CHANNELS[(piece.color, piece.kind)]
-        tensor[channel][rank_index(square)][file_index(square)] = 1.0
+        piece_squares[channel].append(int(square))
 
-    if board.side_to_move is Color.BLACK:
-        _fill_plane(tensor[12], 1.0)
-    for right, channel in _CASTLING_CHANNELS.items():
-        if right in board.castling_rights:
-            _fill_plane(tensor[channel], 1.0)
-    if board.en_passant_target is not None:
-        tensor[17][rank_index(board.en_passant_target)][file_index(board.en_passant_target)] = 1.0
-    _fill_plane(tensor[18], halfmove_clock / 100.0)
-    _fill_plane(tensor[19], fullmove_number / 100.0)
-    return tensor
-
-
-def tensor_shape(tensor: Sequence[Sequence[Sequence[float]]]) -> tuple[int, int, int]:
-    """Return the shape of a nested Python position tensor."""
-    channels = len(tensor)
-    ranks = len(tensor[0]) if channels else 0
-    files = len(tensor[0][0]) if ranks else 0
-    return (channels, ranks, files)
+    planes: list[MLXArray] = [_multi_square_plane(squares) for squares in piece_squares]
+    planes.append(_full_plane(1.0 if board.side_to_move is Color.BLACK else 0.0))
+    for right in ("K", "Q", "k", "q"):
+        planes.append(_full_plane(1.0 if right in board.castling_rights else 0.0))
+    planes.append(
+        _square_plane(int(board.en_passant_target))
+        if board.en_passant_target is not None
+        else _zero_plane()
+    )
+    planes.append(_full_plane(halfmove_clock / 100.0))
+    planes.append(_full_plane(fullmove_number / 100.0))
+    return mx.stack(planes).astype(mx.float32)
 
 
-def to_mlx(tensor: Tensor3D) -> object:
-    """Convert a Python tensor to an MLX array when MLX is installed."""
-    try:
-        import mlx.core as mx  # type: ignore[import-not-found]
-    except ModuleNotFoundError as exc:  # pragma: no cover - depends on local platform env
-        msg = "MLX is not installed; use the plain Python tensor or install mlx"
-        raise RuntimeError(msg) from exc
-    return mx.array(tensor)
+def tensor_shape(tensor: object) -> tuple[int, ...]:
+    """Return the shape of an MLX array (or other shape-bearing tensor)."""
+    shape = getattr(tensor, "shape", None)
+    if shape is None:
+        raise TypeError("tensor must expose a shape attribute")
+    return tuple(int(dimension) for dimension in shape)
+
+
+def to_mlx(tensor: MLXArray) -> MLXArray:
+    """Return an MLX array for backward-compatible callers.
+
+    Encoders already return MLX arrays. Non-MLX array-like inputs are converted
+    with ``mx.array`` so older callers can still pass compatible data.
+    """
+    if tensor.__class__.__module__.startswith("mlx."):
+        return tensor
+    return mx.array(tensor, dtype=mx.float32)
 
 
 def move_to_action_index(move: Move, board: Board | None = None) -> int:
@@ -213,12 +215,13 @@ def action_index_to_move(index: int, board: Board | None = None) -> Move:
     return Move(from_square=from_square, to_square=to_square, promotion=promotion)
 
 
-def legal_move_mask(game: Game) -> list[float]:
-    """Return a length-4672 mask with ``1.0`` for legal actions and ``0.0`` elsewhere."""
-    mask = [0.0] * ACTION_SPACE_SIZE
-    for move in game.legal_moves:
-        mask[move_to_action_index(move, game.board)] = 1.0
-    return mask
+def legal_move_mask(game: Game) -> MLXArray:
+    """Return an MLX length-4672 mask with ``1.0`` for legal actions and ``0.0`` elsewhere."""
+    legal_indices = [move_to_action_index(move, game.board) for move in game.legal_moves]
+    if not legal_indices:
+        return mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32)
+    indices = mx.array(legal_indices)
+    return mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32).at[indices].add(1.0)
 
 
 def _queen_or_knight_plane(df: int, dr: int) -> int:
@@ -258,7 +261,21 @@ def _validate_promotion_move(move: Move, board: Board, df: int, dr: int) -> None
         raise ValueError("promotion target must be the final rank")
 
 
-def _fill_plane(plane: list[list[float]], value: float) -> None:
-    for rank in range(8):
-        for file_ in range(8):
-            plane[rank][file_] = value
+def _zero_plane() -> MLXArray:
+    return mx.zeros((8, 8), dtype=mx.float32)
+
+
+def _full_plane(value: float) -> MLXArray:
+    return mx.full((8, 8), value, dtype=mx.float32)
+
+
+def _square_plane(square: int) -> MLXArray:
+    return cast(MLXArray, square == _BOARD_GRID).astype(mx.float32)
+
+
+def _multi_square_plane(squares: Sequence[int]) -> MLXArray:
+    if not squares:
+        return _zero_plane()
+    square_indices = mx.array(tuple(squares))
+    occupied = cast(MLXArray, square_indices[:, None, None] == _BOARD_GRID[None, :, :])
+    return mx.any(occupied, axis=0).astype(mx.float32)

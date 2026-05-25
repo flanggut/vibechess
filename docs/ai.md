@@ -33,7 +33,7 @@ Implemented:
 - `play_game`: a simple player-vs-player simulation helper for AI-vs-AI smoke tests.
 - `MCTSConfig`: simulation count, optional wall-clock limit, optional node budget, rollout cap, exploration constant, and seed.
 - `MCTSPlayer`: a correctness-first classical MCTS implementation with adversarial UCB1 selection, legal-move expansion, random rollouts, and value backup from the root side's perspective. It uses only public `Game` legal-move and transition APIs.
-- `tinychess.nn.encode`: a deterministic `[20][8][8]` position tensor encoder, optional MLX conversion helper, AlphaZero-style 4672-action move mapping, and length-4672 legal move masks.
+- `tinychess.nn.encode`: deterministic MLX-native `[20][8][8]` position tensor encoding, AlphaZero-style 4672-action move mapping, and MLX length-4672 legal move masks.
 
 The terminal `play` command accepts `mcts` as a player kind, and `scripts/mcts_benchmark.py` reports MCTS simulations/sec from the starting position. WP11 does not add a neural player, model, checkpointing, training, or neural MCTS search.
 
