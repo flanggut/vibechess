@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import random
 import sys
 from dataclasses import dataclass
 from typing import TextIO
 
+from tinychess.ai.player import RandomPlayer
 from tinychess.engine.game import Game
 from tinychess.engine.move import Move
 from tinychess.ui.render import render_game
@@ -62,7 +62,7 @@ def play_terminal(
         raise ValueError(msg)
     input_stream = sys.stdin if stdin is None else stdin
     output_stream = sys.stdout if stdout is None else stdout
-    rng = random.Random(config.seed)
+    random_player = RandomPlayer(seed=config.seed)
     players = {"white": config.white, "black": config.black}
     game = Game.new()
     last_move: Move | None = None
@@ -84,7 +84,7 @@ def play_terminal(
         if not legal:
             break
         if player == "random":
-            move = rng.choice(legal)
+            move = random_player.select_move(game)
             print(f"{side} random plays {move.to_uci()}", file=output_stream)
         elif player == "human":
             move = _read_human_move(

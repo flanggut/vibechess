@@ -1,13 +1,13 @@
 # AI Plan
 
-AI work has not started yet. This document records the planned direction from `PLAN.md` so future work packages can fill in implementation details.
+WP09 has added the shared player interface and random-player baseline. This document records the implemented baseline plus the planned direction from `PLAN.md` for later work packages.
 
 ## Planned Scope
 
 The project will implement:
 
-- A common player interface.
-- A random player baseline.
+- A common player interface. (Implemented in `tinychess.ai.player.Player`.)
+- A random player baseline. (Implemented in `tinychess.ai.player.RandomPlayer`.)
 - A classical MCTS baseline.
 - An AlphaZero-style neural MCTS player using a policy/value network and PUCT search.
 - MLX-based training and inference for Apple Silicon macOS.
@@ -26,9 +26,14 @@ The planned neural player uses:
 
 ## Current Status
 
-Not implemented. Planned work packages:
+Implemented:
 
-- WP09: Player interface and random player.
+- `Player`: a typed protocol with `select_move(game: Game) -> Move` for human, random, MCTS, and neural-MCTS players.
+- `RandomPlayer`: selects only from `Game.legal_moves`, uses a local deterministic RNG when seeded or provided, and raises `NoLegalMoveError` for terminal/no-legal positions.
+- `play_game`: a simple player-vs-player simulation helper for AI-vs-AI smoke tests.
+
+Planned work packages:
+
 - WP10: Classical MCTS baseline.
 - WP11: MLX position encoder and policy mapping.
 - WP12: MLX policy/value network.

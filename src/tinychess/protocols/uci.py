@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import random
 import sys
 from dataclasses import dataclass
 from typing import TextIO
 
 from tinychess import __version__
+from tinychess.ai.player import RandomPlayer
 from tinychess.engine import STARTING_FEN, Game, Move
 
 NO_MOVE = "0000"
@@ -34,7 +34,7 @@ class UciSession:
     def __init__(self, config: UciConfig | None = None) -> None:
         self.config = UciConfig() if config is None else config
         self.game = Game.new()
-        self._rng = random.Random(self.config.seed)
+        self._player = RandomPlayer(seed=self.config.seed)
         self._quit = False
 
     @property
@@ -91,7 +91,7 @@ class UciSession:
         if self.game.outcome is not None or not legal:
             print(f"bestmove {NO_MOVE}", file=output)
             return
-        move = self._rng.choice(legal)
+        move = self._player.select_move(self.game)
         print(f"bestmove {move.to_uci()}", file=output)
 
 

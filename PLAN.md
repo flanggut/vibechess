@@ -670,13 +670,15 @@ Deliverables:
 
 Depends on: WP05. Uses a temporary random legal move source until WP09/WP10 provide player/search abstractions.
 
-### WP09: Player Interface and Random Player
+### WP09: Player Interface and Random Player — Done
+
+Status: Done.
 
 Deliverables:
 
-- `Player` interface.
-- `RandomPlayer`.
-- AI-vs-AI simulation tests.
+- [x] `Player` interface.
+- [x] `RandomPlayer`.
+- [x] AI-vs-AI simulation tests.
 
 Depends on: WP04.
 
@@ -910,6 +912,6 @@ Completed:
 
 Next:
 
-1. Start WP09: player interface and random player.
-2. Keep WP10 classical MCTS deferred until the player interface exists.
-3. Use the WP08 random UCI move source as a temporary baseline until MCTS is available.
+1. Start WP10: classical MCTS baseline.
+2. Keep neural/ML work deferred until MCTS and action-space foundations exist.
+3. Continue using `RandomPlayer` as the CLI/UCI baseline until stronger search players are available.

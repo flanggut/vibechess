@@ -14,8 +14,9 @@ Implemented:
 - WP06: Bounded PGN/SAN parsing and writing.
 - WP07: Terminal board rendering and CLI play loop for human/random games.
 - WP08: Bounded UCI protocol loop with random legal `bestmove` output.
+- WP09: Shared `Player` protocol, deterministic `RandomPlayer`, and random-vs-random simulation helper.
 
-Next planned work package: WP09, player interface and random player.
+Next planned work package: WP10, classical MCTS baseline.
 
 ## Requirements
 
@@ -69,6 +70,7 @@ management, detailed `info` streaming, tablebases, and opening books.
 ## Engine Example
 
 ```python
+from tinychess.ai import RandomPlayer, play_game
 from tinychess.engine import Board, Game, legal_moves, parse_fen, parse_pgn, perft, random_move_selector, simulate_game
 
 board = Board.starting_position()
@@ -79,6 +81,10 @@ print(parse_pgn('[Result "*"]\n\n1. e4 e5 *').moves[0].to_uci())  # e2e4
 
 # Simulate a deterministic random game with a ply cap.
 game = simulate_game(random_move_selector(seed=7), max_plies=40)
+print(len(game.moves), game.outcome.reason.value)
+
+# Or use the shared player API used by AI integrations.
+game = play_game(RandomPlayer(seed=1), RandomPlayer(seed=2), max_plies=40)
 print(len(game.moves), game.outcome.reason.value)
 ```
 
