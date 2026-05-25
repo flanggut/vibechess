@@ -696,15 +696,17 @@ Deliverables:
 
 Depends on: WP09.
 
-### WP11: MLX Position Encoder and Policy Mapping
+### WP11: MLX Position Encoder and Policy Mapping — Done
+
+Status: Done.
 
 Deliverables:
 
-- Board-to-tensor encoder.
-- 4672-action AlphaZero-style policy mapping.
-- Legal move mask.
-- Action-space version metadata.
-- Tests for shapes and move round-trips.
+- [x] Board-to-tensor encoder.
+- [x] 4672-action AlphaZero-style policy mapping.
+- [x] Legal move mask.
+- [x] Action-space version metadata.
+- [x] Tests for shapes and move round-trips.
 
 Depends on: WP05.
 
@@ -918,6 +920,6 @@ Completed:
 
 Next:
 
-1. Start WP11: MLX position encoder and policy mapping.
-2. Keep neural model/training work deferred until action-space foundations exist.
+1. Start WP12: MLX policy/value network.
+2. Keep training/self-play work deferred until model and neural search foundations exist.
 3. Continue using `RandomPlayer` as the default UCI baseline; terminal play can opt into classical `mcts`.

@@ -16,8 +16,9 @@ Implemented:
 - WP08: Bounded UCI protocol loop with random legal `bestmove` output.
 - WP09: Shared `Player` protocol, deterministic `RandomPlayer`, and random-vs-random simulation helper.
 - WP10: Classical MCTS baseline, configurable search budgets, MCTS-vs-random smoke path, and simulations/sec benchmark.
+- WP11: Position tensor encoder, versioned 4672-action AlphaZero-style policy mapping, and legal move masks.
 
-Next planned work package: WP11, MLX position encoder and policy mapping.
+Next planned work package: WP12, MLX policy/value network.
 
 ## Requirements
 
@@ -76,6 +77,7 @@ management, detailed `info` streaming, tablebases, and opening books.
 ```python
 from tinychess.ai import MCTSConfig, MCTSPlayer, RandomPlayer, play_game
 from tinychess.engine import Board, Game, legal_moves, parse_fen, parse_pgn, perft, random_move_selector, simulate_game
+from tinychess.nn import ACTION_SPACE_SIZE, encode_game, legal_move_mask
 
 board = Board.starting_position()
 print(len(legal_moves(board)))  # 20
@@ -93,6 +95,12 @@ print(len(game.moves), game.outcome.reason.value)
 
 move = MCTSPlayer(MCTSConfig(simulations=25, seed=1)).select_move(Game.new())
 print(move.to_uci())
+
+# WP11 neural-input foundations use plain Python tensors/masks and can be
+# converted to MLX arrays by tinychess.nn.to_mlx when MLX is installed.
+encoded = encode_game(Game.new())
+mask = legal_move_mask(Game.new())
+print(len(encoded), len(mask), ACTION_SPACE_SIZE)  # 20 4672 4672
 ```
 
 ## Documentation
