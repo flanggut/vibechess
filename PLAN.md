@@ -710,16 +710,18 @@ Deliverables:
 
 Depends on: WP05.
 
-### WP12: MLX Policy/Value Network
+### WP12: MLX Policy/Value Network — Done
+
+Status: Done.
 
 Deliverables:
 
-- Small configurable residual policy/value model.
-- Inference wrapper.
-- MLX checkpoint save/load.
-- Checkpoint sidecar metadata.
-- Forward-pass tests.
-- MLX inference latency benchmark.
+- [x] Small configurable residual policy/value model.
+- [x] Inference wrapper.
+- [x] MLX checkpoint save/load.
+- [x] Checkpoint sidecar metadata.
+- [x] Forward-pass tests.
+- [x] MLX inference latency benchmark.
 
 Depends on: WP11.
 
@@ -920,6 +922,6 @@ Completed:
 
 Next:
 
-1. Start WP12: MLX policy/value network.
-2. Keep training/self-play work deferred until model and neural search foundations exist.
+1. Start WP13: Neural PUCT MCTS.
+2. Keep training/self-play work deferred until neural search foundations exist.
 3. Continue using `RandomPlayer` as the default UCI baseline; terminal play can opt into classical `mcts`.

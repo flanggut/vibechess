@@ -1,5 +1,15 @@
-"""Neural-network encoding and fixed policy action-space helpers."""
+"""Neural-network encoding, policy/value model, and checkpoint helpers."""
 
+from tinychess.nn.checkpoint import (
+    CHECKPOINT_METADATA_SCHEMA_VERSION,
+    DEFAULT_METADATA_FILENAME,
+    DEFAULT_WEIGHTS_FILENAME,
+    CheckpointMetadata,
+    LoadedCheckpoint,
+    load_checkpoint,
+    load_checkpoint_metadata,
+    save_checkpoint,
+)
 from tinychess.nn.encode import (
     ACTION_PLANES,
     ACTION_SPACE_SIZE,
@@ -16,20 +26,40 @@ from tinychess.nn.encode import (
     tensor_shape,
     to_mlx,
 )
+from tinychess.nn.model import (
+    InferenceResult,
+    PolicyValueConfig,
+    PolicyValueInference,
+    PolicyValueNet,
+    PolicyValueOutput,
+)
 
 __all__ = [
     "ACTION_PLANES",
     "ACTION_SPACE_SIZE",
     "ACTION_SPACE_VERSION",
+    "CHECKPOINT_METADATA_SCHEMA_VERSION",
+    "DEFAULT_METADATA_FILENAME",
+    "DEFAULT_WEIGHTS_FILENAME",
     "ENCODER_CHANNELS",
     "ENCODER_VERSION",
     "POLICY_SHAPE",
     "TENSOR_SHAPE",
+    "CheckpointMetadata",
+    "InferenceResult",
+    "LoadedCheckpoint",
+    "PolicyValueConfig",
+    "PolicyValueInference",
+    "PolicyValueNet",
+    "PolicyValueOutput",
     "action_index_to_move",
     "encode_board",
     "encode_game",
     "legal_move_mask",
+    "load_checkpoint",
+    "load_checkpoint_metadata",
     "move_to_action_index",
+    "save_checkpoint",
     "tensor_shape",
     "to_mlx",
 ]

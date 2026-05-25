@@ -2,7 +2,7 @@
 
 ## Current State
 
-The project is a Python-first chess engine and AI workspace targeting Apple Silicon macOS. FEN, bounded PGN, bounded UCI, and terminal play are implemented. Swift, MLX training, and stronger AI components are planned for later work packages.
+The project is a Python-first chess engine and AI workspace targeting Apple Silicon macOS. FEN, bounded PGN, bounded UCI, terminal play, classical MCTS, and the first MLX policy/value model foundations are implemented. Swift, MLX training, and stronger AI components are planned for later work packages.
 
 Implemented work packages:
 
@@ -16,6 +16,8 @@ Implemented work packages:
 - WP08: Bounded UCI protocol with random legal best moves.
 - WP09: Shared player protocol and random player.
 - WP10: Classical MCTS baseline and simulations/sec benchmark.
+- WP11: MLX position encoder, fixed policy action mapping, and legal move masks.
+- WP12: MLX policy/value network, inference wrapper, checkpoints, and inference benchmark.
 
 ## Package Layout
 
@@ -39,6 +41,11 @@ src/tinychess/
 │   ├── mcts.py
 │   ├── player.py
 │   └── search_config.py
+├── nn/
+│   ├── __init__.py
+│   ├── checkpoint.py
+│   ├── encode.py
+│   └── model.py
 ├── protocols/
 │   ├── __init__.py
 │   └── uci.py
@@ -97,4 +104,5 @@ A lightweight perft benchmark is available:
 uv run python scripts/perft.py 3
 uv run python scripts/random_game.py --seed 7 --max-plies 40
 uv run python scripts/mcts_benchmark.py --simulations 25 --seed 7
+uv run python scripts/mlx_inference_benchmark.py --iterations 25 --warmup 5
 ```

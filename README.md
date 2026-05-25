@@ -17,8 +17,9 @@ Implemented:
 - WP09: Shared `Player` protocol, deterministic `RandomPlayer`, and random-vs-random simulation helper.
 - WP10: Classical MCTS baseline, configurable search budgets, MCTS-vs-random smoke path, and simulations/sec benchmark.
 - WP11: Position tensor encoder, versioned 4672-action AlphaZero-style policy mapping, and legal move masks.
+- WP12: Configurable MLX policy/value network, inference wrapper, checkpoint sidecar metadata, and inference latency benchmark.
 
-Next planned work package: WP12, MLX policy/value network.
+Next planned work package: WP13, Neural PUCT MCTS.
 
 ## Requirements
 
@@ -42,6 +43,7 @@ uv run tinychess --help
 uv run python scripts/perft.py 3
 uv run python scripts/random_game.py --seed 7 --max-plies 40
 uv run python scripts/mcts_benchmark.py --simulations 25 --seed 7
+uv run python scripts/mlx_inference_benchmark.py --iterations 25 --warmup 5
 ```
 
 ## Current CLI
@@ -77,7 +79,7 @@ management, detailed `info` streaming, tablebases, and opening books.
 ```python
 from tinychess.ai import MCTSConfig, MCTSPlayer, RandomPlayer, play_game
 from tinychess.engine import Board, Game, legal_moves, parse_fen, parse_pgn, perft, random_move_selector, simulate_game
-from tinychess.nn import ACTION_SPACE_SIZE, encode_game, legal_move_mask
+from tinychess.nn import ACTION_SPACE_SIZE, PolicyValueInference, PolicyValueNet, encode_game, legal_move_mask
 
 board = Board.starting_position()
 print(len(legal_moves(board)))  # 20
@@ -96,10 +98,14 @@ print(len(game.moves), game.outcome.reason.value)
 move = MCTSPlayer(MCTSConfig(simulations=25, seed=1)).select_move(Game.new())
 print(move.to_uci())
 
-# WP11 neural-input foundations encode directly to MLX arrays.
+# Neural-input foundations encode directly to MLX arrays.
 encoded = encode_game(Game.new())
 mask = legal_move_mask(Game.new())
 print(encoded.shape, mask.shape, ACTION_SPACE_SIZE)  # (20, 8, 8) (4672,) 4672
+
+# WP12 policy/value inference returns a masked policy and side-to-move value.
+result = PolicyValueInference(PolicyValueNet()).predict(Game.new())
+print(result.policy.shape, result.value)
 ```
 
 ## Documentation
