@@ -643,14 +643,16 @@ Deliverables:
 
 Depends on: WP05.
 
-### WP07: Terminal UI and CLI Play Loop
+### WP07: Terminal UI and CLI Play Loop — Done
+
+Status: Done.
 
 Deliverables:
 
-- Text board renderer.
-- Human input parsing using UCI long algebraic moves initially.
-- Human-vs-human and random-vs-random modes.
-- CLI commands.
+- [x] Text board renderer.
+- [x] Human input parsing using UCI long algebraic moves initially.
+- [x] Human-vs-human and random-vs-random modes.
+- [x] CLI commands.
 
 Depends on: WP04.
 
@@ -906,6 +908,6 @@ Completed:
 
 Next:
 
-1. Start WP07: terminal UI and CLI play loop.
-2. Add human input parsing using UCI long algebraic moves and human-vs-human/random-vs-random modes.
-3. Keep documentation updated as CLI play commands and terminal behavior are implemented.
+1. Start WP08: basic UCI protocol.
+2. Implement bounded `uci`, `isready`, `ucinewgame`, `position`, `go`, `stop`, and `quit` command handling.
+3. Produce legal `bestmove` output using a random or simple MCTS move source initially.

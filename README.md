@@ -12,8 +12,9 @@ Implemented:
 - WP04: Game state, history, outcomes, complete-game simulation, and random-game benchmark.
 - WP05: FEN parsing, serialization, round-trip tests, and fixture positions.
 - WP06: Bounded PGN/SAN parsing and writing.
+- WP07: Terminal board rendering and CLI play loop for human/random games.
 
-Next planned work package: WP07, terminal UI and CLI play loop.
+Next planned work package: WP08, basic UCI protocol.
 
 ## Requirements
 
@@ -43,7 +44,15 @@ uv run python scripts/random_game.py --seed 7 --max-plies 40
 ```bash
 uv run tinychess --help
 uv run tinychess --version
+uv run tinychess play
+uv run tinychess play --white human --black random
+uv run tinychess play --white random --black random --seed 7 --max-plies 40
 ```
+
+The `play` command renders the board in the terminal, shows side to move, castling
+en-passant and move-counter status, and accepts human moves in UCI long algebraic
+notation such as `e2e4` or `e7e8q`. Invalid or illegal moves are rejected with a
+message and another prompt.
 
 ## Engine Example
 
