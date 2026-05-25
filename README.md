@@ -13,8 +13,9 @@ Implemented:
 - WP05: FEN parsing, serialization, round-trip tests, and fixture positions.
 - WP06: Bounded PGN/SAN parsing and writing.
 - WP07: Terminal board rendering and CLI play loop for human/random games.
+- WP08: Bounded UCI protocol loop with random legal `bestmove` output.
 
-Next planned work package: WP08, basic UCI protocol.
+Next planned work package: WP09, player interface and random player.
 
 ## Requirements
 
@@ -47,12 +48,23 @@ uv run tinychess --version
 uv run tinychess play
 uv run tinychess play --white human --black random
 uv run tinychess play --white random --black random --seed 7 --max-plies 40
+uv run tinychess uci
+uv run tinychess uci --seed 7
 ```
 
 The `play` command renders the board in the terminal, shows side to move, castling
 en-passant and move-counter status, and accepts human moves in UCI long algebraic
 notation such as `e2e4` or `e7e8q`. Invalid or illegal moves are rejected with a
 message and another prompt.
+
+The `uci` command runs a bounded Universal Chess Interface loop. It supports
+`uci`, `isready`, `ucinewgame`, `position startpos [moves ...]`,
+`position fen ... [moves ...]`, `go`, `stop`, and `quit`. The current move source
+is a local random legal selector; use `--seed` for deterministic selections.
+Terminal or no-legal-move positions return `bestmove 0000`.
+
+Deferred UCI features: pondering, rich `setoption`, MultiPV, advanced time
+management, detailed `info` streaming, tablebases, and opening books.
 
 ## Engine Example
 

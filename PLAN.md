@@ -656,17 +656,19 @@ Deliverables:
 
 Depends on: WP04.
 
-### WP08: Basic UCI Protocol
+### WP08: Basic UCI Protocol — Done
+
+Status: Done.
 
 Deliverables:
 
-- UCI command loop.
-- Support for `uci`, `isready`, `ucinewgame`, `position`, `go`, `stop`, and `quit` basics.
-- Legal `bestmove` output.
-- Random or simple MCTS move output initially.
-- Deferred feature list documented.
+- [x] UCI command loop.
+- [x] Support for `uci`, `isready`, `ucinewgame`, `position`, `go`, `stop`, and `quit` basics.
+- [x] Legal `bestmove` output.
+- [x] Random move output initially.
+- [x] Deferred feature list documented.
 
-Depends on: WP05, WP10.
+Depends on: WP05. Uses a temporary random legal move source until WP09/WP10 provide player/search abstractions.
 
 ### WP09: Player Interface and Random Player
 
@@ -908,6 +910,6 @@ Completed:
 
 Next:
 
-1. Start WP08: basic UCI protocol.
-2. Implement bounded `uci`, `isready`, `ucinewgame`, `position`, `go`, `stop`, and `quit` command handling.
-3. Produce legal `bestmove` output using a random or simple MCTS move source initially.
+1. Start WP09: player interface and random player.
+2. Keep WP10 classical MCTS deferred until the player interface exists.
+3. Use the WP08 random UCI move source as a temporary baseline until MCTS is available.

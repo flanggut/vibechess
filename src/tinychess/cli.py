@@ -7,6 +7,7 @@ import sys
 from typing import TextIO
 
 from tinychess import __version__
+from tinychess.protocols.uci import UciConfig, run_uci_loop
 from tinychess.ui.terminal import HumanQuit, PlayConfig, play_terminal
 
 
@@ -38,6 +39,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="hide board rank/file coordinates",
     )
+
+    uci = subparsers.add_parser(
+        "uci",
+        help="run the bounded UCI protocol loop",
+        description="Run a basic Universal Chess Interface loop with random legal best moves.",
+    )
+    uci.add_argument("--seed", type=int, default=None, help="seed for deterministic best moves")
     return parser
 
 
@@ -73,6 +81,10 @@ def main(
         except ValueError as exc:
             print(f"tinychess play: {exc}", file=error_stream)
             return 2
+        return 0
+
+    if args.command == "uci":
+        run_uci_loop(UciConfig(seed=args.seed), stdin=stdin, stdout=output_stream)
         return 0
 
     parser.print_help(file=output_stream)

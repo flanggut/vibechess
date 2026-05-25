@@ -2,7 +2,7 @@
 
 ## Current State
 
-The project is a Python-first chess engine and AI workspace targeting Apple Silicon macOS. Swift, MLX training, PGN, FEN, UCI, and AI components are planned for later work packages.
+The project is a Python-first chess engine and AI workspace targeting Apple Silicon macOS. FEN, bounded PGN, bounded UCI, and terminal play are implemented. Swift, MLX training, and stronger AI components are planned for later work packages.
 
 Implemented work packages:
 
@@ -10,6 +10,10 @@ Implemented work packages:
 - WP02: Core board, square, piece, color, and move primitives.
 - WP03: Legal move generation, special move handling, and perft benchmark.
 - WP04: Game state/history, outcomes, complete-game simulation, and random-game benchmark.
+- WP05: FEN parsing/serialization.
+- WP06: Bounded PGN parsing/writing.
+- WP07: Terminal UI and CLI play loop.
+- WP08: Bounded UCI protocol with random legal best moves.
 
 ## Package Layout
 
@@ -17,15 +21,24 @@ Implemented work packages:
 src/tinychess/
 ├── __init__.py
 ├── cli.py
-└── engine/
+├── engine/
+│   ├── __init__.py
+│   ├── board.py
+│   ├── fen.py
+│   ├── game.py
+│   ├── legal_moves.py
+│   ├── move.py
+│   ├── outcome.py
+│   ├── pgn.py
+│   ├── piece.py
+│   └── square.py
+├── protocols/
+│   ├── __init__.py
+│   └── uci.py
+└── ui/
     ├── __init__.py
-    ├── board.py
-    ├── game.py
-    ├── legal_moves.py
-    ├── move.py
-    ├── outcome.py
-    ├── piece.py
-    └── square.py
+    ├── render.py
+    └── terminal.py
 ```
 
 ## Engine Boundaries
@@ -44,10 +57,17 @@ The engine currently owns:
 - Checkmate, stalemate, and pragmatic draw outcomes.
 - Complete-game simulation with caller-provided move selectors.
 
+Protocol support currently includes a bounded synchronous UCI loop in
+`tinychess.protocols.uci`. It accepts standard handshake/readiness commands,
+`ucinewgame`, `position startpos [moves ...]`, `position fen ... [moves ...]`,
+`go`, `stop`, and `quit`. `go` returns a random legal `bestmove` or `bestmove
+0000` for terminal/no-legal positions.
+
 The engine does **not** yet own:
-- FEN parsing/serialization beyond placement-style helpers.
-- PGN or UCI protocol support.
 - AI/player abstractions.
+- MCTS or neural move selection.
+- Full UCI features such as pondering, rich options, MultiPV, advanced time
+  management, detailed info streaming, tablebases, or opening books.
 - Strict FIDE claim-vs-automatic draw semantics.
 
 Those are covered by later work packages in `PLAN.md`.
