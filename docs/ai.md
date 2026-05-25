@@ -1,6 +1,6 @@
 # AI Plan
 
-WP09 added the shared player interface and random-player baseline. WP10 added the classical MCTS baseline. WP11 added neural input encoding and fixed policy action mapping. WP12 added the first MLX policy/value network, inference wrapper, and checkpoint format. This document records the implemented foundations plus the planned direction from `PLAN.md` for later work packages.
+WP09 added the shared player interface and random-player baseline. WP10 added the classical MCTS baseline. WP11 added neural input encoding and fixed policy action mapping. WP12 added the first MLX policy/value network, inference wrapper, and checkpoint format. WP13 added a functional neural PUCT MCTS player. This document records the implemented foundations plus the planned direction from `PLAN.md` for later work packages.
 
 ## Planned Scope
 
@@ -9,7 +9,7 @@ The project will implement:
 - A common player interface. (Implemented in `tinychess.ai.player.Player`.)
 - A random player baseline. (Implemented in `tinychess.ai.player.RandomPlayer`.)
 - A classical MCTS baseline. (Implemented in `tinychess.ai.mcts.MCTSPlayer`.)
-- An AlphaZero-style neural MCTS player using a policy/value network and PUCT search.
+- An AlphaZero-style neural MCTS player using a policy/value network and PUCT search. (Implemented in `tinychess.ai.neural_mcts.NeuralMCTSPlayer`.)
 - MLX-based training and inference for Apple Silicon macOS.
 
 ## Planned Neural Design
@@ -21,6 +21,7 @@ The planned neural player uses:
 - Legal move masks before policy normalization and search expansion. (Implemented for `Game.legal_moves`.)
 - A policy head for move priors. (Implemented in `tinychess.nn.model.PolicyValueNet`.)
 - A value head for side-to-move outcome prediction. (Implemented in `tinychess.nn.model.PolicyValueNet`.)
+- PUCT search using neural policy priors, legal-move expansion only, side-to-move value backup, and visit-count temperature move selection. (Implemented in `tinychess.ai.neural_mcts`.)
 - Self-play datasets with versioned metadata.
 - MLX-native checkpoints with sidecar metadata. (Implemented in `tinychess.nn.checkpoint`.)
 
@@ -36,13 +37,14 @@ Implemented:
 - `tinychess.nn.encode`: deterministic MLX-native `[20][8][8]` position tensor encoding, AlphaZero-style 4672-action move mapping, and MLX length-4672 legal move masks.
 - `PolicyValueNet`: a small configurable residual CNN that returns 4672 policy logits and a side-to-move value in `[-1, 1]`.
 - `PolicyValueInference`: single-position inference that can normalize over all actions or mask probabilities to legal moves only.
+- `NeuralMCTSConfig`: simulation, time, node, PUCT exploration, temperature, and seed settings for neural search.
+- `NeuralMCTSPlayer`: AlphaZero-style PUCT search that requests masked neural policy probabilities, expands only legal moves, backs up values from each node's side-to-move perspective, and selects from visit counts with configurable temperature.
 - `tinychess.nn.checkpoint`: MLX `weights.safetensors` save/load helpers with `metadata.json` sidecars containing schema, model config, encoder/action-space versions, training step, optimizer-state availability, and notes.
 
-The terminal `play` command accepts `mcts` as a player kind. `scripts/mcts_benchmark.py` reports MCTS simulations/sec from the starting position, and `scripts/mlx_inference_benchmark.py` reports policy/value inference latency. WP12 does not add a neural player, neural PUCT search, training, or self-play.
+The terminal `play` command accepts `mcts` as a player kind. `scripts/mcts_benchmark.py` reports MCTS simulations/sec from the starting position, and `scripts/mlx_inference_benchmark.py` reports policy/value inference latency. WP13 adds the neural search/player API but does not add CLI checkpoint loading, self-play dataset generation, or training.
 
 Planned work packages:
 
-- WP13: Neural PUCT MCTS.
 - WP14-WP16: self-play, training, and evaluation.
 
 The initial goal is a functional learning/search pipeline, not competitive chess strength.

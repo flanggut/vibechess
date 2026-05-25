@@ -725,16 +725,18 @@ Deliverables:
 
 Depends on: WP11.
 
-### WP13: Neural PUCT MCTS
+### WP13: Neural PUCT MCTS — Done
+
+Status: Done.
 
 Deliverables:
 
-- PUCT search implementation.
-- Neural policy priors.
-- Value backup.
-- Illegal move masking.
-- Temperature-based move selection.
-- Functional smoke test against random/classical baselines.
+- [x] PUCT search implementation.
+- [x] Neural policy priors.
+- [x] Value backup.
+- [x] Illegal move masking.
+- [x] Temperature-based move selection.
+- [x] Functional smoke test against random/classical baselines.
 
 Depends on: WP10, WP12.
 
@@ -847,17 +849,19 @@ Success criteria:
 - [x] Basic UCI command loop can produce legal moves.
 - [x] MCTS simulations/sec is measurable.
 
-### Milestone 3: Neural MCTS Prototype
+### Milestone 3: Neural MCTS Prototype — Done
+
+Status: Done.
 
 Includes WP11-WP13.
 
 Success criteria:
 
-- MLX model runs inference on Apple Silicon.
-- 4672-action policy mapping works and is tested.
-- Neural MCTS selects legal moves.
-- Illegal move masking is tested.
-- Functional neural-MCTS smoke games complete.
+- [x] MLX model runs inference on Apple Silicon.
+- [x] 4672-action policy mapping works and is tested.
+- [x] Neural MCTS selects legal moves.
+- [x] Illegal move masking is tested.
+- [x] Functional neural-MCTS smoke games complete.
 
 ### Milestone 4: Self-Play and Training Loop
 
@@ -922,6 +926,6 @@ Completed:
 
 Next:
 
-1. Start WP13: Neural PUCT MCTS.
-2. Keep training/self-play work deferred until neural search foundations exist.
+1. Start WP14: Self-Play Data Generation.
+2. Keep training work deferred until self-play dataset generation exists.
 3. Continue using `RandomPlayer` as the default UCI baseline; terminal play can opt into classical `mcts`.
