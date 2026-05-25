@@ -816,28 +816,32 @@ Depends on: WP19, WP17.
 
 ## Milestones
 
-### Milestone 1: Correct Python Chess Engine
+### Milestone 1: Correct Python Chess Engine — Done
+
+Status: Done.
 
 Includes WP01-WP06.
 
 Success criteria:
 
-- Full legal games can be simulated.
-- FEN round-trips work.
-- Bounded PGN basics work.
-- Perft tests pass for selected known positions.
-- Lightweight perft and random-game benchmarks exist.
+- [x] Full legal games can be simulated.
+- [x] FEN round-trips work.
+- [x] Bounded PGN basics work.
+- [x] Perft tests pass for selected known positions.
+- [x] Lightweight perft and random-game benchmarks exist.
 
-### Milestone 2: Playable Terminal Version
+### Milestone 2: Playable Terminal Version — Done
+
+Status: Done.
 
 Includes WP07-WP10.
 
 Success criteria:
 
-- Terminal board display works.
-- Human/random/MCTS players can complete games.
-- Basic UCI command loop can produce legal moves.
-- MCTS simulations/sec is measurable.
+- [x] Terminal board display works.
+- [x] Human/random/MCTS players can complete games.
+- [x] Basic UCI command loop can produce legal moves.
+- [x] MCTS simulations/sec is measurable.
 
 ### Milestone 3: Neural MCTS Prototype
 
