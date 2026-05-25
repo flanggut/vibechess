@@ -682,15 +682,17 @@ Deliverables:
 
 Depends on: WP04.
 
-### WP10: Classical MCTS Baseline
+### WP10: Classical MCTS Baseline — Done
+
+Status: Done.
 
 Deliverables:
 
-- MCTS tree structure.
-- Random rollout or simple evaluation baseline.
-- Configurable simulation count/time/node budget.
-- Tests for legal move selection and terminal handling.
-- MCTS simulations/sec benchmark.
+- [x] MCTS tree structure.
+- [x] Random rollout plus simple material evaluation at rollout cap.
+- [x] Configurable simulation count, time budget, node budget, exploration, rollout cap, and seed.
+- [x] Tests for legal move selection, terminal handling, budgets, deterministic seeded behavior, and MCTS-vs-random smoke play.
+- [x] MCTS simulations/sec benchmark.
 
 Depends on: WP09.
 
@@ -912,6 +914,6 @@ Completed:
 
 Next:
 
-1. Start WP10: classical MCTS baseline.
-2. Keep neural/ML work deferred until MCTS and action-space foundations exist.
-3. Continue using `RandomPlayer` as the CLI/UCI baseline until stronger search players are available.
+1. Start WP11: MLX position encoder and policy mapping.
+2. Keep neural model/training work deferred until action-space foundations exist.
+3. Continue using `RandomPlayer` as the default UCI baseline; terminal play can opt into classical `mcts`.

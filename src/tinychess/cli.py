@@ -29,10 +29,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="play a terminal chess game",
         description="Play a terminal chess game using UCI moves such as e2e4 or e7e8q.",
     )
-    play.add_argument("--white", choices=("human", "random"), default="human")
-    play.add_argument("--black", choices=("human", "random"), default="human")
+    play.add_argument("--white", choices=("human", "random", "mcts"), default="human")
+    play.add_argument("--black", choices=("human", "random", "mcts"), default="human")
     play.add_argument("--max-plies", type=int, default=512)
-    play.add_argument("--seed", type=int, default=None, help="seed for random players")
+    play.add_argument("--seed", type=int, default=None, help="seed for random/MCTS players")
+    play.add_argument("--mcts-simulations", type=int, default=25, help="MCTS simulations per move")
     play.add_argument("--unicode", action="store_true", help="render Unicode chess pieces")
     play.add_argument(
         "--no-coordinates",
@@ -68,6 +69,7 @@ def main(
             black=args.black,
             max_plies=args.max_plies,
             seed=args.seed,
+            mcts_simulations=args.mcts_simulations,
             unicode=args.unicode,
             coordinates=not args.no_coordinates,
         )

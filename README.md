@@ -15,8 +15,9 @@ Implemented:
 - WP07: Terminal board rendering and CLI play loop for human/random games.
 - WP08: Bounded UCI protocol loop with random legal `bestmove` output.
 - WP09: Shared `Player` protocol, deterministic `RandomPlayer`, and random-vs-random simulation helper.
+- WP10: Classical MCTS baseline, configurable search budgets, MCTS-vs-random smoke path, and simulations/sec benchmark.
 
-Next planned work package: WP10, classical MCTS baseline.
+Next planned work package: WP11, MLX position encoder and policy mapping.
 
 ## Requirements
 
@@ -39,6 +40,7 @@ uv run mypy
 uv run tinychess --help
 uv run python scripts/perft.py 3
 uv run python scripts/random_game.py --seed 7 --max-plies 40
+uv run python scripts/mcts_benchmark.py --simulations 25 --seed 7
 ```
 
 ## Current CLI
@@ -49,6 +51,7 @@ uv run tinychess --version
 uv run tinychess play
 uv run tinychess play --white human --black random
 uv run tinychess play --white random --black random --seed 7 --max-plies 40
+uv run tinychess play --white mcts --black random --seed 7 --mcts-simulations 25 --max-plies 40
 uv run tinychess uci
 uv run tinychess uci --seed 7
 ```
@@ -56,7 +59,8 @@ uv run tinychess uci --seed 7
 The `play` command renders the board in the terminal, shows side to move, castling
 en-passant and move-counter status, and accepts human moves in UCI long algebraic
 notation such as `e2e4` or `e7e8q`. Invalid or illegal moves are rejected with a
-message and another prompt.
+message and another prompt. Player kinds are `human`, `random`, and the classical
+`mcts` baseline.
 
 The `uci` command runs a bounded Universal Chess Interface loop. It supports
 `uci`, `isready`, `ucinewgame`, `position startpos [moves ...]`,
@@ -70,7 +74,7 @@ management, detailed `info` streaming, tablebases, and opening books.
 ## Engine Example
 
 ```python
-from tinychess.ai import RandomPlayer, play_game
+from tinychess.ai import MCTSConfig, MCTSPlayer, RandomPlayer, play_game
 from tinychess.engine import Board, Game, legal_moves, parse_fen, parse_pgn, perft, random_move_selector, simulate_game
 
 board = Board.starting_position()
@@ -86,6 +90,9 @@ print(len(game.moves), game.outcome.reason.value)
 # Or use the shared player API used by AI integrations.
 game = play_game(RandomPlayer(seed=1), RandomPlayer(seed=2), max_plies=40)
 print(len(game.moves), game.outcome.reason.value)
+
+move = MCTSPlayer(MCTSConfig(simulations=25, seed=1)).select_move(Game.new())
+print(move.to_uci())
 ```
 
 ## Documentation

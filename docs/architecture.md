@@ -14,6 +14,8 @@ Implemented work packages:
 - WP06: Bounded PGN parsing/writing.
 - WP07: Terminal UI and CLI play loop.
 - WP08: Bounded UCI protocol with random legal best moves.
+- WP09: Shared player protocol and random player.
+- WP10: Classical MCTS baseline and simulations/sec benchmark.
 
 ## Package Layout
 
@@ -32,6 +34,11 @@ src/tinychess/
 │   ├── pgn.py
 │   ├── piece.py
 │   └── square.py
+├── ai/
+│   ├── __init__.py
+│   ├── mcts.py
+│   ├── player.py
+│   └── search_config.py
 ├── protocols/
 │   ├── __init__.py
 │   └── uci.py
@@ -63,9 +70,9 @@ Protocol support currently includes a bounded synchronous UCI loop in
 `go`, `stop`, and `quit`. `go` returns a random legal `bestmove` or `bestmove
 0000` for terminal/no-legal positions.
 
+The AI layer owns the `Player` protocol, `RandomPlayer`, `MCTSPlayer`, and search configuration. These players interact with positions through public `Game.legal_moves` and `Game.play()` APIs rather than mutating engine internals.
+
 The engine does **not** yet own:
-- AI/player abstractions.
-- MCTS or neural move selection.
 - Full UCI features such as pondering, rich options, MultiPV, advanced time
   management, detailed info streaming, tablebases, or opening books.
 - Strict FIDE claim-vs-automatic draw semantics.
@@ -89,4 +96,5 @@ A lightweight perft benchmark is available:
 ```bash
 uv run python scripts/perft.py 3
 uv run python scripts/random_game.py --seed 7 --max-plies 40
+uv run python scripts/mcts_benchmark.py --simulations 25 --seed 7
 ```

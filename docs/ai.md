@@ -1,6 +1,6 @@
 # AI Plan
 
-WP09 has added the shared player interface and random-player baseline. This document records the implemented baseline plus the planned direction from `PLAN.md` for later work packages.
+WP09 added the shared player interface and random-player baseline. WP10 added the classical MCTS baseline. This document records the implemented baselines plus the planned direction from `PLAN.md` for later work packages.
 
 ## Planned Scope
 
@@ -8,7 +8,7 @@ The project will implement:
 
 - A common player interface. (Implemented in `tinychess.ai.player.Player`.)
 - A random player baseline. (Implemented in `tinychess.ai.player.RandomPlayer`.)
-- A classical MCTS baseline.
+- A classical MCTS baseline. (Implemented in `tinychess.ai.mcts.MCTSPlayer`.)
 - An AlphaZero-style neural MCTS player using a policy/value network and PUCT search.
 - MLX-based training and inference for Apple Silicon macOS.
 
@@ -31,10 +31,13 @@ Implemented:
 - `Player`: a typed protocol with `select_move(game: Game) -> Move` for human, random, MCTS, and neural-MCTS players.
 - `RandomPlayer`: selects only from `Game.legal_moves`, uses a local deterministic RNG when seeded or provided, and raises `NoLegalMoveError` for terminal/no-legal positions.
 - `play_game`: a simple player-vs-player simulation helper for AI-vs-AI smoke tests.
+- `MCTSConfig`: simulation count, optional wall-clock limit, optional node budget, rollout cap, exploration constant, and seed.
+- `MCTSPlayer`: a correctness-first classical MCTS implementation with adversarial UCB1 selection, legal-move expansion, random rollouts, and value backup from the root side's perspective. It uses only public `Game` legal-move and transition APIs.
+
+The terminal `play` command accepts `mcts` as a player kind, and `scripts/mcts_benchmark.py` reports MCTS simulations/sec from the starting position.
 
 Planned work packages:
 
-- WP10: Classical MCTS baseline.
 - WP11: MLX position encoder and policy mapping.
 - WP12: MLX policy/value network.
 - WP13: Neural PUCT MCTS.

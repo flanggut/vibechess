@@ -6,7 +6,9 @@ import sys
 from dataclasses import dataclass
 from typing import TextIO
 
+from tinychess.ai.mcts import MCTSPlayer
 from tinychess.ai.player import RandomPlayer
+from tinychess.ai.search_config import MCTSConfig
 from tinychess.engine.game import Game
 from tinychess.engine.move import Move
 from tinychess.ui.render import render_game
@@ -26,6 +28,7 @@ class PlayConfig:
     black: PlayerKind = "human"
     max_plies: int = 512
     seed: int | None = None
+    mcts_simulations: int = 25
     unicode: bool = False
     coordinates: bool = True
 
@@ -63,6 +66,7 @@ def play_terminal(
     input_stream = sys.stdin if stdin is None else stdin
     output_stream = sys.stdout if stdout is None else stdout
     random_player = RandomPlayer(seed=config.seed)
+    mcts_player = MCTSPlayer(MCTSConfig(simulations=config.mcts_simulations, seed=config.seed))
     players = {"white": config.white, "black": config.black}
     game = Game.new()
     last_move: Move | None = None
@@ -86,6 +90,9 @@ def play_terminal(
         if player == "random":
             move = random_player.select_move(game)
             print(f"{side} random plays {move.to_uci()}", file=output_stream)
+        elif player == "mcts":
+            move = mcts_player.select_move(game)
+            print(f"{side} mcts plays {move.to_uci()}", file=output_stream)
         elif player == "human":
             move = _read_human_move(
                 game=game,
