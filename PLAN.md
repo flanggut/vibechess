@@ -780,17 +780,19 @@ Deliverables:
 
 Depends on: WP15.
 
-### WP17: Full Benchmark Suite
+### WP17: Full Benchmark Suite — Done
+
+Status: Done.
 
 Deliverables:
 
-- Move generation benchmark.
-- Complete game simulation benchmark.
-- MCTS simulations/sec benchmark.
-- MLX inference benchmark.
-- Optional batched inference benchmark.
-- Benchmark report script.
-- Recommendation for whether Swift acceleration is justified and where.
+- [x] Move generation benchmark.
+- [x] Complete game simulation benchmark.
+- [x] MCTS simulations/sec benchmark.
+- [x] MLX inference benchmark.
+- [x] Optional batched inference benchmark.
+- [x] Benchmark report script.
+- [x] Recommendation for whether Swift acceleration is justified and where.
 
 Depends on: WP03, WP04, WP10, WP12.
 
@@ -934,6 +936,6 @@ Completed:
 
 Next:
 
-1. Start WP17: Full Benchmark Suite.
-2. Keep benchmark work scoped to measured Python components before considering Swift.
+1. Review WP17 benchmark results and decide whether Swift work is justified before starting WP18.
+2. If justified, start WP18: Swift Package Bootstrap.
 3. Continue using `RandomPlayer` as the default UCI baseline; terminal play can opt into classical `mcts`.

@@ -168,6 +168,16 @@ Run a deterministic random complete-game benchmark:
 uv run python scripts/random_game.py --seed 7 --max-plies 40
 ```
 
+Run the combined benchmark report, including depth-1 legal move generation and
+complete-game simulation metrics. Recursive perft remains covered by
+`scripts/perft.py`; the combined report's Swift recommendation is a suite-time
+heuristic rather than a full application profile:
+
+```bash
+uv run python scripts/benchmark.py --smoke
+uv run python scripts/benchmark.py --output benchmark-report.md
+```
+
 Current known start-position counts covered by tests:
 
 | Depth | Nodes |

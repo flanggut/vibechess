@@ -48,6 +48,7 @@ uv run python scripts/perft.py 3
 uv run python scripts/random_game.py --seed 7 --max-plies 40
 uv run python scripts/mcts_benchmark.py --simulations 25 --seed 7
 uv run python scripts/mlx_inference_benchmark.py --iterations 25 --warmup 5
+uv run python scripts/benchmark.py --smoke
 uv run python scripts/self_play.py --games 1 --max-plies 8 --simulations 1 --output data/selfplay/smoke
 uv run python scripts/train.py --dataset data/selfplay/smoke --output data/checkpoints/train-smoke --epochs 1 --batch-size 2
 uv run python scripts/evaluate.py --checkpoint data/checkpoints/train-smoke/checkpoint-final --games 2 --max-plies 40 --neural-simulations 1 --mcts-simulations 1
@@ -80,6 +81,26 @@ Terminal or no-legal-move positions return `bestmove 0000`.
 
 Deferred UCI features: pondering, rich `setoption`, MultiPV, advanced time
 management, detailed `info` streaming, tablebases, and opening books.
+
+## Benchmarks
+
+Individual lightweight benchmark scripts are available for recursive perft,
+random games, classical MCTS, and MLX inference. The combined report script runs
+legal move generation depth-1 throughput, complete-game simulation, classical
+MCTS, single-position MLX inference, and optional batched MLX inference as one
+suite. Recursive perft remains covered by `scripts/perft.py`. The report also
+adds a conservative suite-time Swift-acceleration heuristic:
+
+```bash
+uv run python scripts/benchmark.py --smoke
+uv run python scripts/benchmark.py --output benchmark-report.md
+uv run python scripts/benchmark.py --format json --output benchmark-report.json
+```
+
+Use `--smoke` for fast plumbing validation. Use the default suite for local
+performance snapshots; repeat full runs before using the recommendation to plan
+Swift acceleration work. The recommendation compares elapsed time within the
+chosen benchmark suite; it is not a full application profile.
 
 ## Engine Example
 

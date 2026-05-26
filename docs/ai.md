@@ -46,7 +46,7 @@ Implemented:
 - `tinychess.nn.train`: masked policy cross-entropy, value MSE, a tiny MLX optimizer loop, `metrics.jsonl`, `training.json`, and `checkpoint-final` output.
 - `tinychess.ai.evaluation`: player-vs-player match runner, checkpoint player loading, random/classical MCTS baseline comparisons, JSON reports, and explicit early promotion criteria.
 
-The terminal `play` command accepts `mcts` as a player kind. `scripts/mcts_benchmark.py` reports MCTS simulations/sec from the starting position, `scripts/mlx_inference_benchmark.py` reports policy/value inference latency, `scripts/self_play.py` creates small datasets, `scripts/train.py` trains smoke-friendly checkpoints, and `scripts/evaluate.py` evaluates checkpoints against random and MCTS baselines.
+The terminal `play` command accepts `mcts` as a player kind. `scripts/mcts_benchmark.py` reports MCTS simulations/sec from the starting position, `scripts/mlx_inference_benchmark.py` reports policy/value inference latency, `scripts/benchmark.py` combines engine/search/MLX benchmark results with an optional batched-inference measurement and conservative suite-time Swift-acceleration heuristic, `scripts/self_play.py` creates small datasets, `scripts/train.py` trains smoke-friendly checkpoints, and `scripts/evaluate.py` evaluates checkpoints against random and MCTS baselines.
 
 WP16 promotion criteria are intentionally early smoke/progress validation only. Passing them shows that the learning pipeline can load checkpoints, play legal games, record outcomes, and compare against simple baselines; it does not claim competitive chess strength.
 
