@@ -2,7 +2,7 @@
 
 ## Current State
 
-The project is a Python-first chess engine and AI workspace targeting Apple Silicon macOS. FEN, bounded PGN, bounded UCI, terminal play, classical MCTS, neural MCTS, self-play data generation, the first MLX training loop, and smoke-oriented checkpoint evaluation are implemented. Swift acceleration is planned for later work packages after benchmark evidence.
+The project is a Python-first chess engine and AI workspace targeting Apple Silicon macOS. FEN, bounded PGN, bounded UCI, terminal play, classical MCTS, neural MCTS, self-play data generation, the first MLX training loop, smoke-oriented checkpoint evaluation, benchmark reporting, and the initial Swift Package Manager bootstrap are implemented. Swift acceleration logic is planned for later work packages after benchmark evidence and fixture parity work.
 
 Implemented work packages:
 
@@ -22,6 +22,8 @@ Implemented work packages:
 - WP14: Self-play dataset generation.
 - WP15: MLX policy/value training loop, metrics logging, and checkpoint output.
 - WP16: Evaluation harness for checkpoint/player matches against random and classical MCTS baselines with early progress-validation promotion criteria.
+- WP17: Full benchmark suite with Swift acceleration recommendation heuristic.
+- WP18: Swift package bootstrap with `TinyChessCore` and Swift tests.
 
 ## Package Layout
 
@@ -61,6 +63,20 @@ src/tinychess/
     ├── __init__.py
     ├── render.py
     └── terminal.py
+```
+
+The Swift bootstrap currently lives separately under `swift/`:
+
+```text
+swift/
+├── Package.swift
+├── README.md
+├── Sources/
+│   └── TinyChessCore/
+│       └── TinyChessCore.swift
+└── Tests/
+    └── TinyChessCoreTests/
+        └── TinyChessCoreTests.swift
 ```
 
 ## Engine Boundaries
@@ -117,4 +133,6 @@ uv run python scripts/benchmark.py --smoke
 uv run python scripts/self_play.py --games 1 --max-plies 8 --simulations 1 --output data/selfplay/smoke
 uv run python scripts/train.py --dataset data/selfplay/smoke --output data/checkpoints/train-smoke --epochs 1 --batch-size 2
 uv run python scripts/evaluate.py --checkpoint data/checkpoints/train-smoke/checkpoint-final --games 1 --max-plies 8 --neural-simulations 1
+(cd swift && swift test)
+(cd swift && swift build -c release)
 ```

@@ -796,14 +796,16 @@ Deliverables:
 
 Depends on: WP03, WP04, WP10, WP12.
 
-### WP18: Swift Package Bootstrap
+### WP18: Swift Package Bootstrap — Done
+
+Status: Done.
 
 Deliverables:
 
-- `swift/Package.swift`.
-- `TinyChessCore` module skeleton.
-- Swift test target.
-- README/docs for Swift build commands.
+- [x] `swift/Package.swift`.
+- [x] `TinyChessCore` module skeleton.
+- [x] Swift test target.
+- [x] README/docs for Swift build commands.
 
 Depends on: WP17 and decision that Swift work is justified.
 
@@ -936,6 +938,6 @@ Completed:
 
 Next:
 
-1. Review WP17 benchmark results and decide whether Swift work is justified before starting WP18.
-2. If justified, start WP18: Swift Package Bootstrap.
+1. Review WP18 Swift package bootstrap and run `cd swift && swift test`.
+2. Start WP19: Swift Engine Acceleration Prototype when fixture parity scope is ready.
 3. Continue using `RandomPlayer` as the default UCI baseline; terminal play can opt into classical `mcts`.

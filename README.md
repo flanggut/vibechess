@@ -22,14 +22,17 @@ Implemented:
 - WP14: Self-play game generation with versioned compressed NPZ tensors plus JSON/JSONL metadata.
 - WP15: MLX training loop with policy/value losses, metrics logging, and checkpoint output.
 - WP16: Evaluation harness for player/checkpoint matches, random/classical MCTS baselines, and early smoke promotion criteria.
+- WP17: Full benchmark suite with Swift acceleration recommendation heuristic.
+- WP18: Swift Package Manager bootstrap with `TinyChessCore` and Swift tests.
 
-Next planned work package: WP17, Full Benchmark Suite.
+Next planned work package: WP19, Swift Engine Acceleration Prototype.
 
 ## Requirements
 
 - Apple Silicon macOS
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/) for dependency management
+- Swift 5.9+ toolchain for the optional Swift backend (`swift/` targets macOS 14+)
 
 ## Development setup
 
@@ -52,6 +55,8 @@ uv run python scripts/benchmark.py --smoke
 uv run python scripts/self_play.py --games 1 --max-plies 8 --simulations 1 --output data/selfplay/smoke
 uv run python scripts/train.py --dataset data/selfplay/smoke --output data/checkpoints/train-smoke --epochs 1 --batch-size 2
 uv run python scripts/evaluate.py --checkpoint data/checkpoints/train-smoke/checkpoint-final --games 2 --max-plies 40 --neural-simulations 1 --mcts-simulations 1
+(cd swift && swift test)
+(cd swift && swift build -c release)
 ```
 
 ## Current CLI
@@ -159,6 +164,21 @@ match = run_match(
 )
 print(match.player_a_score_rate)
 ```
+
+## Swift Backend
+
+The Swift workspace is bootstrapped under `swift/` for future benchmark-driven
+acceleration work:
+
+```bash
+cd swift
+swift test
+swift build -c release
+```
+
+WP18 only provides the Swift Package Manager layout, `TinyChessCore` skeleton,
+and smoke tests. Chess-rule implementation and Python runtime integration remain
+future work.
 
 ## Documentation
 

@@ -1,10 +1,10 @@
 # Swift Backend Plan
 
-Swift acceleration is planned but not implemented.
+Swift acceleration is planned but only the Swift Package Manager bootstrap is implemented.
 
 ## Timing
 
-Swift work should not begin until:
+Swift implementation work beyond the package skeleton should not begin until:
 
 - The Python reference engine is correct enough to produce trusted fixtures.
 - External perft references have validated the Python engine.
@@ -31,8 +31,22 @@ Swift implementations must be validated against:
 
 ## Current Status
 
-Not implemented. Planned work packages:
+WP18 is implemented as a minimal Swift Package Manager workspace under `swift/`:
 
-- WP18: Swift package bootstrap.
+- `Package.swift` defines the `TinyChessCore` library and `TinyChessCoreTests` test target.
+- `Sources/TinyChessCore/` exposes bootstrap metadata only; chess logic remains in Python.
+- `Tests/TinyChessCoreTests/` verifies the skeleton package compiles and exports expected metadata.
+- `swift/README.md` documents the Swift build and test commands.
+
+Run Swift checks from the package directory:
+
+```bash
+cd swift
+swift test
+swift build -c release
+```
+
+Remaining planned work packages:
+
 - WP19: Swift engine acceleration prototype.
 - WP20: Swift MCTS, batched inference, or Core ML evaluation spike.
