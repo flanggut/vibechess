@@ -25,6 +25,7 @@ classifiers = [
 ]
 dependencies = [
   "mlx>=0.22",
+  "numpy>=2.0",
 ]
 
 [project.scripts]

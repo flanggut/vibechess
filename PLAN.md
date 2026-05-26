@@ -740,14 +740,16 @@ Deliverables:
 
 Depends on: WP10, WP12.
 
-### WP14: Self-Play Data Generation
+### WP14: Self-Play Data Generation — Done
+
+Status: Done.
 
 Deliverables:
 
-- Self-play game runner.
-- Versioned dataset format for positions, masks, MCTS policies, outcomes, and metadata.
-- Script for generating small datasets.
-- Smoke tests for complete self-play games.
+- [x] Self-play game runner.
+- [x] Versioned dataset format for positions, masks, MCTS policies, outcomes, and metadata.
+- [x] Script for generating small datasets.
+- [x] Smoke tests for complete self-play games.
 
 Depends on: WP13.
 
@@ -926,6 +928,6 @@ Completed:
 
 Next:
 
-1. Start WP14: Self-Play Data Generation.
-2. Keep training work deferred until self-play dataset generation exists.
+1. Start WP15: Training Loop.
+2. Keep evaluation harness work deferred until the training loop exists.
 3. Continue using `RandomPlayer` as the default UCI baseline; terminal play can opt into classical `mcts`.

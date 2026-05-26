@@ -1,8 +1,8 @@
 # Data Directory
 
-This directory is reserved for generated datasets and checkpoints from later work packages.
+This directory is reserved for generated datasets and checkpoints.
 
-## Planned Layout
+## Layout
 
 ```text
 data/
@@ -10,18 +10,42 @@ data/
 └── checkpoints/
 ```
 
-## Current Status
+Generated self-play datasets are local artifacts and should generally not be
+committed unless they are intentionally tiny fixtures.
 
-No datasets or checkpoints are implemented yet.
+## Self-Play Dataset Schema
 
-## Future Policy
+WP14 writes one directory per generation run:
 
-Self-play data and checkpoints should use versioned schemas, including:
+```text
+run-dir/
+├── samples.npz
+├── metadata.json
+└── games.jsonl
+```
 
-- schema version
-- engine version or git commit when available
-- action-space version
-- model checkpoint id
-- generation/training settings
+`metadata.json` uses schema `tinychess-selfplay-v1` and includes the engine
+version, git commit when available, action-space version, encoder version, model
+checkpoint id, generation settings, sample count, and game count.
 
-Large generated artifacts should generally not be committed unless explicitly needed as small fixtures.
+`samples.npz` is a compressed NumPy-compatible tensor batch with:
+
+- `positions`: `[N, 20, 8, 8]` float32 encoded positions.
+- `legal_masks`: `[N, 4672]` float32 legal-action masks.
+- `mcts_policies`: `[N, 4672]` float32 MCTS visit-count policy targets.
+- `outcomes`: `[N]` float32 final outcomes from each sample side-to-move perspective.
+
+`games.jsonl` stores one JSON object per generated game with UCI moves, final
+FEN, outcome reason, winner, and ply count.
+
+Example:
+
+```bash
+uv run python scripts/self_play.py --games 1 --max-plies 8 --simulations 1 --output data/selfplay/smoke
+```
+
+## Checkpoint Policy
+
+Checkpoint sidecars include schema version, model config, action-space version,
+training step, optimizer state availability, and notes. Training/checkpoint
+production is deferred to WP15.

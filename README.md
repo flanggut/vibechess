@@ -18,8 +18,10 @@ Implemented:
 - WP10: Classical MCTS baseline, configurable search budgets, MCTS-vs-random smoke path, and simulations/sec benchmark.
 - WP11: Position tensor encoder, versioned 4672-action AlphaZero-style policy mapping, and legal move masks.
 - WP12: Configurable MLX policy/value network, inference wrapper, checkpoint sidecar metadata, and inference latency benchmark.
+- WP13: Neural PUCT MCTS with policy priors, value backup, illegal move masking, and temperature selection.
+- WP14: Self-play game generation with versioned compressed NPZ tensors plus JSON/JSONL metadata.
 
-Next planned work package: WP13, Neural PUCT MCTS.
+Next planned work package: WP15, Training Loop.
 
 ## Requirements
 
@@ -44,6 +46,7 @@ uv run python scripts/perft.py 3
 uv run python scripts/random_game.py --seed 7 --max-plies 40
 uv run python scripts/mcts_benchmark.py --simulations 25 --seed 7
 uv run python scripts/mlx_inference_benchmark.py --iterations 25 --warmup 5
+uv run python scripts/self_play.py --games 1 --max-plies 8 --simulations 1 --output data/selfplay/smoke
 ```
 
 ## Current CLI
@@ -80,6 +83,7 @@ management, detailed `info` streaming, tablebases, and opening books.
 from tinychess.ai import MCTSConfig, MCTSPlayer, RandomPlayer, play_game
 from tinychess.engine import Board, Game, legal_moves, parse_fen, parse_pgn, perft, random_move_selector, simulate_game
 from tinychess.nn import ACTION_SPACE_SIZE, PolicyValueInference, PolicyValueNet, encode_game, legal_move_mask
+from tinychess.nn.self_play import SelfPlayConfig, generate_self_play_dataset, save_self_play_dataset
 
 board = Board.starting_position()
 print(len(legal_moves(board)))  # 20
@@ -106,6 +110,11 @@ print(encoded.shape, mask.shape, ACTION_SPACE_SIZE)  # (20, 8, 8) (4672,) 4672
 # WP12 policy/value inference returns a masked policy and side-to-move value.
 result = PolicyValueInference(PolicyValueNet()).predict(Game.new())
 print(result.policy.shape, result.value)
+
+# Generate a tiny self-play dataset for smoke/testing purposes.
+inference = PolicyValueInference(PolicyValueNet())
+dataset = generate_self_play_dataset(inference, SelfPlayConfig(games=1, max_plies=2))
+save_self_play_dataset(dataset, "data/selfplay/smoke")
 ```
 
 ## Documentation
