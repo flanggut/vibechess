@@ -767,14 +767,16 @@ Deliverables:
 
 Depends on: WP14.
 
-### WP16: Evaluation Harness
+### WP16: Evaluation Harness — Done
+
+Status: Done.
 
 Deliverables:
 
-- Match runner between players/checkpoints.
-- Baseline comparisons against random and classical MCTS.
-- Promotion criteria for checkpoints.
-- Clear note that early promotion criteria validate progress, not competitive strength.
+- [x] Match runner between players/checkpoints.
+- [x] Baseline comparisons against random and classical MCTS.
+- [x] Promotion criteria for checkpoints.
+- [x] Clear note that early promotion criteria validate progress, not competitive strength.
 
 Depends on: WP15.
 
@@ -867,7 +869,9 @@ Success criteria:
 - [x] Illegal move masking is tested.
 - [x] Functional neural-MCTS smoke games complete.
 
-### Milestone 4: Self-Play and Training Loop
+### Milestone 4: Self-Play and Training Loop — Done
+
+Status: Done.
 
 Includes WP14-WP16.
 
@@ -875,8 +879,8 @@ Success criteria:
 
 - [x] Self-play produces versioned datasets.
 - [x] Training loop consumes datasets and writes checkpoints.
-- Evaluation harness compares checkpoints and baselines.
-- Project has evidence of a working learning pipeline, not necessarily a strong chess engine.
+- [x] Evaluation harness compares checkpoints and baselines.
+- [x] Project has evidence of a working learning pipeline, not necessarily a strong chess engine.
 
 ### Milestone 5: Performance Baseline and Swift Acceleration
 
@@ -930,6 +934,6 @@ Completed:
 
 Next:
 
-1. Start WP16: Evaluation Harness.
-2. Keep checkpoint promotion logic scoped to WP16 and later evaluation decisions.
+1. Start WP17: Full Benchmark Suite.
+2. Keep benchmark work scoped to measured Python components before considering Swift.
 3. Continue using `RandomPlayer` as the default UCI baseline; terminal play can opt into classical `mcts`.

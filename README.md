@@ -21,8 +21,9 @@ Implemented:
 - WP13: Neural PUCT MCTS with policy priors, value backup, illegal move masking, and temperature selection.
 - WP14: Self-play game generation with versioned compressed NPZ tensors plus JSON/JSONL metadata.
 - WP15: MLX training loop with policy/value losses, metrics logging, and checkpoint output.
+- WP16: Evaluation harness for player/checkpoint matches, random/classical MCTS baselines, and early smoke promotion criteria.
 
-Next planned work package: WP16, Evaluation Harness.
+Next planned work package: WP17, Full Benchmark Suite.
 
 ## Requirements
 
@@ -49,6 +50,7 @@ uv run python scripts/mcts_benchmark.py --simulations 25 --seed 7
 uv run python scripts/mlx_inference_benchmark.py --iterations 25 --warmup 5
 uv run python scripts/self_play.py --games 1 --max-plies 8 --simulations 1 --output data/selfplay/smoke
 uv run python scripts/train.py --dataset data/selfplay/smoke --output data/checkpoints/train-smoke --epochs 1 --batch-size 2
+uv run python scripts/evaluate.py --checkpoint data/checkpoints/train-smoke/checkpoint-final --games 2 --max-plies 40 --neural-simulations 1 --mcts-simulations 1
 ```
 
 ## Current CLI
@@ -82,7 +84,7 @@ management, detailed `info` streaming, tablebases, and opening books.
 ## Engine Example
 
 ```python
-from tinychess.ai import MCTSConfig, MCTSPlayer, RandomPlayer, play_game
+from tinychess.ai import MCTSConfig, MCTSPlayer, MatchConfig, RandomPlayer, random_player_spec, run_match, play_game
 from tinychess.engine import Board, Game, legal_moves, parse_fen, parse_pgn, perft, random_move_selector, simulate_game
 from tinychess.nn import ACTION_SPACE_SIZE, PolicyValueInference, PolicyValueNet, encode_game, legal_move_mask
 from tinychess.nn.self_play import SelfPlayConfig, generate_self_play_dataset, save_self_play_dataset
@@ -127,6 +129,14 @@ training = train_model(
     config=TrainingConfig(epochs=1, batch_size=2),
 )
 print(training.steps, training.checkpoint_dir)
+
+# Compare players/checkpoints with the WP16 smoke evaluation harness.
+match = run_match(
+    random_player_spec(seed=1, name="candidate"),
+    random_player_spec(seed=2),
+    MatchConfig(games=2, max_plies=4),
+)
+print(match.player_a_score_rate)
 ```
 
 ## Documentation

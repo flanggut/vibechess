@@ -2,7 +2,7 @@
 
 ## Current State
 
-The project is a Python-first chess engine and AI workspace targeting Apple Silicon macOS. FEN, bounded PGN, bounded UCI, terminal play, classical MCTS, neural MCTS, self-play data generation, and the first MLX training loop are implemented. Swift acceleration and checkpoint evaluation are planned for later work packages.
+The project is a Python-first chess engine and AI workspace targeting Apple Silicon macOS. FEN, bounded PGN, bounded UCI, terminal play, classical MCTS, neural MCTS, self-play data generation, the first MLX training loop, and smoke-oriented checkpoint evaluation are implemented. Swift acceleration is planned for later work packages after benchmark evidence.
 
 Implemented work packages:
 
@@ -21,6 +21,7 @@ Implemented work packages:
 - WP13: Neural PUCT MCTS player.
 - WP14: Self-play dataset generation.
 - WP15: MLX policy/value training loop, metrics logging, and checkpoint output.
+- WP16: Evaluation harness for checkpoint/player matches against random and classical MCTS baselines with early progress-validation promotion criteria.
 
 ## Package Layout
 
@@ -41,7 +42,9 @@ src/tinychess/
 │   └── square.py
 ├── ai/
 │   ├── __init__.py
+│   ├── evaluation.py
 │   ├── mcts.py
+│   ├── neural_mcts.py
 │   ├── player.py
 │   └── search_config.py
 ├── nn/
@@ -82,7 +85,7 @@ Protocol support currently includes a bounded synchronous UCI loop in
 `go`, `stop`, and `quit`. `go` returns a random legal `bestmove` or `bestmove
 0000` for terminal/no-legal positions.
 
-The AI layer owns the `Player` protocol, `RandomPlayer`, `MCTSPlayer`, and search configuration. These players interact with positions through public `Game.legal_moves` and `Game.play()` APIs rather than mutating engine internals.
+The AI layer owns the `Player` protocol, `RandomPlayer`, `MCTSPlayer`, neural PUCT MCTS, search configuration, and the WP16 smoke evaluation harness. These players interact with positions through public `Game.legal_moves` and `Game.play()` APIs rather than mutating engine internals. The evaluation harness runs small player/checkpoint matches from fresh games, compares checkpoints against random and classical MCTS baselines, and records early promotion decisions as progress validation rather than evidence of competitive strength.
 
 The engine does **not** yet own:
 - Full UCI features such as pondering, rich options, MultiPV, advanced time
@@ -112,4 +115,5 @@ uv run python scripts/mcts_benchmark.py --simulations 25 --seed 7
 uv run python scripts/mlx_inference_benchmark.py --iterations 25 --warmup 5
 uv run python scripts/self_play.py --games 1 --max-plies 8 --simulations 1 --output data/selfplay/smoke
 uv run python scripts/train.py --dataset data/selfplay/smoke --output data/checkpoints/train-smoke --epochs 1 --batch-size 2
+uv run python scripts/evaluate.py --checkpoint data/checkpoints/train-smoke/checkpoint-final --games 1 --max-plies 8 --neural-simulations 1
 ```

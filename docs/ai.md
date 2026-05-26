@@ -1,6 +1,6 @@
 # AI Plan
 
-WP09 added the shared player interface and random-player baseline. WP10 added the classical MCTS baseline. WP11 added neural input encoding and fixed policy action mapping. WP12 added the first MLX policy/value network, inference wrapper, and checkpoint format. WP13 added a functional neural PUCT MCTS player. WP14 added self-play dataset generation, and WP15 added the first MLX training loop. This document records the implemented foundations plus the planned direction from `PLAN.md` for later work packages.
+WP09 added the shared player interface and random-player baseline. WP10 added the classical MCTS baseline. WP11 added neural input encoding and fixed policy action mapping. WP12 added the first MLX policy/value network, inference wrapper, and checkpoint format. WP13 added a functional neural PUCT MCTS player. WP14 added self-play dataset generation, WP15 added the first MLX training loop, and WP16 added the first evaluation harness. This document records the implemented foundations plus the planned direction from `PLAN.md` for later work packages.
 
 ## Planned Scope
 
@@ -25,6 +25,7 @@ The planned neural player uses:
 - Self-play datasets with versioned metadata. (Implemented in `tinychess.nn.self_play`.)
 - Policy/value training losses, basic JSONL metrics, and smoke-friendly checkpoint writes. (Implemented in `tinychess.nn.train` and `scripts/train.py`.)
 - MLX-native checkpoints with sidecar metadata. (Implemented in `tinychess.nn.checkpoint`.)
+- Checkpoint-vs-baseline evaluation with early smoke promotion criteria. (Implemented in `tinychess.ai.evaluation` and `scripts/evaluate.py`.)
 
 ## Current Status
 
@@ -43,11 +44,14 @@ Implemented:
 - `tinychess.nn.checkpoint`: MLX `weights.safetensors` save/load helpers with `metadata.json` sidecars containing schema, model config, encoder/action-space versions, training step, optimizer-state availability, and notes.
 - `tinychess.nn.self_play`: versioned compressed NPZ datasets containing encoded positions, legal masks, MCTS policy targets, outcome targets, metadata, and game records.
 - `tinychess.nn.train`: masked policy cross-entropy, value MSE, a tiny MLX optimizer loop, `metrics.jsonl`, `training.json`, and `checkpoint-final` output.
+- `tinychess.ai.evaluation`: player-vs-player match runner, checkpoint player loading, random/classical MCTS baseline comparisons, JSON reports, and explicit early promotion criteria.
 
-The terminal `play` command accepts `mcts` as a player kind. `scripts/mcts_benchmark.py` reports MCTS simulations/sec from the starting position, `scripts/mlx_inference_benchmark.py` reports policy/value inference latency, `scripts/self_play.py` creates small datasets, and `scripts/train.py` trains smoke-friendly checkpoints.
+The terminal `play` command accepts `mcts` as a player kind. `scripts/mcts_benchmark.py` reports MCTS simulations/sec from the starting position, `scripts/mlx_inference_benchmark.py` reports policy/value inference latency, `scripts/self_play.py` creates small datasets, `scripts/train.py` trains smoke-friendly checkpoints, and `scripts/evaluate.py` evaluates checkpoints against random and MCTS baselines.
+
+WP16 promotion criteria are intentionally early smoke/progress validation only. Passing them shows that the learning pipeline can load checkpoints, play legal games, record outcomes, and compare against simple baselines; it does not claim competitive chess strength.
 
 Planned work packages:
 
-- WP16: evaluation harness and checkpoint-vs-baseline comparisons.
+- WP17: full benchmark suite.
 
 The initial goal is a functional learning/search pipeline, not competitive chess strength.
