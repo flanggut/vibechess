@@ -33,6 +33,16 @@ from tinychess.nn.model import (
     PolicyValueNet,
     PolicyValueOutput,
 )
+from tinychess.nn.train import (
+    DEFAULT_METRICS_FILENAME,
+    LossBreakdown,
+    TrainingConfig,
+    TrainingMetrics,
+    TrainingResult,
+    compute_policy_value_loss,
+    train_from_directory,
+    train_model,
+)
 
 __all__ = [
     "ACTION_PLANES",
@@ -40,6 +50,7 @@ __all__ = [
     "ACTION_SPACE_VERSION",
     "CHECKPOINT_METADATA_SCHEMA_VERSION",
     "DEFAULT_METADATA_FILENAME",
+    "DEFAULT_METRICS_FILENAME",
     "DEFAULT_WEIGHTS_FILENAME",
     "ENCODER_CHANNELS",
     "ENCODER_VERSION",
@@ -48,10 +59,14 @@ __all__ = [
     "CheckpointMetadata",
     "InferenceResult",
     "LoadedCheckpoint",
+    "LossBreakdown",
     "PolicyValueConfig",
     "PolicyValueInference",
     "PolicyValueNet",
     "PolicyValueOutput",
+    "TrainingConfig",
+    "TrainingMetrics",
+    "TrainingResult",
     "action_index_to_move",
     "encode_board",
     "encode_game",
@@ -60,6 +75,9 @@ __all__ = [
     "load_checkpoint_metadata",
     "move_to_action_index",
     "save_checkpoint",
+    "compute_policy_value_loss",
+    "train_from_directory",
+    "train_model",
     "tensor_shape",
     "to_mlx",
 ]

@@ -753,15 +753,17 @@ Deliverables:
 
 Depends on: WP13.
 
-### WP15: Training Loop
+### WP15: Training Loop — Done
+
+Status: Done.
 
 Deliverables:
 
-- MLX training script.
-- Policy/value losses.
-- Checkpointing.
-- Basic metrics logging.
-- Tiny overfit/smoke test.
+- [x] MLX training script.
+- [x] Policy/value losses.
+- [x] Checkpointing.
+- [x] Basic metrics logging.
+- [x] Tiny overfit/smoke test.
 
 Depends on: WP14.
 
@@ -871,8 +873,8 @@ Includes WP14-WP16.
 
 Success criteria:
 
-- Self-play produces versioned datasets.
-- Training loop consumes datasets and writes checkpoints.
+- [x] Self-play produces versioned datasets.
+- [x] Training loop consumes datasets and writes checkpoints.
 - Evaluation harness compares checkpoints and baselines.
 - Project has evidence of a working learning pipeline, not necessarily a strong chess engine.
 
@@ -928,6 +930,6 @@ Completed:
 
 Next:
 
-1. Start WP15: Training Loop.
-2. Keep evaluation harness work deferred until the training loop exists.
+1. Start WP16: Evaluation Harness.
+2. Keep checkpoint promotion logic scoped to WP16 and later evaluation decisions.
 3. Continue using `RandomPlayer` as the default UCI baseline; terminal play can opt into classical `mcts`.

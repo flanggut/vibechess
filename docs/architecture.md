@@ -2,7 +2,7 @@
 
 ## Current State
 
-The project is a Python-first chess engine and AI workspace targeting Apple Silicon macOS. FEN, bounded PGN, bounded UCI, terminal play, classical MCTS, and the first MLX policy/value model foundations are implemented. Swift, MLX training, and stronger AI components are planned for later work packages.
+The project is a Python-first chess engine and AI workspace targeting Apple Silicon macOS. FEN, bounded PGN, bounded UCI, terminal play, classical MCTS, neural MCTS, self-play data generation, and the first MLX training loop are implemented. Swift acceleration and checkpoint evaluation are planned for later work packages.
 
 Implemented work packages:
 
@@ -18,6 +18,9 @@ Implemented work packages:
 - WP10: Classical MCTS baseline and simulations/sec benchmark.
 - WP11: MLX position encoder, fixed policy action mapping, and legal move masks.
 - WP12: MLX policy/value network, inference wrapper, checkpoints, and inference benchmark.
+- WP13: Neural PUCT MCTS player.
+- WP14: Self-play dataset generation.
+- WP15: MLX policy/value training loop, metrics logging, and checkpoint output.
 
 ## Package Layout
 
@@ -45,7 +48,9 @@ src/tinychess/
 │   ├── __init__.py
 │   ├── checkpoint.py
 │   ├── encode.py
-│   └── model.py
+│   ├── model.py
+│   ├── self_play.py
+│   └── train.py
 ├── protocols/
 │   ├── __init__.py
 │   └── uci.py
@@ -105,4 +110,6 @@ uv run python scripts/perft.py 3
 uv run python scripts/random_game.py --seed 7 --max-plies 40
 uv run python scripts/mcts_benchmark.py --simulations 25 --seed 7
 uv run python scripts/mlx_inference_benchmark.py --iterations 25 --warmup 5
+uv run python scripts/self_play.py --games 1 --max-plies 8 --simulations 1 --output data/selfplay/smoke
+uv run python scripts/train.py --dataset data/selfplay/smoke --output data/checkpoints/train-smoke --epochs 1 --batch-size 2
 ```

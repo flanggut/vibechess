@@ -44,8 +44,27 @@ Example:
 uv run python scripts/self_play.py --games 1 --max-plies 8 --simulations 1 --output data/selfplay/smoke
 ```
 
-## Checkpoint Policy
+## Training and Checkpoints
 
-Checkpoint sidecars include schema version, model config, action-space version,
-training step, optimizer state availability, and notes. Training/checkpoint
-production is deferred to WP15.
+WP15 consumes a self-play dataset directory and writes a local training run:
+
+```text
+train-run/
+├── metrics.jsonl
+├── training.json
+└── checkpoint-final/
+    ├── weights.safetensors
+    └── metadata.json
+```
+
+Example:
+
+```bash
+uv run python scripts/train.py --dataset data/selfplay/smoke --output data/checkpoints/train-smoke --epochs 1 --batch-size 2
+```
+
+`metrics.jsonl` contains one JSON object per optimizer step with total, policy,
+and value losses. Checkpoint sidecars include schema version, model config,
+action-space version, encoder version, training step, optimizer state
+availability, and notes. The initial WP15 checkpoint writer saves model weights
+and metadata only; optimizer state is not persisted.

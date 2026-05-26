@@ -1,0 +1,370 @@
+"""Small MLX training loop for self-play policy/value datasets."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Iterator
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, TypeAlias
+
+import mlx.core as mx
+import mlx.nn as _nn
+import mlx.optimizers as optim
+import numpy as np
+import numpy.typing as npt
+
+from tinychess.nn.checkpoint import CheckpointMetadata, save_checkpoint
+from tinychess.nn.encode import ACTION_SPACE_SIZE, TENSOR_SHAPE
+from tinychess.nn.model import PolicyValueConfig, PolicyValueNet
+
+if TYPE_CHECKING:
+    from tinychess.nn.self_play import SelfPlayDataset
+
+MLXArray: TypeAlias = Any
+nn: Any = _nn
+
+DEFAULT_METRICS_FILENAME = "metrics.jsonl"
+
+
+@dataclass(frozen=True, slots=True)
+class LossBreakdown:
+    """Policy/value training losses for one batch."""
+
+    total: MLXArray
+    policy: MLXArray
+    value: MLXArray
+
+
+@dataclass(frozen=True, slots=True)
+class TrainingConfig:
+    """Smoke-friendly settings for local MLX training."""
+
+    epochs: int = 1
+    batch_size: int = 8
+    learning_rate: float = 1.0e-3
+    policy_loss_weight: float = 1.0
+    value_loss_weight: float = 1.0
+    seed: int | None = 0
+    checkpoint_every: int = 0
+
+    def __post_init__(self) -> None:
+        if self.epochs < 1:
+            raise ValueError(f"epochs must be at least 1, got {self.epochs}")
+        if self.batch_size < 1:
+            raise ValueError(f"batch_size must be at least 1, got {self.batch_size}")
+        if self.learning_rate <= 0.0:
+            raise ValueError(f"learning_rate must be positive, got {self.learning_rate}")
+        if self.policy_loss_weight < 0.0:
+            raise ValueError("policy_loss_weight must be non-negative")
+        if self.value_loss_weight < 0.0:
+            raise ValueError("value_loss_weight must be non-negative")
+        if self.policy_loss_weight == 0.0 and self.value_loss_weight == 0.0:
+            raise ValueError("at least one loss weight must be positive")
+        if self.checkpoint_every < 0:
+            raise ValueError("checkpoint_every must be non-negative")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return JSON-serializable training settings."""
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class TrainingMetrics:
+    """Serializable metrics for one optimizer step."""
+
+    step: int
+    epoch: int
+    batch_index: int
+    samples_seen: int
+    loss: float
+    policy_loss: float
+    value_loss: float
+    learning_rate: float
+
+    def to_dict(self) -> dict[str, object]:
+        """Return JSON-serializable metrics."""
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class TrainingResult:
+    """Summary of a training run."""
+
+    steps: int
+    samples: int
+    final_metrics: TrainingMetrics
+    checkpoint_dir: Path
+    metrics_path: Path
+
+
+def compute_policy_value_loss(
+    model: PolicyValueNet,
+    positions: MLXArray,
+    legal_masks: MLXArray,
+    policy_targets: MLXArray,
+    value_targets: MLXArray,
+    *,
+    policy_loss_weight: float = 1.0,
+    value_loss_weight: float = 1.0,
+) -> LossBreakdown:
+    """Compute masked cross-entropy policy loss plus MSE value loss.
+
+    ``policy_targets`` are expected to be normalized over legal actions. Illegal
+    logits are excluded from the policy softmax by ``legal_masks``.
+    """
+    output = model(positions)
+    masked_logits = mx.where(
+        legal_masks > 0.0,
+        output.policy_logits,
+        mx.full(output.policy_logits.shape, -1.0e9, dtype=output.policy_logits.dtype),
+    )
+    log_probs = masked_logits - mx.logsumexp(masked_logits, axis=1, keepdims=True)
+    policy_loss = -mx.mean(mx.sum(policy_targets * log_probs, axis=1))
+    value_loss = mx.mean(mx.square(output.value - value_targets))
+    total = policy_loss_weight * policy_loss + value_loss_weight * value_loss
+    return LossBreakdown(total=total, policy=policy_loss, value=value_loss)
+
+
+def train_model(
+    dataset: SelfPlayDataset,
+    output_dir: str | Path,
+    *,
+    model: PolicyValueNet | None = None,
+    config: TrainingConfig | None = None,
+    notes: str | None = None,
+    initial_step: int = 0,
+) -> TrainingResult:
+    """Train a policy/value model on a loaded self-play dataset and save outputs."""
+    if initial_step < 0:
+        raise ValueError("initial_step must be non-negative")
+    resolved_config = TrainingConfig() if config is None else config
+    _validate_dataset_has_samples(dataset)
+    train_dir = Path(output_dir)
+    train_dir.mkdir(parents=True, exist_ok=True)
+    metrics_path = train_dir / DEFAULT_METRICS_FILENAME
+    metrics_path.write_text("")
+
+    resolved_model = PolicyValueNet() if model is None else model
+    optimizer = optim.Adam(learning_rate=resolved_config.learning_rate)
+    rng = np.random.default_rng(resolved_config.seed)
+    run_step = 0
+    samples_seen = 0
+    final_metrics: TrainingMetrics | None = None
+
+    for epoch in range(1, resolved_config.epochs + 1):
+        order = np.arange(dataset.metadata.sample_count)
+        rng.shuffle(order)
+        batches = _batch_indices(order, resolved_config.batch_size)
+        for batch_index, indices in enumerate(batches, start=1):
+            batch = _Batch.from_dataset(dataset, indices)
+            loss_value, gradients = nn.value_and_grad(resolved_model, _loss_for_grad)(
+                resolved_model,
+                batch.positions,
+                batch.legal_masks,
+                batch.policy_targets,
+                batch.value_targets,
+                resolved_config.policy_loss_weight,
+                resolved_config.value_loss_weight,
+            )
+            optimizer.update(resolved_model, gradients)
+            mx.eval(resolved_model.parameters(), optimizer.state, loss_value)
+
+            losses = compute_policy_value_loss(
+                resolved_model,
+                batch.positions,
+                batch.legal_masks,
+                batch.policy_targets,
+                batch.value_targets,
+                policy_loss_weight=resolved_config.policy_loss_weight,
+                value_loss_weight=resolved_config.value_loss_weight,
+            )
+            mx.eval(losses.total, losses.policy, losses.value)
+            run_step += 1
+            current_step = initial_step + run_step
+            samples_seen += len(indices)
+            final_metrics = TrainingMetrics(
+                step=current_step,
+                epoch=epoch,
+                batch_index=batch_index,
+                samples_seen=samples_seen,
+                loss=_scalar(losses.total),
+                policy_loss=_scalar(losses.policy),
+                value_loss=_scalar(losses.value),
+                learning_rate=resolved_config.learning_rate,
+            )
+            _append_metrics(metrics_path, final_metrics)
+            checkpoint_due = (
+                resolved_config.checkpoint_every
+                and run_step % resolved_config.checkpoint_every == 0
+            )
+            if checkpoint_due:
+                _save_training_checkpoint(
+                    resolved_model,
+                    train_dir / f"checkpoint-step-{current_step}",
+                    step=current_step,
+                    notes=notes,
+                )
+
+    if final_metrics is None:  # pragma: no cover - guarded by dataset validation
+        raise RuntimeError("training completed without optimizer steps")
+    checkpoint_dir = train_dir / "checkpoint-final"
+    _save_training_checkpoint(resolved_model, checkpoint_dir, step=final_metrics.step, notes=notes)
+    (train_dir / "training.json").write_text(
+        json.dumps(
+            {
+                "training_config": resolved_config.to_dict(),
+                "initial_training_step": initial_step,
+                "dataset_metadata": dataset.metadata.to_dict(),
+                "final_metrics": final_metrics.to_dict(),
+                "checkpoint_dir": str(checkpoint_dir),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    return TrainingResult(
+        steps=run_step,
+        samples=dataset.metadata.sample_count,
+        final_metrics=final_metrics,
+        checkpoint_dir=checkpoint_dir,
+        metrics_path=metrics_path,
+    )
+
+
+def train_from_directory(
+    dataset_dir: str | Path,
+    output_dir: str | Path,
+    *,
+    model_config: PolicyValueConfig | None = None,
+    config: TrainingConfig | None = None,
+    notes: str | None = None,
+) -> TrainingResult:
+    """Load a WP14 dataset directory, train a model, and write checkpoint artifacts."""
+    from tinychess.nn.self_play import load_self_play_dataset
+
+    model = PolicyValueNet(model_config)
+    return train_model(
+        load_self_play_dataset(dataset_dir),
+        output_dir,
+        model=model,
+        config=config,
+        notes=notes,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _Batch:
+    positions: MLXArray
+    legal_masks: MLXArray
+    policy_targets: MLXArray
+    value_targets: MLXArray
+
+    @classmethod
+    def from_dataset(cls, dataset: SelfPlayDataset, indices: npt.NDArray[np.int64]) -> _Batch:
+        return cls(
+            positions=mx.array(dataset.positions[indices], dtype=mx.float32),
+            legal_masks=mx.array(dataset.legal_masks[indices], dtype=mx.float32),
+            policy_targets=mx.array(dataset.mcts_policies[indices], dtype=mx.float32),
+            value_targets=mx.array(dataset.outcomes[indices], dtype=mx.float32),
+        )
+
+
+def _loss_for_grad(
+    model: PolicyValueNet,
+    positions: MLXArray,
+    legal_masks: MLXArray,
+    policy_targets: MLXArray,
+    value_targets: MLXArray,
+    policy_loss_weight: float,
+    value_loss_weight: float,
+) -> MLXArray:
+    return compute_policy_value_loss(
+        model,
+        positions,
+        legal_masks,
+        policy_targets,
+        value_targets,
+        policy_loss_weight=policy_loss_weight,
+        value_loss_weight=value_loss_weight,
+    ).total
+
+
+def _batch_indices(
+    indices: npt.NDArray[np.int64],
+    batch_size: int,
+) -> Iterator[npt.NDArray[np.int64]]:
+    for start in range(0, len(indices), batch_size):
+        yield indices[start : start + batch_size]
+
+
+def _validate_dataset_has_samples(dataset: SelfPlayDataset) -> None:
+    if dataset.metadata.sample_count < 1:
+        raise ValueError("training requires at least one self-play sample")
+    if dataset.positions.shape != (dataset.metadata.sample_count, *TENSOR_SHAPE):
+        raise ValueError("dataset positions shape does not match metadata")
+    if dataset.legal_masks.shape != (dataset.metadata.sample_count, ACTION_SPACE_SIZE):
+        raise ValueError("dataset legal_masks shape does not match metadata")
+    if dataset.mcts_policies.shape != (dataset.metadata.sample_count, ACTION_SPACE_SIZE):
+        raise ValueError("dataset mcts_policies shape does not match metadata")
+    if dataset.outcomes.shape != (dataset.metadata.sample_count,):
+        raise ValueError("dataset outcomes shape does not match metadata")
+    if not np.isfinite(dataset.positions).all():
+        raise ValueError("dataset positions must be finite")
+    if not np.isfinite(dataset.legal_masks).all():
+        raise ValueError("dataset legal_masks must be finite")
+    if not np.isfinite(dataset.mcts_policies).all():
+        raise ValueError("dataset mcts_policies must be finite")
+    if not np.isfinite(dataset.outcomes).all():
+        raise ValueError("dataset outcomes must be finite")
+    if not np.all((dataset.legal_masks == 0.0) | (dataset.legal_masks == 1.0)):
+        raise ValueError("dataset legal_masks must be binary")
+    if np.any(dataset.mcts_policies < 0.0):
+        raise ValueError("dataset mcts_policies must be non-negative")
+    if np.any(dataset.mcts_policies > dataset.legal_masks):
+        raise ValueError("dataset mcts_policies must put probability only on legal actions")
+    if not np.allclose(np.sum(dataset.mcts_policies, axis=1), 1.0, rtol=1.0e-5, atol=1.0e-6):
+        raise ValueError("dataset mcts_policies rows must sum to 1")
+    if np.any(dataset.outcomes < -1.0) or np.any(dataset.outcomes > 1.0):
+        raise ValueError("dataset outcomes must be in [-1, 1]")
+
+
+def _save_training_checkpoint(
+    model: PolicyValueNet,
+    directory: Path,
+    *,
+    step: int,
+    notes: str | None,
+) -> None:
+    save_checkpoint(
+        model,
+        directory,
+        metadata=CheckpointMetadata.initial(
+            model.config,
+            training_step=step,
+            optimizer_state_available=False,
+            notes=notes,
+        ),
+    )
+
+
+def _append_metrics(path: Path, metrics: TrainingMetrics) -> None:
+    with path.open("a") as handle:
+        handle.write(json.dumps(metrics.to_dict(), sort_keys=True) + "\n")
+
+
+def _scalar(value: MLXArray) -> float:
+    return float(value.item())
+
+
+__all__ = [
+    "DEFAULT_METRICS_FILENAME",
+    "LossBreakdown",
+    "TrainingConfig",
+    "TrainingMetrics",
+    "TrainingResult",
+    "compute_policy_value_loss",
+    "train_from_directory",
+    "train_model",
+]

@@ -20,8 +20,9 @@ Implemented:
 - WP12: Configurable MLX policy/value network, inference wrapper, checkpoint sidecar metadata, and inference latency benchmark.
 - WP13: Neural PUCT MCTS with policy priors, value backup, illegal move masking, and temperature selection.
 - WP14: Self-play game generation with versioned compressed NPZ tensors plus JSON/JSONL metadata.
+- WP15: MLX training loop with policy/value losses, metrics logging, and checkpoint output.
 
-Next planned work package: WP15, Training Loop.
+Next planned work package: WP16, Evaluation Harness.
 
 ## Requirements
 
@@ -47,6 +48,7 @@ uv run python scripts/random_game.py --seed 7 --max-plies 40
 uv run python scripts/mcts_benchmark.py --simulations 25 --seed 7
 uv run python scripts/mlx_inference_benchmark.py --iterations 25 --warmup 5
 uv run python scripts/self_play.py --games 1 --max-plies 8 --simulations 1 --output data/selfplay/smoke
+uv run python scripts/train.py --dataset data/selfplay/smoke --output data/checkpoints/train-smoke --epochs 1 --batch-size 2
 ```
 
 ## Current CLI
@@ -84,6 +86,7 @@ from tinychess.ai import MCTSConfig, MCTSPlayer, RandomPlayer, play_game
 from tinychess.engine import Board, Game, legal_moves, parse_fen, parse_pgn, perft, random_move_selector, simulate_game
 from tinychess.nn import ACTION_SPACE_SIZE, PolicyValueInference, PolicyValueNet, encode_game, legal_move_mask
 from tinychess.nn.self_play import SelfPlayConfig, generate_self_play_dataset, save_self_play_dataset
+from tinychess.nn.train import TrainingConfig, train_model
 
 board = Board.starting_position()
 print(len(legal_moves(board)))  # 20
@@ -115,6 +118,15 @@ print(result.policy.shape, result.value)
 inference = PolicyValueInference(PolicyValueNet())
 dataset = generate_self_play_dataset(inference, SelfPlayConfig(games=1, max_plies=2))
 save_self_play_dataset(dataset, "data/selfplay/smoke")
+
+# Train one smoke-friendly epoch and write metrics plus an MLX checkpoint.
+training = train_model(
+    dataset,
+    "data/checkpoints/train-smoke",
+    model=PolicyValueNet(),
+    config=TrainingConfig(epochs=1, batch_size=2),
+)
+print(training.steps, training.checkpoint_dir)
 ```
 
 ## Documentation
