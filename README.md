@@ -53,6 +53,7 @@ uv run python scripts/mcts_benchmark.py --simulations 25 --seed 7
 uv run python scripts/mlx_inference_benchmark.py --iterations 25 --warmup 5
 uv run python scripts/benchmark.py --smoke
 uv run python scripts/self_play.py --games 1 --max-plies 8 --simulations 1 --output data/selfplay/smoke
+uv run python scripts/self_play.py --games 16 --max-plies 8 --simulations 1 --workers 4 --output data/selfplay/parallel-smoke
 uv run python scripts/train.py --dataset data/selfplay/smoke --output data/checkpoints/train-smoke --epochs 1 --batch-size 2
 uv run python scripts/evaluate.py --checkpoint data/checkpoints/train-smoke/checkpoint-final --games 2 --max-plies 40 --neural-simulations 1 --mcts-simulations 1
 (cd swift && swift test)

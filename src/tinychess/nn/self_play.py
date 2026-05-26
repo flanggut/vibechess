@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -239,6 +239,81 @@ def generate_self_play_dataset(
     )
 
 
+def merge_self_play_datasets(
+    datasets: list[SelfPlayDataset],
+    *,
+    config: SelfPlayConfig | None = None,
+    generation_settings_extra: dict[str, object] | None = None,
+) -> SelfPlayDataset:
+    """Merge self-play dataset shards into one dataset with contiguous game indexes."""
+    if not datasets:
+        raise ValueError("at least one self-play dataset is required")
+
+    first = datasets[0]
+    model_checkpoint_id = first.metadata.model_checkpoint_id
+
+    games: list[SelfPlayGameRecord] = []
+    for dataset in datasets:
+        _validate_dataset_counts(dataset)
+        if dataset.metadata.schema_version != SELF_PLAY_DATASET_SCHEMA_VERSION:
+            schema = dataset.metadata.schema_version
+            raise ValueError(f"unsupported self-play dataset schema: {schema}")
+        if dataset.metadata.action_space_version != ACTION_SPACE_VERSION:
+            action_space = dataset.metadata.action_space_version
+            raise ValueError(f"unsupported action space version: {action_space}")
+        if dataset.metadata.encoder_version != ENCODER_VERSION:
+            raise ValueError(f"unsupported encoder version: {dataset.metadata.encoder_version}")
+        if dataset.metadata.model_checkpoint_id != model_checkpoint_id:
+            raise ValueError("cannot merge datasets from different model checkpoints")
+        for record in dataset.games:
+            games.append(replace(record, game_index=len(games)))
+
+    positions = np.concatenate([dataset.positions for dataset in datasets], axis=0)
+    legal_masks = np.concatenate([dataset.legal_masks for dataset in datasets], axis=0)
+    policies = np.concatenate([dataset.mcts_policies for dataset in datasets], axis=0)
+    outcomes = np.concatenate([dataset.outcomes for dataset in datasets], axis=0)
+
+    if config is None:
+        generation_settings: dict[str, object] = {
+            "merged_from": len(datasets),
+            "source_generation_settings": [
+                dataset.metadata.generation_settings for dataset in datasets
+            ],
+            **(generation_settings_extra or {}),
+        }
+        metadata = SelfPlayMetadata(
+            schema_version=SELF_PLAY_DATASET_SCHEMA_VERSION,
+            generated_at=datetime.now(UTC).isoformat(),
+            engine_version=tinychess.__version__,
+            git_commit=_git_commit(),
+            action_space_version=ACTION_SPACE_VERSION,
+            encoder_version=ENCODER_VERSION,
+            model_checkpoint_id=model_checkpoint_id,
+            generation_settings=generation_settings,
+            sample_count=int(outcomes.shape[0]),
+            game_count=len(games),
+        )
+    else:
+        metadata = SelfPlayMetadata.create(config, sample_count=int(outcomes.shape[0]))
+        if generation_settings_extra:
+            metadata = replace(
+                metadata,
+                generation_settings={
+                    **metadata.generation_settings,
+                    **generation_settings_extra,
+                },
+            )
+
+    return SelfPlayDataset(
+        positions=positions,
+        legal_masks=legal_masks,
+        mcts_policies=policies,
+        outcomes=outcomes,
+        metadata=metadata,
+        games=games,
+    )
+
+
 def save_self_play_dataset(dataset: SelfPlayDataset, directory: str | Path) -> None:
     """Write a self-play dataset as compressed NPZ tensors plus JSON/JSONL metadata."""
     output_dir = Path(directory)
@@ -286,6 +361,20 @@ def load_self_play_dataset(directory: str | Path) -> SelfPlayDataset:
         metadata=metadata,
         games=games,
     )
+
+
+def _validate_dataset_counts(dataset: SelfPlayDataset) -> None:
+    expected = dataset.metadata.sample_count
+    if dataset.positions.shape[0] != expected:
+        raise ValueError("positions sample count does not match dataset metadata")
+    if dataset.legal_masks.shape[0] != expected:
+        raise ValueError("legal_masks sample count does not match dataset metadata")
+    if dataset.mcts_policies.shape[0] != expected:
+        raise ValueError("mcts_policies sample count does not match dataset metadata")
+    if dataset.outcomes.shape[0] != expected:
+        raise ValueError("outcomes sample count does not match dataset metadata")
+    if len(dataset.games) != dataset.metadata.game_count:
+        raise ValueError("game count does not match dataset metadata")
 
 
 def _mcts_config_for_game(config: SelfPlayConfig, game_index: int) -> NeuralMCTSConfig:
@@ -523,5 +612,6 @@ __all__ = [
     "SelfPlayMetadata",
     "generate_self_play_dataset",
     "load_self_play_dataset",
+    "merge_self_play_datasets",
     "save_self_play_dataset",
 ]
