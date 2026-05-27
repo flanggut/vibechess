@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
-"""Generate a small tinychess neural-MCTS self-play dataset."""
+"""Generate a small tinychess MCTS self-play dataset."""
 
 from __future__ import annotations
 
 import argparse
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from tinychess.ai.neural_mcts import NeuralMCTSConfig
+from tinychess.ai.search_config import MCTSConfig
 from tinychess.nn.checkpoint import load_checkpoint, save_checkpoint
 from tinychess.nn.model import PolicyValueConfig, PolicyValueInference, PolicyValueNet
 from tinychess.nn.self_play import (
+    LABEL_SOURCE_CLASSICAL,
+    LABEL_SOURCE_NEURAL,
+    LABEL_SOURCES,
     SelfPlayConfig,
     SelfPlayDataset,
     generate_self_play_dataset,
@@ -25,9 +29,12 @@ from tinychess.nn.self_play import (
 class GenerationArgs:
     checkpoint: Path | None
     checkpoint_id: str | None
+    label_source: str
     max_plies: int
     simulations: int
     temperature: float
+    classical_exploration: float
+    classical_max_rollout_plies: int
     seed: int
     channels: int
     blocks: int
@@ -57,6 +64,13 @@ def _self_play_config(args: GenerationArgs, *, games: int, seed: int) -> SelfPla
             temperature=args.temperature,
             seed=seed,
         ),
+        classical_mcts=MCTSConfig(
+            simulations=args.simulations,
+            exploration=args.classical_exploration,
+            max_rollout_plies=args.classical_max_rollout_plies,
+            seed=seed,
+        ),
+        label_source=args.label_source,
         model_checkpoint_id=args.checkpoint_id,
         seed=seed,
     )
@@ -64,7 +78,9 @@ def _self_play_config(args: GenerationArgs, *, games: int, seed: int) -> SelfPla
 
 def _generate_chunk(args: tuple[GenerationArgs, int, int]) -> SelfPlayDataset:
     generation_args, start_game, games = args
-    inference = _build_inference(generation_args)
+    inference = None
+    if generation_args.label_source == LABEL_SOURCE_NEURAL:
+        inference = _build_inference(generation_args)
     config = _self_play_config(generation_args, games=games, seed=generation_args.seed + start_game)
     return generate_self_play_dataset(inference, config=config)
 
@@ -98,10 +114,18 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=Path("data/selfplay/smoke"))
     parser.add_argument("--checkpoint", type=Path, default=None)
     parser.add_argument("--checkpoint-id", default=None)
+    parser.add_argument(
+        "--label-source",
+        choices=LABEL_SOURCES,
+        default=LABEL_SOURCE_NEURAL,
+        help="search source for policy labels and self-play moves",
+    )
     parser.add_argument("--games", type=int, default=1)
     parser.add_argument("--max-plies", type=int, default=16)
     parser.add_argument("--simulations", type=int, default=2)
     parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--classical-exploration", type=float, default=1.41421356237)
+    parser.add_argument("--classical-max-rollout-plies", type=int, default=16)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--channels", type=int, default=4)
     parser.add_argument("--blocks", type=int, default=0)
@@ -116,15 +140,24 @@ def main() -> int:
     if args.workers < 1:
         parser.error("--workers must be at least 1")
 
+    if args.label_source == LABEL_SOURCE_CLASSICAL:
+        if args.checkpoint is not None:
+            parser.error("--checkpoint is only supported with --label-source neural")
+        if args.checkpoint_id is not None:
+            parser.error("--checkpoint-id is only supported with --label-source neural")
+
     checkpoint_id = args.checkpoint_id
     if args.checkpoint is not None:
         checkpoint_id = checkpoint_id or str(args.checkpoint)
     generation_args = GenerationArgs(
         checkpoint=args.checkpoint,
         checkpoint_id=checkpoint_id,
+        label_source=args.label_source,
         max_plies=args.max_plies,
         simulations=args.simulations,
         temperature=args.temperature,
+        classical_exploration=args.classical_exploration,
+        classical_max_rollout_plies=args.classical_max_rollout_plies,
         seed=args.seed,
         channels=args.channels,
         blocks=args.blocks,
@@ -132,24 +165,20 @@ def main() -> int:
     full_config = _self_play_config(generation_args, games=args.games, seed=args.seed)
 
     if args.workers == 1 or args.games == 1:
-        inference = _build_inference(generation_args)
+        inference = None
+        if generation_args.label_source == LABEL_SOURCE_NEURAL:
+            inference = _build_inference(generation_args)
         dataset = generate_self_play_dataset(inference, config=full_config)
     else:
         workers = min(args.workers, args.games)
         chunks = _split_games(args.games, workers)
         temp_checkpoint: TemporaryDirectory[str] | None = None
-        if generation_args.checkpoint is None:
+        if (
+            generation_args.label_source == LABEL_SOURCE_NEURAL
+            and generation_args.checkpoint is None
+        ):
             temp_checkpoint = _temporary_checkpoint(generation_args)
-            generation_args = GenerationArgs(
-                checkpoint=Path(temp_checkpoint.name),
-                checkpoint_id=checkpoint_id,
-                max_plies=args.max_plies,
-                simulations=args.simulations,
-                temperature=args.temperature,
-                seed=args.seed,
-                channels=args.channels,
-                blocks=args.blocks,
-            )
+            generation_args = replace(generation_args, checkpoint=Path(temp_checkpoint.name))
         try:
             with ProcessPoolExecutor(max_workers=workers) as executor:
                 shards = list(

@@ -86,6 +86,7 @@ class MCTSResult:
     simulations: int
     nodes: int
     elapsed_seconds: float
+    visit_counts: dict[Move, int] = field(default_factory=dict)
 
     @property
     def simulations_per_second(self) -> float:
@@ -163,6 +164,7 @@ class MCTSPlayer:
             simulations=simulations,
             nodes=nodes_created,
             elapsed_seconds=elapsed,
+            visit_counts={move: child.visits for move, child in root.children.items()},
         )
         self.last_result = result
         return result

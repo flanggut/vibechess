@@ -13,7 +13,9 @@ import numpy as np
 import numpy.typing as npt
 
 import tinychess
+from tinychess.ai.mcts import MCTSPlayer
 from tinychess.ai.neural_mcts import NeuralInference, NeuralMCTSConfig, NeuralMCTSPlayer
+from tinychess.ai.search_config import MCTSConfig
 from tinychess.engine.game import Game
 from tinychess.engine.move import Move
 from tinychess.engine.outcome import Outcome, OutcomeReason
@@ -32,6 +34,9 @@ SELF_PLAY_DATASET_SCHEMA_VERSION = "tinychess-selfplay-v1"
 DEFAULT_DATASET_FILENAME = "samples.npz"
 DEFAULT_METADATA_FILENAME = "metadata.json"
 DEFAULT_GAMES_FILENAME = "games.jsonl"
+LABEL_SOURCE_NEURAL = "neural"
+LABEL_SOURCE_CLASSICAL = "classical"
+LABEL_SOURCES = (LABEL_SOURCE_NEURAL, LABEL_SOURCE_CLASSICAL)
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +46,8 @@ class SelfPlayConfig:
     games: int = 1
     max_plies: int = 128
     mcts: NeuralMCTSConfig = field(default_factory=NeuralMCTSConfig)
+    classical_mcts: MCTSConfig = field(default_factory=MCTSConfig)
+    label_source: str = LABEL_SOURCE_NEURAL
     model_checkpoint_id: str | None = None
     seed: int | None = None
 
@@ -49,13 +56,19 @@ class SelfPlayConfig:
             raise ValueError(f"games must be at least 1, got {self.games}")
         if self.max_plies < 0:
             raise ValueError(f"max_plies must be non-negative, got {self.max_plies}")
+        if self.label_source not in LABEL_SOURCES:
+            raise ValueError(
+                f"label_source must be one of {LABEL_SOURCES}, got {self.label_source!r}"
+            )
 
     def to_dict(self) -> dict[str, object]:
         """Return JSON-serializable generation settings."""
         return {
             "games": self.games,
             "max_plies": self.max_plies,
+            "label_source": self.label_source,
             "mcts": asdict(self.mcts),
+            "classical_mcts": asdict(self.classical_mcts),
             "model_checkpoint_id": self.model_checkpoint_id,
             "seed": self.seed,
         }
@@ -196,10 +209,10 @@ class SelfPlayDataset:
 
 
 def generate_self_play_dataset(
-    inference: NeuralInference,
+    inference: NeuralInference | None,
     config: SelfPlayConfig | None = None,
 ) -> SelfPlayDataset:
-    """Generate a small self-play dataset using neural PUCT MCTS."""
+    """Generate a small self-play dataset using neural or classical MCTS labels."""
     resolved = SelfPlayConfig() if config is None else config
     positions: list[npt.NDArray[np.float32]] = []
     legal_masks: list[npt.NDArray[np.float32]] = []
@@ -209,7 +222,7 @@ def generate_self_play_dataset(
 
     for game_index in range(resolved.games):
         game = Game.new()
-        player = NeuralMCTSPlayer(inference, _mcts_config_for_game(resolved, game_index))
+        player = _player_for_game(inference, resolved, game_index)
         game_sides: list[Color] = []
         for _ply in range(resolved.max_plies):
             if game.outcome is not None:
@@ -377,17 +390,28 @@ def _validate_dataset_counts(dataset: SelfPlayDataset) -> None:
         raise ValueError("game count does not match dataset metadata")
 
 
+def _player_for_game(
+    inference: NeuralInference | None,
+    config: SelfPlayConfig,
+    game_index: int,
+) -> NeuralMCTSPlayer | MCTSPlayer:
+    if config.label_source == LABEL_SOURCE_CLASSICAL:
+        return MCTSPlayer(_classical_mcts_config_for_game(config, game_index))
+    if inference is None:
+        raise ValueError("neural self-play generation requires inference")
+    return NeuralMCTSPlayer(inference, _mcts_config_for_game(config, game_index))
+
+
 def _mcts_config_for_game(config: SelfPlayConfig, game_index: int) -> NeuralMCTSConfig:
     if config.seed is None:
         return config.mcts
-    return NeuralMCTSConfig(
-        simulations=config.mcts.simulations,
-        time_limit_seconds=config.mcts.time_limit_seconds,
-        node_budget=config.mcts.node_budget,
-        puct_exploration=config.mcts.puct_exploration,
-        temperature=config.mcts.temperature,
-        seed=config.seed + game_index,
-    )
+    return replace(config.mcts, seed=config.seed + game_index)
+
+
+def _classical_mcts_config_for_game(config: SelfPlayConfig, game_index: int) -> MCTSConfig:
+    if config.seed is None:
+        return config.classical_mcts
+    return replace(config.classical_mcts, seed=config.seed + game_index)
 
 
 def _policy_target(
@@ -605,6 +629,9 @@ __all__ = [
     "DEFAULT_DATASET_FILENAME",
     "DEFAULT_GAMES_FILENAME",
     "DEFAULT_METADATA_FILENAME",
+    "LABEL_SOURCE_CLASSICAL",
+    "LABEL_SOURCE_NEURAL",
+    "LABEL_SOURCES",
     "SELF_PLAY_DATASET_SCHEMA_VERSION",
     "SelfPlayConfig",
     "SelfPlayDataset",

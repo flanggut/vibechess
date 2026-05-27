@@ -10,6 +10,7 @@ import mlx.core as mx
 import numpy as np
 
 from tinychess.ai.neural_mcts import NeuralMCTSConfig
+from tinychess.ai.search_config import MCTSConfig
 from tinychess.engine import Game, Move, OutcomeReason
 from tinychess.nn.checkpoint import save_checkpoint
 from tinychess.nn.encode import ACTION_SPACE_SIZE, TENSOR_SHAPE, move_to_action_index
@@ -18,6 +19,8 @@ from tinychess.nn.self_play import (
     DEFAULT_DATASET_FILENAME,
     DEFAULT_GAMES_FILENAME,
     DEFAULT_METADATA_FILENAME,
+    LABEL_SOURCE_CLASSICAL,
+    LABEL_SOURCE_NEURAL,
     SELF_PLAY_DATASET_SCHEMA_VERSION,
     SelfPlayConfig,
     generate_self_play_dataset,
@@ -68,6 +71,43 @@ def test_generate_self_play_dataset_completes_smoke_game() -> None:
     assert dataset.games[0].plies == 4
     assert dataset.games[0].outcome_reason == OutcomeReason.MAX_PLIES.value
     assert len(dataset.games[0].moves_uci) == 4
+
+
+def test_generate_self_play_dataset_can_use_classical_mcts_labels() -> None:
+    dataset = generate_self_play_dataset(
+        None,
+        SelfPlayConfig(
+            games=1,
+            max_plies=2,
+            classical_mcts=MCTSConfig(simulations=2, max_rollout_plies=1, seed=13),
+            label_source=LABEL_SOURCE_CLASSICAL,
+            seed=13,
+        ),
+    )
+
+    assert dataset.metadata.generation_settings["label_source"] == LABEL_SOURCE_CLASSICAL
+    classical_settings = dataset.metadata.generation_settings["classical_mcts"]
+    assert isinstance(classical_settings, dict)
+    assert classical_settings["simulations"] == 2
+    assert dataset.positions.shape == (2, *TENSOR_SHAPE)
+    assert dataset.legal_masks.shape == (2, ACTION_SPACE_SIZE)
+    assert dataset.mcts_policies.shape == (2, ACTION_SPACE_SIZE)
+    assert np.all(dataset.legal_masks.sum(axis=1) > 0)
+    assert np.allclose(dataset.mcts_policies.sum(axis=1), 1.0)
+    assert np.all(dataset.mcts_policies <= dataset.legal_masks)
+    assert dataset.games[0].plies == 2
+
+
+def test_neural_self_play_requires_inference() -> None:
+    try:
+        generate_self_play_dataset(
+            None,
+            SelfPlayConfig(games=1, max_plies=1, label_source=LABEL_SOURCE_NEURAL),
+        )
+    except ValueError as exc:
+        assert "requires inference" in str(exc)
+    else:  # pragma: no cover - defensive assertion path
+        raise AssertionError("expected neural generation without inference to be rejected")
 
 
 def test_self_play_dataset_writes_and_reads_versioned_files(tmp_path: Path) -> None:
@@ -231,6 +271,39 @@ def test_merge_self_play_datasets_rejects_malformed_counts() -> None:
         raise AssertionError("expected malformed sample count to be rejected")
 
 
+def test_self_play_script_creates_classical_mcts_dataset(tmp_path: Path) -> None:
+    output = tmp_path / "classical-output"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/self_play.py",
+            "--label-source",
+            "classical",
+            "--games",
+            "1",
+            "--max-plies",
+            "1",
+            "--simulations",
+            "2",
+            "--classical-max-rollout-plies",
+            "1",
+            "--output",
+            str(output),
+        ],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    dataset = load_self_play_dataset(output)
+    assert dataset.metadata.generation_settings["label_source"] == LABEL_SOURCE_CLASSICAL
+    assert dataset.metadata.sample_count == 1
+    assert np.allclose(dataset.mcts_policies.sum(axis=1), 1.0)
+
+
 def test_self_play_script_creates_documented_files(tmp_path: Path) -> None:
     output = tmp_path / "script-output"
     result = subprocess.run(
@@ -281,6 +354,66 @@ def test_self_play_script_rejects_invalid_worker_count(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "--workers must be at least 1" in result.stderr
+
+
+def test_self_play_script_rejects_classical_checkpoint_id(tmp_path: Path) -> None:
+    output = tmp_path / "classical-checkpoint-id"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/self_play.py",
+            "--label-source",
+            "classical",
+            "--checkpoint-id",
+            "unused-model",
+            "--output",
+            str(output),
+        ],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode != 0
+    assert "--checkpoint-id is only supported with --label-source neural" in result.stderr
+
+
+def test_self_play_script_can_generate_classical_labels_in_parallel(tmp_path: Path) -> None:
+    output = tmp_path / "classical-parallel-output"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/self_play.py",
+            "--label-source",
+            "classical",
+            "--games",
+            "2",
+            "--max-plies",
+            "1",
+            "--simulations",
+            "2",
+            "--classical-max-rollout-plies",
+            "1",
+            "--workers",
+            "2",
+            "--output",
+            str(output),
+        ],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    dataset = load_self_play_dataset(output)
+    assert dataset.metadata.generation_settings["label_source"] == LABEL_SOURCE_CLASSICAL
+    assert dataset.metadata.game_count == 2
+    assert dataset.metadata.sample_count == 2
+    assert [record.game_index for record in dataset.games] == [0, 1]
 
 
 def test_self_play_script_can_generate_in_parallel(tmp_path: Path) -> None:
