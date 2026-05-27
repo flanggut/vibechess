@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -111,27 +113,25 @@ def run_match(
 ) -> MatchResult:
     """Run a legal-game match between two player specs and return aggregate scores."""
     resolved = MatchConfig() if config is None else config
-    records: list[MatchGameRecord] = []
-    a_score = 0.0
-    b_score = 0.0
-    a_wins = 0
-    b_wins = 0
-    draws = 0
+    records = _run_match_records(player_a, player_b, resolved, start_game=0, games=resolved.games)
+    return _match_result_from_records(player_a.name, player_b.name, records)
 
-    for game_index in range(resolved.games):
-        a_is_white = (game_index % 2 == 0) or not resolved.alternate_colors
+
+def _run_match_records(
+    player_a: PlayerSpec,
+    player_b: PlayerSpec,
+    config: MatchConfig,
+    *,
+    start_game: int,
+    games: int,
+) -> list[MatchGameRecord]:
+    records: list[MatchGameRecord] = []
+    for game_index in range(start_game, start_game + games):
+        a_is_white = (game_index % 2 == 0) or not config.alternate_colors
         white = player_a.factory() if a_is_white else player_b.factory()
         black = player_b.factory() if a_is_white else player_a.factory()
-        game = play_game(white, black, game=Game.new(), max_plies=resolved.max_plies)
+        game = play_game(white, black, game=Game.new(), max_plies=config.max_plies)
         score = _score_for_player_a(game, player_a_is_white=a_is_white)
-        a_score += score
-        b_score += 1.0 - score
-        if score == 1.0:
-            a_wins += 1
-        elif score == 0.0:
-            b_wins += 1
-        else:
-            draws += 1
         outcome = game.outcome
         if outcome is None:  # pragma: no cover - play_game forces max-plies at cap.
             raise RuntimeError("evaluated game ended without an outcome")
@@ -148,17 +148,31 @@ def run_match(
                 moves_uci=[move.to_uci() for move in game.moves],
             )
         )
+    return records
 
+
+def _match_result_from_records(
+    player_a: str,
+    player_b: str,
+    records: Sequence[MatchGameRecord],
+) -> MatchResult:
+    ordered = sorted(records, key=lambda record: record.game_index)
+    a_score = sum(record.player_a_score for record in ordered)
+    games = len(ordered)
+    b_score = games - a_score
+    a_wins = sum(1 for record in ordered if record.player_a_score == 1.0)
+    b_wins = sum(1 for record in ordered if record.player_a_score == 0.0)
+    draws = games - a_wins - b_wins
     return MatchResult(
-        player_a=player_a.name,
-        player_b=player_b.name,
-        games=resolved.games,
+        player_a=player_a,
+        player_b=player_b,
+        games=games,
         player_a_score=a_score,
         player_b_score=b_score,
         player_a_wins=a_wins,
         player_b_wins=b_wins,
         draws=draws,
-        records=records,
+        records=list(ordered),
     )
 
 
@@ -265,6 +279,23 @@ def checkpoint_player_spec(
     return PlayerSpec(name=player_name, factory=factory)
 
 
+def _checkpoint_player_spec_reusing_loaded_checkpoint(
+    checkpoint_dir: str | Path,
+    *,
+    name: str,
+    config: NeuralMCTSConfig | None,
+) -> PlayerSpec:
+    path = Path(checkpoint_dir)
+    search_config = NeuralMCTSConfig(simulations=1) if config is None else config
+    loaded = load_checkpoint(path)
+    inference = PolicyValueInference(loaded.model)
+
+    def factory() -> Player:
+        return NeuralMCTSPlayer(inference, config=search_config)
+
+    return PlayerSpec(name=name, factory=factory)
+
+
 def random_player_spec(*, seed: int | None = None, name: str = "random") -> PlayerSpec:
     """Return a random-player baseline spec."""
 
@@ -288,6 +319,111 @@ def mcts_player_spec(
     return PlayerSpec(name=name, factory=factory)
 
 
+@dataclass(frozen=True, slots=True)
+class _EvaluationChunk:
+    baseline: str
+    start_game: int
+    games: int
+
+
+def _validate_baselines(baselines: Sequence[str]) -> None:
+    for baseline in baselines:
+        if baseline not in {"random", "mcts"}:
+            raise ValueError(f"unsupported baseline {baseline!r}; expected random or mcts")
+
+
+def _run_parallel_evaluation(
+    checkpoint_dir: Path,
+    *,
+    selected_baselines: Sequence[str],
+    match_config: MatchConfig,
+    neural_config: NeuralMCTSConfig | None,
+    mcts_config: MCTSConfig | None,
+    random_seed: int | None,
+    workers: int,
+) -> dict[str, MatchResult]:
+    total_games = len(selected_baselines) * match_config.games
+    effective_workers = min(workers, total_games)
+    chunks = _evaluation_chunks(selected_baselines, match_config.games, effective_workers)
+    records_by_baseline: dict[str, list[MatchGameRecord]] = {
+        baseline: [] for baseline in selected_baselines
+    }
+    with ProcessPoolExecutor(max_workers=effective_workers) as executor:
+        for baseline, records in executor.map(
+            _run_evaluation_chunk,
+            chunks,
+            [checkpoint_dir] * len(chunks),
+            [match_config] * len(chunks),
+            [neural_config] * len(chunks),
+            [mcts_config] * len(chunks),
+            [random_seed] * len(chunks),
+        ):
+            records_by_baseline[baseline].extend(records)
+
+    return {
+        baseline: _match_result_from_records("checkpoint", baseline, records_by_baseline[baseline])
+        for baseline in selected_baselines
+    }
+
+
+def _evaluation_chunks(
+    baselines: Sequence[str],
+    games_per_baseline: int,
+    effective_workers: int,
+) -> list[_EvaluationChunk]:
+    total_games = len(baselines) * games_per_baseline
+    chunk_size = max(1, math.ceil(total_games / effective_workers))
+    chunks: list[_EvaluationChunk] = []
+    for baseline in baselines:
+        for start_game in range(0, games_per_baseline, chunk_size):
+            chunk_games = min(chunk_size, games_per_baseline - start_game)
+            chunks.append(
+                _EvaluationChunk(
+                    baseline=baseline,
+                    start_game=start_game,
+                    games=chunk_games,
+                )
+            )
+    return chunks
+
+
+def _run_evaluation_chunk(
+    chunk: _EvaluationChunk,
+    checkpoint_dir: Path,
+    match_config: MatchConfig,
+    neural_config: NeuralMCTSConfig | None,
+    mcts_config: MCTSConfig | None,
+    random_seed: int | None,
+) -> tuple[str, list[MatchGameRecord]]:
+    checkpoint = _checkpoint_player_spec_reusing_loaded_checkpoint(
+        checkpoint_dir,
+        name="checkpoint",
+        config=neural_config,
+    )
+    baseline = _baseline_spec(chunk.baseline, mcts_config=mcts_config, random_seed=random_seed)
+    records = _run_match_records(
+        checkpoint,
+        baseline,
+        match_config,
+        start_game=chunk.start_game,
+        games=chunk.games,
+    )
+    return chunk.baseline, records
+
+
+def _baseline_spec(
+    baseline: str,
+    *,
+    mcts_config: MCTSConfig | None,
+    random_seed: int | None,
+) -> PlayerSpec:
+    if baseline == "random":
+        return random_player_spec(seed=random_seed)
+    if baseline == "mcts":
+        return mcts_player_spec(config=mcts_config)
+    raise ValueError(f"unsupported baseline {baseline!r}; expected random or mcts")
+
+
 def evaluate_checkpoint_against_baselines(
     checkpoint_dir: str | Path,
     *,
@@ -297,19 +433,36 @@ def evaluate_checkpoint_against_baselines(
     random_seed: int | None = 0,
     baselines: Sequence[str] = ("random", "mcts"),
     criteria: PromotionCriteria | None = None,
+    workers: int = 1,
 ) -> dict[str, object]:
     """Compare a checkpoint player against random/classical-MCTS baselines."""
-    checkpoint = checkpoint_player_spec(checkpoint_dir, name="checkpoint", config=neural_config)
-    baseline_specs = {
-        "random": random_player_spec(seed=random_seed),
-        "mcts": mcts_player_spec(config=mcts_config),
-    }
+    if workers < 1:
+        raise ValueError(f"workers must be at least 1, got {workers}")
+    resolved_match_config = MatchConfig() if match_config is None else match_config
     selected_baselines = tuple(baselines)
-    results: dict[str, MatchResult] = {}
-    for baseline in selected_baselines:
-        if baseline not in baseline_specs:
-            raise ValueError(f"unsupported baseline {baseline!r}; expected random or mcts")
-        results[baseline] = run_match(checkpoint, baseline_specs[baseline], match_config)
+    _validate_baselines(selected_baselines)
+
+    if workers == 1 or len(selected_baselines) * resolved_match_config.games <= 1:
+        checkpoint = checkpoint_player_spec(checkpoint_dir, name="checkpoint", config=neural_config)
+        baseline_specs = {
+            "random": random_player_spec(seed=random_seed),
+            "mcts": mcts_player_spec(config=mcts_config),
+        }
+        results = {
+            baseline: run_match(checkpoint, baseline_specs[baseline], resolved_match_config)
+            for baseline in selected_baselines
+        }
+    else:
+        results = _run_parallel_evaluation(
+            Path(checkpoint_dir),
+            selected_baselines=selected_baselines,
+            match_config=resolved_match_config,
+            neural_config=neural_config,
+            mcts_config=mcts_config,
+            random_seed=random_seed,
+            workers=workers,
+        )
+
     resolved_criteria = criteria or PromotionCriteria(required_baselines=selected_baselines)
     decision = assess_promotion(results, resolved_criteria)
     return {

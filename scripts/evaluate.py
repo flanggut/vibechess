@@ -48,6 +48,7 @@ def main() -> None:
         random_seed=args.seed,
         baselines=baselines,
         criteria=criteria,
+        workers=args.workers,
     )
     if args.output is not None:
         write_evaluation_report(report, args.output)
@@ -71,6 +72,12 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--games", type=int, default=2, help="Games per baseline")
     parser.add_argument("--max-plies", type=int, default=40, help="Maximum plies per game")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Worker processes for independent evaluation games",
+    )
     parser.add_argument(
         "--seed",
         type=int,
@@ -129,6 +136,8 @@ def _parse_args() -> argparse.Namespace:
         help="Exit non-zero if early criteria are not met",
     )
     parsed = parser.parse_args()
+    if parsed.workers < 1:
+        parser.error(f"--workers must be at least 1, got {parsed.workers}")
     if parsed.baseline is None:
         parsed.baseline = ["random", "mcts"]
     return parsed

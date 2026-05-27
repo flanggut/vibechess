@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 import mlx.core as mx
 
@@ -161,6 +162,52 @@ def test_checkpoint_evaluation_loads_checkpoint_and_writes_report(tmp_path: Path
     assert loaded["matches"]["mcts"]["records"][0]["outcome_reason"] == "max_plies"
 
 
+def test_checkpoint_evaluation_rejects_invalid_workers(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "checkpoint"
+    model = PolicyValueNet(tiny_model_config())
+    mx.eval(model.parameters())
+    save_checkpoint(model, checkpoint_dir, metadata=CheckpointMetadata.initial(model.config))
+
+    try:
+        evaluate_checkpoint_against_baselines(checkpoint_dir, workers=0)
+    except ValueError as exc:
+        assert "workers must be at least 1" in str(exc)
+    else:  # pragma: no cover - assertion branch
+        raise AssertionError("expected invalid workers to raise ValueError")
+
+
+def test_checkpoint_evaluation_parallel_merges_ordered_records(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "checkpoint"
+    model = PolicyValueNet(tiny_model_config())
+    mx.eval(model.parameters())
+    save_checkpoint(model, checkpoint_dir, metadata=CheckpointMetadata.initial(model.config))
+
+    report = evaluate_checkpoint_against_baselines(
+        checkpoint_dir,
+        match_config=MatchConfig(games=3, max_plies=1),
+        neural_config=NeuralMCTSConfig(simulations=1, seed=7),
+        mcts_config=MCTSConfig(simulations=1, max_rollout_plies=1, seed=7),
+        baselines=("random", "mcts"),
+        criteria=PromotionCriteria(
+            min_games_per_baseline=1,
+            min_score_rate_vs_random=0.0,
+            min_score_rate_vs_mcts=0.0,
+        ),
+        workers=2,
+    )
+
+    matches = cast(dict[str, Any], report["matches"])
+    assert list(matches) == ["random", "mcts"]
+    for baseline in ("random", "mcts"):
+        match = cast(dict[str, Any], matches[baseline])
+        records = cast(list[dict[str, Any]], match["records"])
+        assert [record["game_index"] for record in records] == [0, 1, 2]
+        assert match["games"] == 3
+        assert len(records) == 3
+    promotion = cast(dict[str, Any], report["promotion"])
+    assert promotion["promoted"] is True
+
+
 def test_evaluate_script_smoke(tmp_path: Path) -> None:
     checkpoint_dir = tmp_path / "checkpoint"
     output = tmp_path / "report.json"
@@ -199,3 +246,68 @@ def test_evaluate_script_smoke(tmp_path: Path) -> None:
     report = json.loads(output.read_text())
     assert set(report["matches"]) == {"random"}
     assert report["promotion"]["promoted"] is True
+
+
+def test_evaluate_script_rejects_invalid_workers(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/evaluate.py",
+            "--checkpoint",
+            str(tmp_path / "missing"),
+            "--workers",
+            "0",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "--workers must be at least 1" in result.stderr
+
+
+def test_evaluate_script_parallel_smoke_stdout_json(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "checkpoint"
+    output = tmp_path / "parallel-report.json"
+    model = PolicyValueNet(tiny_model_config())
+    mx.eval(model.parameters())
+    save_checkpoint(model, checkpoint_dir, metadata=CheckpointMetadata.initial(model.config))
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/evaluate.py",
+            "--checkpoint",
+            str(checkpoint_dir),
+            "--baseline",
+            "random",
+            "--games",
+            "2",
+            "--max-plies",
+            "1",
+            "--neural-simulations",
+            "1",
+            "--min-games-per-baseline",
+            "1",
+            "--min-score-rate-vs-random",
+            "0.0",
+            "--workers",
+            "2",
+            "--output",
+            str(output),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    stdout_report = json.loads(result.stdout)
+    file_report = json.loads(output.read_text())
+    assert stdout_report == file_report
+    assert set(stdout_report["matches"]) == {"random"}
+    assert [record["game_index"] for record in stdout_report["matches"]["random"]["records"]] == [
+        0,
+        1,
+    ]
