@@ -54,6 +54,7 @@ uv run python scripts/mlx_inference_benchmark.py --iterations 25 --warmup 5
 uv run python scripts/benchmark.py --smoke
 uv run python scripts/self_play.py --games 1 --max-plies 8 --simulations 1 --output data/selfplay/smoke
 uv run python scripts/self_play.py --games 16 --max-plies 8 --simulations 1 --workers 4 --output data/selfplay/parallel-smoke
+uv run python scripts/pgn_ingest.py --input ~/data/chess/lichess_elite_2025-11.pgn --output data/selfplay/pgn-smoke --max-games 10 --shard-samples 128
 uv run python scripts/train.py --dataset data/selfplay/smoke --output data/checkpoints/train-smoke --epochs 1 --batch-size 2
 uv run python scripts/evaluate.py --checkpoint data/checkpoints/train-smoke/checkpoint-final --games 2 --max-plies 40 --neural-simulations 1 --mcts-simulations 1
 (cd swift && swift test)
@@ -187,5 +188,6 @@ future work.
 - `docs/architecture.md`: current package and component boundaries.
 - `docs/engine.md`: board representation, moves, legal move generation, and perft.
 - `docs/ai.md`: planned AI/neural-MCTS direction.
+- `docs/pgn-ingestion.md`: converting external PGN collections into sharded training datasets.
 - `docs/swift-backend.md`: planned Swift acceleration strategy.
 - `data/README.md`: future dataset/checkpoint policy.

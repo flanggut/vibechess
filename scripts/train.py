@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train a tiny MLX policy/value checkpoint from a WP14 self-play dataset."""
+"""Train a tiny MLX policy/value checkpoint from self-play or PGN datasets."""
 
 from __future__ import annotations
 
@@ -8,13 +8,23 @@ from pathlib import Path
 
 from tinychess.nn.checkpoint import load_checkpoint
 from tinychess.nn.model import PolicyValueConfig
+from tinychess.nn.pgn_dataset import DEFAULT_MANIFEST_FILENAME
 from tinychess.nn.self_play import load_self_play_dataset
-from tinychess.nn.train import TrainingConfig, train_from_directory, train_model
+from tinychess.nn.train import (
+    TrainingConfig,
+    train_from_directory,
+    train_from_sharded_directory,
+    train_model,
+)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", required=True, help="WP14 self-play dataset directory")
+    parser.add_argument(
+        "--dataset",
+        required=True,
+        help="self-play dataset directory or PGN ingestion manifest directory",
+    )
     parser.add_argument(
         "--output",
         default="data/checkpoints/train-smoke",
@@ -50,17 +60,30 @@ def main() -> None:
     )
     notes = "tinychess WP15 training run"
 
+    dataset_path = Path(args.dataset)
+    is_sharded = (dataset_path / DEFAULT_MANIFEST_FILENAME).is_file()
+
     if args.input_checkpoint:
         loaded = load_checkpoint(args.input_checkpoint)
-        dataset = load_self_play_dataset(args.dataset)
-        result = train_model(
-            dataset,
-            args.output,
-            model=loaded.model,
-            config=train_config,
-            notes=notes,
-            initial_step=loaded.metadata.training_step,
-        )
+        if is_sharded:
+            result = train_from_sharded_directory(
+                dataset_path,
+                args.output,
+                model=loaded.model,
+                config=train_config,
+                notes=notes,
+                initial_step=loaded.metadata.training_step,
+            )
+        else:
+            dataset = load_self_play_dataset(dataset_path)
+            result = train_model(
+                dataset,
+                args.output,
+                model=loaded.model,
+                config=train_config,
+                notes=notes,
+                initial_step=loaded.metadata.training_step,
+            )
     else:
         model_config = PolicyValueConfig(
             residual_channels=args.residual_channels,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -241,16 +242,120 @@ def train_from_directory(
     config: TrainingConfig | None = None,
     notes: str | None = None,
 ) -> TrainingResult:
-    """Load a WP14 dataset directory, train a model, and write checkpoint artifacts."""
+    """Load a dataset directory or PGN shard manifest and train a model."""
+    from tinychess.nn.pgn_dataset import DEFAULT_MANIFEST_FILENAME
     from tinychess.nn.self_play import load_self_play_dataset
+
+    input_dir = Path(dataset_dir)
+    if (input_dir / DEFAULT_MANIFEST_FILENAME).is_file():
+        return train_from_sharded_directory(
+            input_dir,
+            output_dir,
+            model_config=model_config,
+            config=config,
+            notes=notes,
+        )
 
     model = PolicyValueNet(model_config)
     return train_model(
-        load_self_play_dataset(dataset_dir),
+        load_self_play_dataset(input_dir),
         output_dir,
         model=model,
         config=config,
         notes=notes,
+    )
+
+
+def train_from_sharded_directory(
+    dataset_dir: str | Path,
+    output_dir: str | Path,
+    *,
+    model_config: PolicyValueConfig | None = None,
+    model: PolicyValueNet | None = None,
+    config: TrainingConfig | None = None,
+    notes: str | None = None,
+    initial_step: int = 0,
+) -> TrainingResult:
+    """Train over PGN ingestion shards one shard at a time to bound memory use.
+
+    Optimizer state is intentionally not carried between shards because the
+    current checkpoint format persists model weights only. Training step and
+    model weights are carried forward, and per-shard metrics are aggregated into
+    the top-level ``metrics.jsonl``.
+    """
+    from tinychess.nn.pgn_dataset import shard_directories
+    from tinychess.nn.self_play import load_self_play_dataset
+
+    if initial_step < 0:
+        raise ValueError("initial_step must be non-negative")
+    resolved_config = TrainingConfig() if config is None else config
+    train_dir = Path(output_dir)
+    train_dir.mkdir(parents=True, exist_ok=True)
+    metrics_path = train_dir / DEFAULT_METRICS_FILENAME
+    metrics_path.write_text("")
+
+    model = PolicyValueNet(model_config) if model is None else model
+    total_steps = initial_step
+    total_samples = 0
+    final_metrics: TrainingMetrics | None = None
+    shard_summaries: list[dict[str, object]] = []
+    shards = shard_directories(dataset_dir)
+    if not shards:
+        raise ValueError("sharded training requires at least one shard")
+
+    for shard_index, shard_dir in enumerate(shards):
+        shard_output = train_dir / f"shard-train-{shard_index:05d}"
+        result = train_model(
+            load_self_play_dataset(shard_dir),
+            shard_output,
+            model=model,
+            config=resolved_config,
+            notes=notes,
+            initial_step=total_steps,
+        )
+        total_steps += result.steps
+        total_samples += result.samples
+        final_metrics = result.final_metrics
+        metrics_path.write_text(
+            metrics_path.read_text() + result.metrics_path.read_text()
+        )
+        shard_summaries.append(
+            {
+                "dataset_shard": str(shard_dir),
+                "training_output": str(shard_output),
+                "steps": result.steps,
+                "samples": result.samples,
+                "final_step": result.final_metrics.step,
+            }
+        )
+
+    if final_metrics is None:  # pragma: no cover - guarded by shards validation
+        raise RuntimeError("sharded training completed without optimizer steps")
+    checkpoint_dir = train_dir / "checkpoint-final"
+    if checkpoint_dir.exists():
+        shutil.rmtree(checkpoint_dir)
+    shutil.copytree(shard_output / "checkpoint-final", checkpoint_dir)
+    (train_dir / "training.json").write_text(
+        json.dumps(
+            {
+                "training_config": resolved_config.to_dict(),
+                "dataset_manifest_dir": str(Path(dataset_dir)),
+                "sharded": True,
+                "shards": shard_summaries,
+                "final_metrics": final_metrics.to_dict(),
+                "checkpoint_dir": str(checkpoint_dir),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    return TrainingResult(
+        steps=total_steps - initial_step,
+        samples=total_samples,
+        final_metrics=final_metrics,
+        checkpoint_dir=checkpoint_dir,
+        metrics_path=metrics_path,
     )
 
 
@@ -366,5 +471,6 @@ __all__ = [
     "TrainingResult",
     "compute_policy_value_loss",
     "train_from_directory",
+    "train_from_sharded_directory",
     "train_model",
 ]

@@ -41,6 +41,7 @@ from tinychess.nn.train import (
     TrainingResult,
     compute_policy_value_loss,
     train_from_directory,
+    train_from_sharded_directory,
     train_model,
 )
 
@@ -77,6 +78,7 @@ __all__ = [
     "save_checkpoint",
     "compute_policy_value_loss",
     "train_from_directory",
+    "train_from_sharded_directory",
     "train_model",
     "tensor_shape",
     "to_mlx",
