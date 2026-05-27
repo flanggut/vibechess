@@ -25,6 +25,12 @@ Implemented:
 - WP17: Full benchmark suite with Swift acceleration recommendation heuristic.
 - WP18: Swift Package Manager bootstrap with `TinyChessCore` and Swift tests.
 
+Recent data/training additions:
+
+- Classical MCTS can generate self-play policy labels as an alternative to neural MCTS.
+- External PGN collections can be converted into sharded policy/value datasets for supervised pretraining.
+- Training can auto-detect PGN shard manifests and train shard-by-shard to reduce memory pressure.
+
 Next planned work package: WP19, Swift Engine Acceleration Prototype.
 
 ## Requirements
@@ -33,6 +39,41 @@ Next planned work package: WP19, Swift Engine Acceleration Prototype.
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/) for dependency management
 - Swift 5.9+ toolchain for the optional Swift backend (`swift/` targets macOS 14+)
+
+## Architecture and Design Decisions
+
+Tinychess is Python-first. The Python engine is the correctness reference; Swift
+is an optional backend workspace reserved for benchmark-proven acceleration work.
+The project targets Apple Silicon macOS and uses MLX for neural-network training
+and inference.
+
+Current package boundaries:
+
+```text
+src/tinychess/
+├── engine/      # board, moves, game state, FEN, bounded PGN, PGN ingestion stream helpers
+├── ai/          # Player protocol, random player, classical MCTS, neural PUCT MCTS, evaluation
+├── nn/          # MLX encoding/model/checkpoints, self-play, PGN datasets, training
+├── protocols/   # bounded UCI loop
+└── ui/          # terminal rendering and play loop helpers
+```
+
+Key technical defaults:
+
+- Board squares use `0..63` indexing with typed engine primitives and immutable snapshots.
+- Core engine APIs operate on `Move`, `Board`, and `Game` objects; UCI strings and SAN stay at protocol/PGN boundaries.
+- FEN support covers complete standard position state.
+- PGN support in the core parser is intentionally bounded and strict; ingestion adds a separate sanitizer for common public-dataset annotations.
+- UCI support is intentionally bounded: handshake/readiness, `ucinewgame`, `position`, `go`, `stop`, and `quit`.
+- Draw handling is pragmatic for engine/self-play termination; strict claim-vs-automatic FIDE semantics are deferred.
+- Neural policy uses a versioned AlphaZero-style `8 x 8 x 73 = 4672` action space with legal-move masking.
+- Dataset shards use compressed NumPy tensors plus JSON/JSONL metadata and include schema/action-space/encoder provenance.
+- Checkpoints use MLX weights plus sidecar metadata; optimizer state is not currently persisted.
+
+Training data paths:
+
+- Neural or classical MCTS self-play creates existing-format dataset directories under `data/selfplay/`.
+- PGN ingestion creates a `manifest.json` plus compatible shard directories, allowing supervised policy/value pretraining without loading the full corpus at once.
 
 ## Development setup
 
@@ -184,7 +225,6 @@ future work.
 
 ## Documentation
 
-- `PLAN.md`: roadmap, work packages, and completed status.
 - `docs/architecture.md`: current package and component boundaries.
 - `docs/engine.md`: board representation, moves, legal move generation, and perft.
 - `docs/ai.md`: planned AI/neural-MCTS direction.

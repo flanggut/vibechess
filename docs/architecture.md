@@ -40,6 +40,7 @@ src/tinychess/
 │   ├── move.py
 │   ├── outcome.py
 │   ├── pgn.py
+│   ├── pgn_stream.py
 │   ├── piece.py
 │   └── square.py
 ├── ai/
@@ -54,6 +55,7 @@ src/tinychess/
 │   ├── checkpoint.py
 │   ├── encode.py
 │   ├── model.py
+│   ├── pgn_dataset.py
 │   ├── self_play.py
 │   └── train.py
 ├── protocols/
@@ -108,7 +110,7 @@ The engine does **not** yet own:
   management, detailed info streaming, tablebases, or opening books.
 - Strict FIDE claim-vs-automatic draw semantics.
 
-Those are covered by later work packages in `PLAN.md`.
+Those are deferred for later roadmap work.
 
 ## Tooling
 
