@@ -17,6 +17,7 @@ from tinychess.nn import (
     tensor_shape,
     to_mlx,
 )
+from tinychess.nn.encode import legal_move_mask_from_legal_moves
 
 
 def move(uci: str) -> Move:
@@ -25,6 +26,10 @@ def move(uci: str) -> Move:
 
 def scalar(value: object) -> float:
     return float(value.item())  # type: ignore[attr-defined]
+
+
+def active_indices(mask: object) -> set[int]:
+    return {index for index in range(ACTION_SPACE_SIZE) if scalar(mask[index]) == 1.0}  # type: ignore[index]
 
 
 def test_encoder_shape_and_starting_piece_values() -> None:
@@ -177,6 +182,29 @@ def test_legal_move_mask_returns_zero_mlx_array_when_no_moves() -> None:
     assert mask.dtype == mx.float32
     assert tensor_shape(mask) == (ACTION_SPACE_SIZE,)
     assert scalar(mx.sum(mask)) == 0.0
+
+
+@pytest.mark.parametrize(
+    "game",
+    [
+        Game.new(),
+        Game.from_fen("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1"),
+        Game.from_fen("4k3/P7/8/8/8/8/8/4K3 w - - 0 1"),
+        Game.from_fen("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1"),
+    ],
+)
+def test_legal_move_mask_from_legal_moves_matches_public_mask(game: Game) -> None:
+    legal = game.legal_moves
+    public_mask = legal_move_mask(game)
+    helper_mask = legal_move_mask_from_legal_moves(game, legal)
+
+    assert helper_mask.dtype == mx.float32
+    assert tensor_shape(helper_mask) == (ACTION_SPACE_SIZE,)
+    assert scalar(mx.sum(helper_mask)) == scalar(mx.sum(public_mask))
+    assert active_indices(helper_mask) == active_indices(public_mask)
+    assert active_indices(helper_mask) == {
+        move_to_action_index(legal_move, game.board) for legal_move in legal
+    }
 
 
 def test_to_mlx_is_idempotent_for_mlx_arrays_and_converts_array_like_values() -> None:

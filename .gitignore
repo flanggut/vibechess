@@ -268,6 +268,15 @@ playground.xcworkspace
 
 Carthage/Build/
 
+# Project-generated training/data artifacts
+# Keep directory placeholders tracked, but do not commit generated self-play shards,
+# model checkpoints, or downloaded PGN corpora.
+data/selfplay/*
+!data/selfplay/.gitkeep
+data/checkpoints/*
+!data/checkpoints/.gitkeep
+lichess_*.pgn
+
 # fastlane
 #
 # It is recommended to not store the screenshots in the git repo.

@@ -54,6 +54,15 @@ def test_castling_san_parse_and_write() -> None:
     assert "5. O-O" in next_game.to_pgn(result="*")
 
 
+def test_capture_san_parse_and_write() -> None:
+    game = play_uci("e2e4", "d7d5")
+    capture = parse_san(game.board, "exd5")
+
+    assert capture == Move.from_uci("e4d5")
+    assert move_to_san(game.board, capture) == "exd5"
+    assert game.play(capture).moves[-1] == capture
+
+
 def test_game_to_pgn_auto_emits_fen_setup_for_custom_start() -> None:
     game = Game.from_fen("4k3/P7/8/8/8/8/8/4K3 w - - 0 1").play(Move.from_uci("a7a8q"))
 
@@ -158,3 +167,8 @@ def test_parse_pgn_rejects_result_mismatch() -> None:
 def test_parse_pgn_rejects_tokens_after_result() -> None:
     with pytest.raises(ValueError, match="after PGN result"):
         parse_pgn('[Result "*"]\n\n1. e4 * 0-1')
+
+
+def test_parse_san_rejects_invalid_repeated_check_suffix() -> None:
+    with pytest.raises(ValueError, match="check/mate suffix"):
+        parse_san(Game.new().board, "e4++")

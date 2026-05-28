@@ -23,7 +23,7 @@ from tinychess.nn.encode import (
     ACTION_SPACE_VERSION,
     ENCODER_VERSION,
     encode_game,
-    legal_move_mask,
+    legal_move_mask_from_legal_moves,
     move_to_action_index,
 )
 from tinychess.nn.self_play import (
@@ -218,10 +218,13 @@ class _ShardBuilder:
         sides: list[Color] = []
         start_sample = self.sample_count
         for move in pgn.moves:
-            if move not in game.legal_moves:
+            legal = game.legal_moves
+            if move not in legal:
                 raise ValueError("PGN move is not legal in replayed game")
             self.positions.append(np.asarray(encode_game(game), dtype=np.float32))
-            self.legal_masks.append(np.asarray(legal_move_mask(game), dtype=np.float32))
+            self.legal_masks.append(
+                np.asarray(legal_move_mask_from_legal_moves(game, legal), dtype=np.float32)
+            )
             self.policies.append(_one_hot_policy(game, move))
             sides.append(game.board.side_to_move)
             game = game.play(move)

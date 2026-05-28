@@ -79,7 +79,19 @@ def move_to_san(board: Board, move: Move) -> str:
     if moving_piece is None:
         msg = f"cannot convert move from empty square to SAN: {move}"
         raise ValueError(msg)
-    if move not in legal_moves(board):
+    legal = legal_moves(board)
+    return _move_to_san_from_legal(board, move, legal, validate=True)
+
+
+def _move_to_san_from_legal(
+    board: Board, move: Move, legal: tuple[Move, ...], *, validate: bool
+) -> str:
+    """Return SAN using an already computed legal move tuple for ``board``."""
+    moving_piece = board.piece_at(move.from_square)
+    if moving_piece is None:
+        msg = f"cannot convert move from empty square to SAN: {move}"
+        raise ValueError(msg)
+    if validate and move not in legal:
         msg = f"cannot convert illegal move to SAN: {move}"
         raise ValueError(msg)
 
@@ -98,7 +110,7 @@ def move_to_san(board: Board, move: Move) -> str:
                 san += chr(ord("a") + file_index(move.from_square))
         else:
             san += _PIECE_SAN[moving_piece.kind]
-            san += _disambiguation(board, move, moving_piece.kind)
+            san += _disambiguation(board, move, moving_piece.kind, legal)
         if is_capture:
             san += "x"
         san += _square_name_from_move_target(move)
@@ -118,7 +130,12 @@ def parse_san(board: Board, san: str) -> Move:
     """Resolve a bounded SAN token to a legal move from ``board``."""
     _reject_unsupported_movetext(san)
     normalized = _normalize_san_token(san)
-    matches = [move for move in legal_moves(board) if move_to_san(board, move) == normalized]
+    legal = legal_moves(board)
+    matches = [
+        move
+        for move in legal
+        if _move_to_san_from_legal(board, move, legal, validate=False) == normalized
+    ]
     if not matches:
         msg = f"SAN move is not legal in the current position: {san!r}"
         raise ValueError(msg)
@@ -290,10 +307,12 @@ def _format_movetext(initial_game: Game, moves: tuple[Move, ...], result: str) -
     return " ".join(tokens)
 
 
-def _disambiguation(board: Board, move: Move, kind: PieceType) -> str:
+def _disambiguation(
+    board: Board, move: Move, kind: PieceType, legal: tuple[Move, ...]
+) -> str:
     same_destination = []
     moving_piece = board.piece_at(move.from_square)
-    for other in legal_moves(board):
+    for other in legal:
         if other == move or other.to_square != move.to_square:
             continue
         other_piece = board.piece_at(other.from_square)

@@ -55,6 +55,23 @@ records remain replayable from the normal starting position by the existing
 dataset validator. Games with unknown `*` results are also skipped because value
 labels use the final PGN result.
 
+## Benchmark ingestion hotspots
+
+Use the dry-run benchmark to see where ingestion time is going before writing
+shards:
+
+```bash
+uv run python scripts/pgn_ingest_benchmark.py \
+  --input lichess_elite_2025-11.pgn \
+  --max-records 100
+```
+
+The report breaks time down by record streaming, FEN tag screening,
+sanitization/parsing, replay legality checks, board encoding, legal-mask
+creation, policy allocation, and move application. Add `--format json` for
+machine-readable output or `--profile-output pgn.prof` to capture cProfile data
+for drilling into hot parser functions.
+
 ## Train from shards
 
 `scripts/train.py` auto-detects `manifest.json` under `--dataset` and trains one
