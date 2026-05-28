@@ -14,7 +14,10 @@ uv run python scripts/pgn_ingest.py \
 ```
 
 By default `--max-games` is `0`, meaning no limit: the script processes the full
-input file unless interrupted. Use `--max-games N` for smoke runs.
+input file unless interrupted. Use `--max-games N` for smoke runs. Progress
+reporting prints counters to stderr every 100 accepted games by default during
+long imports without changing the final stdout summary; pass
+`--progress-every-games 0` to disable progress output.
 
 The converter writes:
 
@@ -68,9 +71,10 @@ uv run python scripts/pgn_ingest_benchmark.py \
 
 The report breaks time down by record streaming, FEN tag screening,
 sanitization/parsing, replay legality checks, board encoding, legal-mask
-creation, policy allocation, and move application. Add `--format json` for
-machine-readable output or `--profile-output pgn.prof` to capture cProfile data
-for drilling into hot parser functions.
+creation, policy allocation, and move application. The `parse_sanitize` phase
+includes PGN parser and SAN-resolution time, not only sanitizer regex work. Add
+`--format json` for machine-readable output or `--profile-output pgn.prof` to
+capture cProfile data for drilling into hot parser functions.
 
 ## Train from shards
 

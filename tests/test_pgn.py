@@ -111,7 +111,38 @@ def test_disambiguation_san() -> None:
 
     assert move_to_san(game.board, Move.from_uci("c3d5")) == "Ncd5"
     assert move_to_san(game.board, Move.from_uci("e3d5")) == "Ned5"
+    assert parse_san(game.board, "Ncd5") == Move.from_uci("c3d5")
     assert parse_san(game.board, "Ned5") == Move.from_uci("e3d5")
+    with pytest.raises(ValueError, match="not legal"):
+        parse_san(game.board, "Nd5")
+    with pytest.raises(ValueError, match="not legal"):
+        parse_san(game.board, "Nc3d5")
+
+
+def test_disambiguation_requires_rank_for_same_file_conflict() -> None:
+    game = Game.from_fen("4k3/8/8/3N4/8/3N4/8/4K3 w - - 0 1")
+
+    assert move_to_san(game.board, Move.from_uci("d3f4")) == "N3f4"
+    assert move_to_san(game.board, Move.from_uci("d5f4")) == "N5f4"
+    assert parse_san(game.board, "N3f4") == Move.from_uci("d3f4")
+    assert parse_san(game.board, "N5f4") == Move.from_uci("d5f4")
+    with pytest.raises(ValueError, match="not legal"):
+        parse_san(game.board, "Ndf4")
+    with pytest.raises(ValueError, match="not legal"):
+        parse_san(game.board, "Nf4")
+
+
+def test_disambiguation_requires_full_square_for_file_and_rank_conflicts() -> None:
+    game = Game.from_fen("4k3/8/8/3N4/8/3N3N/8/4K3 w - - 0 1")
+
+    assert move_to_san(game.board, Move.from_uci("d3f4")) == "Nd3f4"
+    assert parse_san(game.board, "Nd3f4") == Move.from_uci("d3f4")
+    with pytest.raises(ValueError, match="not legal"):
+        parse_san(game.board, "N3f4")
+    with pytest.raises(ValueError, match="not legal"):
+        parse_san(game.board, "Ndf4")
+    with pytest.raises(ValueError, match="not legal"):
+        parse_san(game.board, "Nf4")
 
 
 def test_parse_pgn_allows_punctuation_in_tag_values() -> None:
@@ -167,6 +198,51 @@ def test_parse_pgn_rejects_result_mismatch() -> None:
 def test_parse_pgn_rejects_tokens_after_result() -> None:
     with pytest.raises(ValueError, match="after PGN result"):
         parse_pgn('[Result "*"]\n\n1. e4 * 0-1')
+
+
+def test_parse_san_rejects_capture_marker_mismatches() -> None:
+    capture_game = play_uci("e2e4", "d7d5")
+
+    with pytest.raises(ValueError, match="not legal"):
+        parse_san(capture_game.board, "ed5")
+    with pytest.raises(ValueError, match="not legal"):
+        parse_san(Game.new().board, "exd3")
+
+
+def test_parse_san_resolves_en_passant_without_annotation() -> None:
+    game = play_uci("e2e4", "a7a6", "e4e5", "d7d5")
+
+    assert parse_san(game.board, "exd6") == Move.from_uci("e5d6")
+    with pytest.raises(ValueError, match="en-passant annotation"):
+        parse_san(game.board, "exd6e.p.")
+
+
+def test_castling_accepts_zero_normalization_and_exact_check_suffix() -> None:
+    game = Game.from_fen("3k4/8/8/8/8/8/8/R3K3 w Q - 0 1")
+
+    assert parse_san(game.board, "O-O-O+") == Move.from_uci("e1c1")
+    assert parse_san(game.board, "0-0-0+") == Move.from_uci("e1c1")
+    with pytest.raises(ValueError, match="not legal"):
+        parse_san(game.board, "O-O-O")
+
+
+def test_parse_san_resolves_promotions_and_rejects_unsupported_pieces() -> None:
+    game = Game.from_fen("4k3/P7/8/8/8/8/8/4K3 w - - 0 1")
+
+    assert parse_san(game.board, "a8=Q+") == Move.from_uci("a7a8q")
+    assert parse_san(game.board, "a8=N") == Move.from_uci("a7a8n")
+    with pytest.raises(ValueError, match="unsupported SAN promotion"):
+        parse_san(game.board, "a8=K")
+
+
+def test_parse_san_requires_exact_checkmate_suffix() -> None:
+    game = play_uci("f2f3", "e7e5", "g2g4")
+
+    assert parse_san(game.board, "Qh4#") == Move.from_uci("d8h4")
+    with pytest.raises(ValueError, match="not legal"):
+        parse_san(game.board, "Qh4+")
+    with pytest.raises(ValueError, match="not legal"):
+        parse_san(game.board, "Qh4")
 
 
 def test_parse_san_rejects_invalid_repeated_check_suffix() -> None:

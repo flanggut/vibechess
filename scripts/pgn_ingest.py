@@ -4,9 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
-from tinychess.nn.pgn_dataset import PgnIngestConfig, ingest_pgn_dataset
+from tinychess.nn.pgn_dataset import PgnIngestConfig, PgnIngestProgress, ingest_pgn_dataset
 
 
 def main() -> int:
@@ -40,13 +41,36 @@ def main() -> int:
         action="store_true",
         help="disable PGN sanitizer and skip records rejected by the strict parser",
     )
+    parser.add_argument(
+        "--progress-every-games",
+        type=int,
+        default=100,
+        help="print progress to stderr every N accepted games; 0 disables progress",
+    )
     args = parser.parse_args()
 
     if args.max_games < 0:
         parser.error("--max-games must be non-negative")
     if args.shard_samples < 1:
         parser.error("--shard-samples must be at least 1")
+    if args.progress_every_games < 0:
+        parser.error("--progress-every-games must be non-negative")
 
+    def print_progress(progress: PgnIngestProgress) -> None:
+        print(
+            " ".join(
+                [
+                    f"games_read={progress.games_read}",
+                    f"games_written={progress.games_written}",
+                    f"games_skipped={progress.games_skipped}",
+                    f"samples={progress.samples}",
+                    f"shards={progress.shards}",
+                ]
+            ),
+            file=sys.stderr,
+        )
+
+    progress_every_games = args.progress_every_games or None
     result = ingest_pgn_dataset(
         PgnIngestConfig(
             input_path=args.input,
@@ -55,7 +79,9 @@ def main() -> int:
             shard_samples=args.shard_samples,
             strict=args.strict,
             skip_fen=True,
-        )
+        ),
+        progress=print_progress if progress_every_games is not None else None,
+        progress_every_games=progress_every_games,
     )
     print(
         " ".join(

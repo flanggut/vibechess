@@ -17,7 +17,7 @@ from tinychess.engine.game import Game
 from tinychess.engine.legal_moves import is_in_check, legal_moves
 from tinychess.engine.move import Move
 from tinychess.engine.piece import Color, PieceType
-from tinychess.engine.square import file_index, rank_index
+from tinychess.engine.square import FILES, RANKS, Square, file_index, parse_square, rank_index
 
 RESULTS = frozenset({"1-0", "0-1", "1/2-1/2", "*"})
 COMMON_TAGS = ("Event", "Site", "Date", "Round", "White", "Black", "Result")
@@ -35,10 +35,33 @@ _SAN_PROMOTION = {
     PieceType.KNIGHT: "N",
 }
 _SAN_PROMOTION_TO_PIECE = {value: key for key, value in _SAN_PROMOTION.items()}
+_SAN_PIECE_TO_PIECE = {value: key for key, value in _PIECE_SAN.items()}
 _TAG_RE = re.compile(r'^\[([A-Za-z0-9_]+)\s+"((?:\\.|[^"\\])*)"\]$')
 _MOVE_NUMBER_RE = re.compile(r"^\d+\.{1,3}$")
 _MOVE_NUMBER_PREFIX_RE = re.compile(r"^\d+\.{1,3}")
 _CHECK_SUFFIX_RE = re.compile(r"[+#]+$")
+_CASTLING_SAN_RE = re.compile(r"^(O-O(?:-O)?)([+#])?$")
+_SAN_TOKEN_RE = re.compile(
+    r"^(?P<piece>[KQRBN])?"
+    r"(?P<disambiguation>[a-h1-8]{0,2})"
+    r"(?P<capture>x?)"
+    r"(?P<target>[a-h][1-8])"
+    r"(?P<promotion>=[QRBN])?"
+    r"(?P<suffix>[+#])?$"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _ParsedSan:
+    piece: PieceType
+    target: Square | None
+    is_capture: bool
+    promotion: PieceType | None
+    suffix: str | None
+    disambiguation: str = ""
+    source_file: int | None = None
+    source_rank: int | None = None
+    castling_side: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,12 +153,11 @@ def parse_san(board: Board, san: str) -> Move:
     """Resolve a bounded SAN token to a legal move from ``board``."""
     _reject_unsupported_movetext(san)
     normalized = _normalize_san_token(san)
+    parsed = _parse_normalized_san_token(normalized)
     legal = legal_moves(board)
-    matches = [
-        move
-        for move in legal
-        if _move_to_san_from_legal(board, move, legal, validate=False) == normalized
-    ]
+    exact_candidates = [] if parsed is None else _san_exact_candidates(board, parsed, legal)
+    suffix = None if parsed is None else parsed.suffix
+    matches = [move for move in exact_candidates if _san_suffix_matches(board, move, suffix)]
     if not matches:
         msg = f"SAN move is not legal in the current position: {san!r}"
         raise ValueError(msg)
@@ -305,6 +327,136 @@ def _format_movetext(initial_game: Game, moves: tuple[Move, ...], result: str) -
         current = current.play(move)
     tokens.append(result)
     return " ".join(tokens)
+
+
+def _parse_normalized_san_token(token: str) -> _ParsedSan | None:
+    castle_match = _CASTLING_SAN_RE.match(token)
+    if castle_match is not None:
+        castle, suffix = castle_match.groups()
+        return _ParsedSan(
+            piece=PieceType.KING,
+            target=None,
+            is_capture=False,
+            promotion=None,
+            suffix=suffix,
+            castling_side="kingside" if castle == "O-O" else "queenside",
+        )
+
+    match = _SAN_TOKEN_RE.match(token)
+    if match is None:
+        return None
+
+    piece = _SAN_PIECE_TO_PIECE.get(match.group("piece") or "", PieceType.PAWN)
+    disambiguation = match.group("disambiguation")
+    constraints = _san_disambiguation_constraints(disambiguation)
+    if constraints is None:
+        return None
+    source_file, source_rank = constraints
+    promotion_token = match.group("promotion")
+    promotion = None
+    if promotion_token is not None:
+        promotion = _SAN_PROMOTION_TO_PIECE[promotion_token[1]]
+    return _ParsedSan(
+        piece=piece,
+        target=parse_square(match.group("target")),
+        is_capture=bool(match.group("capture")),
+        promotion=promotion,
+        suffix=match.group("suffix"),
+        disambiguation=disambiguation,
+        source_file=source_file,
+        source_rank=source_rank,
+    )
+
+
+def _san_disambiguation_constraints(disambiguation: str) -> tuple[int | None, int | None] | None:
+    source_file: int | None = None
+    source_rank: int | None = None
+    for char in disambiguation:
+        if char in FILES:
+            if source_file is not None:
+                return None
+            source_file = FILES.index(char)
+            continue
+        if char in RANKS:
+            if source_rank is not None:
+                return None
+            source_rank = RANKS.index(char)
+            continue
+        return None
+    return source_file, source_rank
+
+
+def _san_exact_candidates(
+    board: Board, parsed: _ParsedSan, legal: tuple[Move, ...]
+) -> list[Move]:
+    """Return legal moves matching SAN shape and canonical disambiguation.
+
+    This is intentionally cheaper than formatting candidate moves as SAN: it does
+    not apply moves and leaves check/mate suffix validation to the final stage.
+    """
+    shape_candidates = [
+        move for move in legal if _san_move_shape_matches(board, move, parsed)
+    ]
+    if parsed.piece is PieceType.PAWN or parsed.castling_side is not None:
+        return shape_candidates
+    return [
+        move
+        for move in shape_candidates
+        if parsed.disambiguation == _required_san_disambiguation(board, move, legal)
+    ]
+
+
+def _san_move_shape_matches(board: Board, move: Move, parsed: _ParsedSan) -> bool:
+    moving_piece = board.piece_at(move.from_square)
+    if moving_piece is None or moving_piece.color is not board.side_to_move:
+        return False
+    if moving_piece.kind is not parsed.piece:
+        return False
+    if parsed.castling_side is not None:
+        if not _is_castling_move(move, moving_piece.kind):
+            return False
+        is_kingside = int(move.to_square) > int(move.from_square)
+        return (parsed.castling_side == "kingside") == is_kingside
+    if _is_castling_move(move, moving_piece.kind):
+        return False
+    if parsed.target is None or move.to_square != parsed.target:
+        return False
+    if move.promotion is not parsed.promotion:
+        return False
+
+    is_capture = board.piece_at(move.to_square) is not None or _is_en_passant_capture(board, move)
+    if is_capture != parsed.is_capture:
+        return False
+
+    if parsed.source_file is not None and file_index(move.from_square) != parsed.source_file:
+        return False
+    if parsed.source_rank is not None and rank_index(move.from_square) != parsed.source_rank:
+        return False
+
+    if moving_piece.kind is PieceType.PAWN:
+        if parsed.is_capture:
+            return parsed.source_file is not None and parsed.source_rank is None
+        return not parsed.disambiguation
+    return True
+
+
+def _required_san_disambiguation(board: Board, move: Move, legal: tuple[Move, ...]) -> str:
+    moving_piece = board.piece_at(move.from_square)
+    if moving_piece is None or moving_piece.kind is PieceType.PAWN:
+        return ""
+    return _disambiguation(board, move, moving_piece.kind, legal)
+
+
+def _is_castling_move(move: Move, kind: PieceType) -> bool:
+    return kind is PieceType.KING and abs(int(move.to_square) - int(move.from_square)) == 2
+
+
+def _san_suffix_matches(board: Board, move: Move, suffix: str | None) -> bool:
+    next_board = board.apply_move(move)
+    if not is_in_check(next_board, next_board.side_to_move):
+        return suffix is None
+    expected = "#" if not legal_moves(next_board) else "+"
+    return suffix == expected
 
 
 def _disambiguation(

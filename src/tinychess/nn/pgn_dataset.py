@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -74,6 +75,18 @@ class PgnIngestResult:
 
 
 @dataclass(frozen=True, slots=True)
+class PgnIngestProgress:
+    """Progress counters for a PGN ingestion run."""
+
+    output_dir: Path
+    games_read: int
+    games_written: int
+    games_skipped: int
+    samples: int
+    shards: int
+
+
+@dataclass(frozen=True, slots=True)
 class PgnShardInfo:
     """Manifest entry for one dataset shard."""
 
@@ -85,8 +98,16 @@ class PgnShardInfo:
         return {"path": self.path, "games": self.games, "samples": self.samples}
 
 
-def ingest_pgn_dataset(config: PgnIngestConfig) -> PgnIngestResult:
+def ingest_pgn_dataset(
+    config: PgnIngestConfig,
+    *,
+    progress: Callable[[PgnIngestProgress], None] | None = None,
+    progress_every_games: int | None = None,
+) -> PgnIngestResult:
     """Convert PGN games to one or more existing-format dataset shards."""
+    if progress_every_games is not None and progress_every_games < 1:
+        raise ValueError("progress_every_games must be positive when provided")
+
     output_dir = config.output_dir.expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -94,7 +115,26 @@ def ingest_pgn_dataset(config: PgnIngestConfig) -> PgnIngestResult:
     games_read = 0
     games_written = 0
     games_skipped = 0
+    flushed_samples = 0
     shards: list[PgnShardInfo] = []
+    last_progress: PgnIngestProgress | None = None
+
+    def emit_progress() -> None:
+        nonlocal last_progress
+        if progress is None:
+            return
+        current = PgnIngestProgress(
+            output_dir=output_dir,
+            games_read=games_read,
+            games_written=games_written,
+            games_skipped=games_skipped,
+            samples=flushed_samples + builder.sample_count,
+            shards=len(shards),
+        )
+        if current == last_progress:
+            return
+        progress(current)
+        last_progress = current
 
     for record in iter_pgn_records(config.input_path):
         if config.max_games is not None and games_written >= config.max_games:
@@ -124,10 +164,14 @@ def ingest_pgn_dataset(config: PgnIngestConfig) -> PgnIngestResult:
             shard = builder.flush(output_dir, len(shards))
             if shard is not None:
                 shards.append(shard)
+                flushed_samples += shard.samples
+        if progress_every_games is not None and games_written % progress_every_games == 0:
+            emit_progress()
 
     final = builder.flush(output_dir, len(shards))
     if final is not None:
         shards.append(final)
+        flushed_samples += final.samples
 
     manifest_path = output_dir / DEFAULT_MANIFEST_FILENAME
     samples = sum(shard.samples for shard in shards)
@@ -160,6 +204,7 @@ def ingest_pgn_dataset(config: PgnIngestConfig) -> PgnIngestResult:
         )
         + "\n"
     )
+    emit_progress()
     return PgnIngestResult(
         output_dir=output_dir,
         manifest_path=manifest_path,
@@ -213,7 +258,7 @@ class _ShardBuilder:
     def sample_count(self) -> int:
         return len(self.positions)
 
-    def add_game(self, pgn: PgnGame) -> None:
+    def add_game(self, pgn: PgnGame) -> int:
         game = pgn.initial_game
         sides: list[Color] = []
         start_sample = self.sample_count
@@ -228,10 +273,12 @@ class _ShardBuilder:
             self.policies.append(_one_hot_policy(game, move))
             sides.append(game.board.side_to_move)
             game = game.play(move)
+        added_samples = self.sample_count - start_sample
+        if added_samples == 0:
+            raise ValueError("PGN game contains no training samples")
         self.outcomes.extend(_result_values(pgn.result, sides))
         self.games.append(_game_record(len(self.games), game, pgn.result))
-        if self.sample_count == start_sample:
-            raise ValueError("PGN game contains no training samples")
+        return added_samples
 
     def flush(self, output_dir: Path, shard_index: int) -> PgnShardInfo | None:
         if self.sample_count == 0:
@@ -334,6 +381,7 @@ __all__ = [
     "PGN_DATASET_MANIFEST_SCHEMA_VERSION",
     "PGN_LABEL_SOURCE",
     "PgnIngestConfig",
+    "PgnIngestProgress",
     "PgnIngestResult",
     "ingest_pgn_dataset",
     "load_pgn_manifest",
