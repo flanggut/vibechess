@@ -1,4 +1,5 @@
 import mlx.core as mx
+import numpy as np
 import pytest
 
 from tinychess.engine import Game, Move, parse_square
@@ -11,8 +12,12 @@ from tinychess.nn import (
     POLICY_SHAPE,
     TENSOR_SHAPE,
     action_index_to_move,
+    encode_board,
+    encode_board_np,
     encode_game,
+    encode_game_np,
     legal_move_mask,
+    legal_move_mask_from_legal_moves_np,
     move_to_action_index,
     tensor_shape,
     to_mlx,
@@ -59,6 +64,42 @@ def test_encoder_side_en_passant_and_clocks() -> None:
     assert scalar(tensor[17, 2, 3]) == 1.0  # d3
     assert scalar(mx.sum(tensor[18])) == pytest.approx(4.48)
     assert scalar(mx.sum(tensor[19])) == pytest.approx(7.68)
+
+
+@pytest.mark.parametrize(
+    "game",
+    [
+        Game.new(),
+        Game.from_fen(
+            "rnbqkbnr/pppp1ppp/8/4p3/3P4/8/PPP1PPPP/RNBQKBNR b KQkq d3 7 12"
+        ),
+        Game.from_fen("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1"),
+        Game.from_fen("4k3/P7/8/8/8/8/8/4K3 w - - 0 1"),
+    ],
+)
+def test_numpy_position_encoders_match_mlx_outputs(game: Game) -> None:
+    expected_game = np.asarray(encode_game(game), dtype=np.float32)
+    actual_game = encode_game_np(game)
+    expected_board = np.asarray(
+        encode_board(
+            game.board,
+            halfmove_clock=game.halfmove_clock,
+            fullmove_number=game.fullmove_number,
+        ),
+        dtype=np.float32,
+    )
+    actual_board = encode_board_np(
+        game.board,
+        halfmove_clock=game.halfmove_clock,
+        fullmove_number=game.fullmove_number,
+    )
+
+    assert actual_game.dtype == np.float32
+    assert actual_game.shape == TENSOR_SHAPE
+    np.testing.assert_array_equal(actual_game, expected_game)
+    assert actual_board.dtype == np.float32
+    assert actual_board.shape == TENSOR_SHAPE
+    np.testing.assert_array_equal(actual_board, expected_board)
 
 
 @pytest.mark.parametrize(
@@ -197,6 +238,7 @@ def test_legal_move_mask_from_legal_moves_matches_public_mask(game: Game) -> Non
     legal = game.legal_moves
     public_mask = legal_move_mask(game)
     helper_mask = legal_move_mask_from_legal_moves(game, legal)
+    helper_mask_np = legal_move_mask_from_legal_moves_np(game, legal)
 
     assert helper_mask.dtype == mx.float32
     assert tensor_shape(helper_mask) == (ACTION_SPACE_SIZE,)
@@ -205,6 +247,12 @@ def test_legal_move_mask_from_legal_moves_matches_public_mask(game: Game) -> Non
     assert active_indices(helper_mask) == {
         move_to_action_index(legal_move, game.board) for legal_move in legal
     }
+    assert helper_mask_np.dtype == np.float32
+    assert helper_mask_np.shape == (ACTION_SPACE_SIZE,)
+    np.testing.assert_array_equal(
+        helper_mask_np,
+        np.asarray(public_mask, dtype=np.float32),
+    )
 
 
 def test_to_mlx_is_idempotent_for_mlx_arrays_and_converts_array_like_values() -> None:

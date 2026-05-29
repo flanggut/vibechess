@@ -2,7 +2,17 @@ from __future__ import annotations
 
 import pytest
 
-from tinychess.engine import Game, Move, PgnGame, format_pgn, move_to_san, parse_pgn, parse_san
+from tinychess.engine import (
+    Game,
+    Move,
+    PgnGame,
+    format_pgn,
+    legal_moves,
+    move_to_san,
+    parse_pgn,
+    parse_san,
+)
+from tinychess.engine.pgn import parse_pgn_with_trace
 
 
 def play_uci(*moves: str) -> Game:
@@ -41,6 +51,33 @@ def test_fools_mate_san_includes_checkmate_and_result() -> None:
     parsed = parse_pgn(pgn_text)
     assert parsed.result == "0-1"
     assert parsed.final_game.outcome is not None
+
+
+def test_parse_pgn_with_trace_matches_normal_parse_and_replayed_positions() -> None:
+    text = """[Event \"Trace\"]
+[Result \"1-0\"]
+
+1. e4 e5 2. Nf3 Nc6 1-0
+"""
+
+    parsed = parse_pgn(text)
+    traced = parse_pgn_with_trace(text)
+
+    assert traced.game.moves == parsed.moves
+    assert traced.game.result == parsed.result
+    assert traced.game.tags == parsed.tags
+    assert len(traced.plies) == len(parsed.moves)
+
+    game = parsed.initial_game
+    for ply, move in zip(traced.plies, parsed.moves, strict=True):
+        assert ply.board == game.board
+        assert ply.halfmove_clock == game.halfmove_clock
+        assert ply.fullmove_number == game.fullmove_number
+        assert ply.move == move
+        assert ply.legal_moves == legal_moves(game.board)
+        assert move in ply.legal_moves
+        game = game.play(move)
+    assert game.to_fen() == parsed.final_game.to_fen()
 
 
 def test_castling_san_parse_and_write() -> None:

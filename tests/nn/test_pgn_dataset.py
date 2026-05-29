@@ -6,13 +6,34 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
+import pytest
 
+from tinychess.engine.game import Game
+from tinychess.engine.legal_moves import legal_moves
+from tinychess.engine.move import Move
+from tinychess.engine.pgn import PgnGameTrace, PgnParsedPly
+from tinychess.engine.pgn_stream import (
+    iter_pgn_records,
+    parse_ingest_pgn,
+    parse_ingest_pgn_with_trace,
+)
+from tinychess.engine.piece import Color
 from tinychess.nn.checkpoint import DEFAULT_WEIGHTS_FILENAME, load_checkpoint_metadata
+from tinychess.nn.encode import (
+    ACTION_SPACE_SIZE,
+    encode_game_np,
+    legal_move_mask_from_legal_moves_np,
+    move_to_action_index,
+)
 from tinychess.nn.pgn_dataset import (
     DEFAULT_MANIFEST_FILENAME,
+    SUPPORTED_PGN_RESULTS,
     PgnIngestConfig,
     PgnIngestProgress,
+    _TrainingReplayState,
     ingest_pgn_dataset,
+    shard_directories,
 )
 from tinychess.nn.self_play import load_self_play_dataset
 from tinychess.nn.train import TrainingConfig, train_from_directory
@@ -66,6 +87,150 @@ def test_ingest_pgn_dataset_writes_loadable_shards_and_manifest(tmp_path: Path) 
     assert np.allclose(first.mcts_policies.sum(axis=1), 1.0)
     assert first.outcomes.tolist() == [1.0, -1.0, 1.0]
     assert second.outcomes.tolist() == [-1.0, 1.0, -1.0]
+
+
+def test_ingest_pgn_dataset_trace_path_matches_legacy_replay_arrays(tmp_path: Path) -> None:
+    input_path = tmp_path / "games.pgn"
+    output_dir = tmp_path / "dataset"
+    input_path.write_text(PGN_TEXT)
+
+    result = ingest_pgn_dataset(
+        PgnIngestConfig(input_path=input_path, output_dir=output_dir, shard_samples=16)
+    )
+    dataset = load_self_play_dataset(shard_directories(output_dir)[0])
+    expected = _legacy_replay_arrays(input_path)
+
+    assert result.games_written == 2
+    assert np.array_equal(dataset.positions, expected["positions"])
+    assert np.array_equal(dataset.legal_masks, expected["legal_masks"])
+    assert np.array_equal(dataset.mcts_policies, expected["mcts_policies"])
+    assert np.array_equal(dataset.outcomes, expected["outcomes"])
+
+
+@pytest.mark.parametrize(
+    "pgn_text",
+    [
+        """[Event "Normal"]
+[Result "1-0"]
+
+1. e4 e5 2. Nf3 1-0
+""",
+        """[Event "Mate"]
+[Result "0-1"]
+
+1. f3 e5 2. g4 Qh4# 0-1
+""",
+        """[Event "Castle"]
+[Result "1-0"]
+
+1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. O-O Be7 1-0
+""",
+        """[Event "EnPassant"]
+[Result "1-0"]
+
+1. e4 a6 2. e5 d5 3. exd6 1-0
+""",
+    ],
+)
+def test_ingest_pgn_dataset_lightweight_replay_matches_game_play_reference(
+    tmp_path: Path,
+    pgn_text: str,
+) -> None:
+    input_path = tmp_path / "game.pgn"
+    output_dir = tmp_path / "dataset"
+    input_path.write_text(pgn_text)
+
+    result = ingest_pgn_dataset(PgnIngestConfig(input_path=input_path, output_dir=output_dir))
+    dataset = load_self_play_dataset(output_dir / "shard-00000")
+    pgn = parse_ingest_pgn(pgn_text)
+    reference = pgn.final_game
+    record = dataset.games[0]
+
+    assert result.games_written == 1
+    assert result.samples == len(pgn.moves)
+    assert dataset.metadata.sample_count == len(pgn.moves)
+    assert record.moves_uci == [move.to_uci() for move in pgn.moves]
+    assert record.final_fen == reference.to_fen()
+    if reference.outcome is None:
+        assert record.outcome_reason == "max_plies"
+    else:
+        assert reference.outcome.winner is not None
+        assert record.outcome_reason == reference.outcome.reason.value
+        assert record.winner == reference.outcome.winner.value
+
+
+def test_training_replay_state_matches_game_play_for_promotion() -> None:
+    game = Game.from_fen("4k3/P7/8/8/8/8/8/4K3 w - - 0 1")
+    state = _TrainingReplayState.from_game(game)
+    move = Move.from_uci("a7a8q")
+
+    state.advance(move)
+    game = game.play(move)
+
+    assert state.to_fen() == game.to_fen()
+    assert state.moves == list(game.moves)
+    assert state.to_outcome_game().outcome == game.outcome
+    assert np.array_equal(state.encode_position(), encode_game_np(game))
+
+
+def test_shard_builder_rejects_bad_trace_without_partial_samples(tmp_path: Path) -> None:
+    from tinychess.nn.pgn_dataset import _ShardBuilder
+
+    traced = parse_ingest_pgn_with_trace(
+        """[Event "BadTrace"]
+[Result "1-0"]
+
+1. e4 e5 1-0
+"""
+    )
+    bad_second_ply = PgnParsedPly(
+        board=traced.plies[1].board,
+        halfmove_clock=traced.plies[1].halfmove_clock,
+        fullmove_number=traced.plies[1].fullmove_number,
+        move=traced.plies[1].move,
+        legal_moves=(),
+    )
+    bad_trace = PgnGameTrace(game=traced.game, plies=(traced.plies[0], bad_second_ply))
+    builder = _ShardBuilder(PgnIngestConfig(input_path=tmp_path / "games.pgn", output_dir=tmp_path))
+
+    with pytest.raises(ValueError, match="trace move is not legal"):
+        builder.add_game(bad_trace)
+
+    assert builder.sample_count == 0
+    assert builder.outcomes == []
+    assert builder.games == []
+
+
+def test_ingest_pgn_dataset_records_repetition_outcome(tmp_path: Path) -> None:
+    input_path = tmp_path / "repetition.pgn"
+    output_dir = tmp_path / "dataset"
+    input_path.write_text(
+        """[Event "Repetition"]
+[Result "1/2-1/2"]
+
+1. Nf3 Nf6 2. Ng1 Ng8 3. Nf3 Nf6 4. Ng1 Ng8 1/2-1/2
+"""
+    )
+
+    result = ingest_pgn_dataset(PgnIngestConfig(input_path=input_path, output_dir=output_dir))
+    dataset = load_self_play_dataset(output_dir / "shard-00000")
+
+    assert result.games_written == 1
+    assert dataset.games[0].outcome_reason == "repetition"
+    assert dataset.games[0].winner is None
+
+
+def test_training_replay_state_matches_game_play_for_fifty_move_outcome() -> None:
+    game = Game.from_fen("4k3/8/8/8/8/8/6N1/R3K3 w - - 99 1")
+    state = _TrainingReplayState.from_game(game)
+    move = Move.from_uci("g2f4")
+
+    state.advance(move)
+    game = game.play(move)
+
+    assert state.to_fen() == game.to_fen()
+    assert state.moves == list(game.moves)
+    assert state.to_outcome_game().outcome == game.outcome
 
 
 def test_ingest_pgn_dataset_skips_empty_games_without_polluting_shards(tmp_path: Path) -> None:
@@ -149,6 +314,53 @@ def test_ingest_pgn_dataset_progress_interval_emits_periodic_and_final(
     assert result.games_written == 3
     assert [update.games_written for update in updates] == [2, 3]
     assert updates[-1].samples == result.samples
+
+
+def _legacy_replay_arrays(input_path: Path) -> dict[str, npt.NDArray[np.float32]]:
+    positions: list[npt.NDArray[np.float32]] = []
+    legal_masks: list[npt.NDArray[np.float32]] = []
+    policies: list[npt.NDArray[np.float32]] = []
+    outcomes: list[float] = []
+    starting_fen = Game.new().to_fen()
+
+    for record in iter_pgn_records(input_path):
+        try:
+            pgn = parse_ingest_pgn(record.text)
+        except ValueError:
+            continue
+        if pgn.initial_game.to_fen() != starting_fen or pgn.result not in SUPPORTED_PGN_RESULTS:
+            continue
+        if not pgn.moves:
+            continue
+
+        game = pgn.initial_game
+        sides: list[Color] = []
+        for move in pgn.moves:
+            legal = legal_moves(game.board)
+            if move not in legal:
+                raise AssertionError("legacy replay found illegal parsed move")
+            positions.append(encode_game_np(game))
+            legal_masks.append(legal_move_mask_from_legal_moves_np(game, legal))
+            policy = np.zeros((ACTION_SPACE_SIZE,), dtype=np.float32)
+            policy[move_to_action_index(move, game.board)] = 1.0
+            policies.append(policy)
+            sides.append(game.board.side_to_move)
+            game = game.play(move)
+        outcomes.extend(_legacy_result_values(pgn.result, sides))
+
+    return {
+        "positions": np.stack(positions).astype(np.float32, copy=False),
+        "legal_masks": np.stack(legal_masks).astype(np.float32, copy=False),
+        "mcts_policies": np.stack(policies).astype(np.float32, copy=False),
+        "outcomes": np.asarray(outcomes, dtype=np.float32),
+    }
+
+
+def _legacy_result_values(result: str, sides: list[Color]) -> list[float]:
+    if result == "1/2-1/2":
+        return [0.0 for _side in sides]
+    winner = Color.WHITE if result == "1-0" else Color.BLACK
+    return [1.0 if side is winner else -1.0 for side in sides]
 
 
 def test_pgn_ingest_config_rejects_fen_ingestion() -> None:

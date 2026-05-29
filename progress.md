@@ -1,0 +1,49 @@
+# PGN Import Optimization Progress
+
+- Read `plans/pgn-import-optimization-components.md`; requested `context.md` and `plan.md` are not present in checkout.
+- Component 1 complete: benchmark coverage only.
+- Added `full-write` benchmark mode in `scripts/pgn_ingest_benchmark.py` that calls `ingest_pgn_dataset()`, supports temporary or explicit dataset output dirs, records shard/sample counters, and reports output byte/file counts.
+- Added stable benchmark JSON fields for dry-run and full-write modes while keeping dry-run as the CLI default.
+- Added fixture-driven benchmark tests/CLI smoke coverage in `tests/test_pgn_ingest_benchmark.py`.
+- Updated `docs/pgn-ingestion.md` to distinguish dry-run CPU phase timing from authoritative full-write throughput.
+- Validation passed:
+  - `uv run pytest tests/test_pgn_ingest_benchmark.py tests/nn/test_pgn_dataset.py` (exit 0; 12 passed)
+  - `uv run ruff check scripts/pgn_ingest_benchmark.py tests/test_pgn_ingest_benchmark.py` (exit 0)
+  - `uv run mypy scripts/pgn_ingest_benchmark.py tests/test_pgn_ingest_benchmark.py` (exit 0)
+  - Tiny dry-run and full-write benchmark CLI smoke commands with two PGN records (exit 0; dry-run records=2 samples=4, full-write records=2 samples=4 shards=2 output_bytes=4653 in that run)
+- Component 2 complete: NumPy-native encoding helpers.
+- Added `encode_board_np()`, `encode_game_np()`, and `legal_move_mask_from_legal_moves_np()` in `src/tinychess/nn/encode.py`, exported through `tinychess.nn`, with parity tests against current MLX encoders/masks.
+- Switched PGN dataset shard building and dry-run benchmark encode/mask phases to use the NumPy helpers while preserving dense shard keys and schema (`positions`, `legal_masks`, `mcts_policies`, `outcomes`).
+- Updated `docs/pgn-ingestion.md` to note NumPy-native tensor writing with dense self-play schema compatibility.
+- Component 2 validation passed:
+  - `uv run pytest tests/nn/test_encode.py tests/nn/test_pgn_dataset.py tests/test_pgn_ingest_benchmark.py` (exit 0; 44 passed)
+  - `uv run pytest` (exit 0; 263 passed)
+  - `uv run ruff check .` (exit 0)
+  - `uv run mypy` (exit 0)
+  - Tiny dry-run benchmark CLI smoke with two PGN records (exit 0; records=2 samples=4, `encode_positions`/`legal_masks` phases exercised)
+- Component 3 complete: lightweight ingestion replay state.
+- Added `_TrainingReplayState` in `src/tinychess/nn/pgn_dataset.py` and switched PGN shard sample generation from per-ply `Game.play()` to `legal_moves(state.board)` plus `Board.apply_move()` with ingestion-local halfmove/fullmove/repetition tracking.
+- Preserved dense shard compatibility (`positions`, `legal_masks`, `mcts_policies`, `outcomes`) and existing parser behavior; replay legality checks remain in place and parser legal traces are not reused yet.
+- Updated the dry-run PGN ingestion benchmark to time `advance_replay_state` instead of `play_moves` while mirroring the new importer replay path.
+- Added parity/load tests for normal, checkmate, castling, en-passant, and promotion replay coverage.
+- Component 3 validation passed:
+  - `uv run pytest tests/nn/test_pgn_dataset.py tests/test_pgn.py tests/test_pgn_ingest_benchmark.py` (exit 0; 47 passed)
+  - `uv run pytest` (exit 0; 268 passed)
+  - `uv run ruff check .` (exit 0)
+  - `uv run mypy` (exit 0)
+  - Tiny dry-run benchmark CLI smoke with two PGN records (exit 0; records=2 samples=4, `advance_replay_state` phase exercised)
+- Component 4 complete: parser trace reuse for PGN ingestion.
+- Repaired the partial Component 4 worktree by finishing trace tests, lint fixes, docs, validation, and handoff.
+- Added `PgnParsedPly`/`PgnGameTrace` and `parse_pgn_with_trace()` in `src/tinychess/engine/pgn.py`; `parse_san()` and `parse_pgn()` APIs remain stable.
+- Added `parse_ingest_pgn_with_trace()` in `src/tinychess/engine/pgn_stream.py` using the same strict/sanitized boundary as `parse_ingest_pgn()`.
+- Switched `ingest_pgn_dataset()` to consume traced boards/legal-move tuples for positions, masks, policies, and replay validation, preserving dense self-play-compatible shard schema.
+- Updated the dry-run PGN ingestion benchmark to exercise trace reuse and report `trace_legal_reuse`.
+- Added trace parity/rejection tests and dense ingestion parity against a legacy-style parse/replay/legal-generation reference.
+- Component 4 validation passed:
+  - `uv run pytest tests/test_pgn.py tests/test_pgn_stream.py tests/nn/test_pgn_dataset.py tests/test_pgn_ingest_benchmark.py` (exit 0; 58 passed)
+  - `uv run pytest` (exit 0; 277 passed)
+  - `uv run ruff check .` (exit 0)
+  - `uv run mypy` (exit 0)
+  - Tiny dry-run benchmark CLI smoke with two PGN records (exit 0; records=2 samples=4, `trace_legal_reuse` phase exercised)
+  - Tiny full-write benchmark CLI smoke with two PGN records (exit 0; records=2 samples=4 shards=1)
+- Component 4 handoff written to `plans/pgn-opt-worker-component-4.md`.

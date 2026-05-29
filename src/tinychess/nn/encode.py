@@ -11,6 +11,8 @@ from collections.abc import Sequence
 from typing import Any, TypeAlias, cast
 
 import mlx.core as mx
+import numpy as np
+import numpy.typing as npt
 
 from tinychess.engine.board import Board
 from tinychess.engine.game import Game
@@ -89,6 +91,20 @@ def encode_game(game: Game) -> MLXArray:
     )
 
 
+def encode_game_np(game: Game) -> npt.NDArray[np.float32]:
+    """Encode the current game state as a NumPy ``float32`` array.
+
+    The returned tensor is layout- and value-compatible with
+    ``np.asarray(encode_game(game), dtype=np.float32)`` without creating an MLX
+    array first.
+    """
+    return encode_board_np(
+        game.board,
+        halfmove_clock=game.halfmove_clock,
+        fullmove_number=game.fullmove_number,
+    )
+
+
 def encode_board(
     board: Board,
     *,
@@ -113,6 +129,30 @@ def encode_board(
     planes.append(_full_plane(halfmove_clock / 100.0))
     planes.append(_full_plane(fullmove_number / 100.0))
     return mx.stack(planes).astype(mx.float32)
+
+
+def encode_board_np(
+    board: Board,
+    *,
+    halfmove_clock: int = 0,
+    fullmove_number: int = 1,
+) -> npt.NDArray[np.float32]:
+    """Encode a board and optional clocks directly into a NumPy array."""
+    tensor = np.zeros(TENSOR_SHAPE, dtype=np.float32)
+    for square, piece in board.occupied_squares():
+        channel = _PIECE_CHANNELS[(piece.color, piece.kind)]
+        tensor[channel, rank_index(square), file_index(square)] = 1.0
+
+    if board.side_to_move is Color.BLACK:
+        tensor[12, :, :] = 1.0
+    for right, channel in _CASTLING_CHANNELS.items():
+        if right in board.castling_rights:
+            tensor[channel, :, :] = 1.0
+    if board.en_passant_target is not None:
+        tensor[17, rank_index(board.en_passant_target), file_index(board.en_passant_target)] = 1.0
+    tensor[18, :, :] = halfmove_clock / 100.0
+    tensor[19, :, :] = fullmove_number / 100.0
+    return tensor
 
 
 def tensor_shape(tensor: object) -> tuple[int, ...]:
@@ -231,6 +271,23 @@ def legal_move_mask_from_legal_moves(game: Game, legal: tuple[Move, ...]) -> MLX
         return mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32)
     indices = mx.array(legal_indices)
     return mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32).at[indices].add(1.0)
+
+
+def legal_move_mask_from_legal_moves_np(
+    game: Game, legal: tuple[Move, ...]
+) -> npt.NDArray[np.float32]:
+    """Return a NumPy legal-action mask from precomputed legal moves.
+
+    Precondition: ``legal`` must be the legal move tuple for exactly ``game.board``.
+    The returned vector matches
+    ``np.asarray(legal_move_mask_from_legal_moves(game, legal), dtype=np.float32)``.
+    """
+    mask = np.zeros((ACTION_SPACE_SIZE,), dtype=np.float32)
+    if not legal:
+        return mask
+    indices = np.asarray([move_to_action_index(move, game.board) for move in legal], dtype=np.intp)
+    np.add.at(mask, indices, np.float32(1.0))
+    return mask
 
 
 def _queen_or_knight_plane(df: int, dr: int) -> int:

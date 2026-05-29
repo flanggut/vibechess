@@ -33,7 +33,11 @@ data/selfplay/pgn-elite/
 ```
 
 Each shard is compatible with `tinychess.nn.self_play.load_self_play_dataset`.
-`manifest.json` lists all shard directories for shard-wise training.
+`manifest.json` lists all shard directories for shard-wise training. Import writes
+NumPy-native tensors directly while preserving the dense self-play shard schema.
+During import, the strict/sanitized PGN parser exposes per-ply boards and legal
+moves so tensor encoding can reuse parser-computed legality instead of replaying
+legal generation a second time.
 
 ## Labels
 
@@ -60,7 +64,7 @@ labels use the final PGN result.
 
 ## Benchmark ingestion hotspots
 
-Use the dry-run benchmark to see where ingestion time is going before writing
+Use the default dry-run benchmark to see where CPU time is going before writing
 shards:
 
 ```bash
@@ -69,12 +73,31 @@ uv run python scripts/pgn_ingest_benchmark.py \
   --max-records 100
 ```
 
-The report breaks time down by record streaming, FEN tag screening,
-sanitization/parsing, replay legality checks, board encoding, legal-mask
+The dry-run report breaks time down by record streaming, FEN tag screening,
+sanitization/parsing, parser trace validation, board encoding, legal-mask
 creation, policy allocation, and move application. The `parse_sanitize` phase
-includes PGN parser and SAN-resolution time, not only sanitizer regex work. Add
-`--format json` for machine-readable output or `--profile-output pgn.prof` to
-capture cProfile data for drilling into hot parser functions.
+includes PGN parser and SAN-resolution time, including legal-move generation;
+`validate_trace` is only the cheap consistency check before reusing that trace.
+Dry-run mode intentionally excludes dense NPZ compression, manifest writing, and
+`games.jsonl` output.
+
+Use full-write mode when you need authoritative end-to-end import throughput and
+output size, because it calls `ingest_pgn_dataset()` and writes real shards:
+
+```bash
+uv run python scripts/pgn_ingest_benchmark.py \
+  --input lichess_elite_2025-11.pgn \
+  --max-records 100 \
+  --mode full-write \
+  --dataset-output-dir /tmp/tinychess-pgn-benchmark \
+  --format json
+```
+
+If `--dataset-output-dir` is omitted, full-write mode uses a temporary output
+directory. Add `--format json` for machine-readable reports with stable counters,
+sample rates, output byte/file counts, shard counts, and timing fields. Add
+`--profile-output pgn.prof` to capture cProfile data for drilling into hot
+functions.
 
 ## Train from shards
 

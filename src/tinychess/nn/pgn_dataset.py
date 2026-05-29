@@ -8,23 +8,28 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import numpy.typing as npt
 
 import tinychess
+from tinychess.engine.board import Board
 from tinychess.engine.game import Game
+from tinychess.engine.move import Move
 from tinychess.engine.outcome import OutcomeReason
-from tinychess.engine.pgn import PgnGame
-from tinychess.engine.pgn_stream import iter_pgn_records, parse_ingest_pgn, pgn_has_fen_setup
-from tinychess.engine.piece import Color
+from tinychess.engine.pgn import PgnGameTrace, PgnParsedPly
+from tinychess.engine.pgn_stream import (
+    iter_pgn_records,
+    parse_ingest_pgn_with_trace,
+    pgn_has_fen_setup,
+)
+from tinychess.engine.piece import Color, Piece, PieceType
+from tinychess.engine.square import Square
 from tinychess.nn.encode import (
     ACTION_SPACE_SIZE,
     ACTION_SPACE_VERSION,
     ENCODER_VERSION,
-    encode_game,
-    legal_move_mask_from_legal_moves,
+    encode_board_np,
     move_to_action_index,
 )
 from tinychess.nn.self_play import (
@@ -144,10 +149,11 @@ def ingest_pgn_dataset(
             games_skipped += 1
             continue
         try:
-            pgn = parse_ingest_pgn(record.text, strict=config.strict)
+            traced = parse_ingest_pgn_with_trace(record.text, strict=config.strict)
         except ValueError:
             games_skipped += 1
             continue
+        pgn = traced.game
         if pgn.initial_game.to_fen() != Game.new().to_fen():
             games_skipped += 1
             continue
@@ -155,7 +161,7 @@ def ingest_pgn_dataset(
             games_skipped += 1
             continue
         try:
-            builder.add_game(pgn)
+            builder.add_game(traced)
         except ValueError:
             games_skipped += 1
             continue
@@ -258,26 +264,32 @@ class _ShardBuilder:
     def sample_count(self) -> int:
         return len(self.positions)
 
-    def add_game(self, pgn: PgnGame) -> int:
-        game = pgn.initial_game
+    def add_game(self, traced: PgnGameTrace) -> int:
+        pgn = traced.game
+        if len(traced.plies) != len(pgn.moves):
+            raise ValueError("PGN trace length does not match parsed moves")
+        state = _TrainingReplayState.from_game(pgn.initial_game)
         sides: list[Color] = []
-        start_sample = self.sample_count
-        for move in pgn.moves:
-            legal = game.legal_moves
-            if move not in legal:
-                raise ValueError("PGN move is not legal in replayed game")
-            self.positions.append(np.asarray(encode_game(game), dtype=np.float32))
-            self.legal_masks.append(
-                np.asarray(legal_move_mask_from_legal_moves(game, legal), dtype=np.float32)
-            )
-            self.policies.append(_one_hot_policy(game, move))
-            sides.append(game.board.side_to_move)
-            game = game.play(move)
-        added_samples = self.sample_count - start_sample
+        positions: list[npt.NDArray[np.float32]] = []
+        legal_masks: list[npt.NDArray[np.float32]] = []
+        policies: list[npt.NDArray[np.float32]] = []
+        for ply in traced.plies:
+            _validate_trace_matches_state(state, ply)
+            if ply.move not in ply.legal_moves:
+                raise ValueError("PGN trace move is not legal in parser-provided legal moves")
+            positions.append(state.encode_position())
+            legal_masks.append(_legal_move_mask_np(ply.board, ply.legal_moves))
+            policies.append(_one_hot_policy(ply.board, ply.move))
+            sides.append(ply.board.side_to_move)
+            state.advance(ply.move)
+        added_samples = len(positions)
         if added_samples == 0:
             raise ValueError("PGN game contains no training samples")
+        self.positions.extend(positions)
+        self.legal_masks.extend(legal_masks)
+        self.policies.extend(policies)
         self.outcomes.extend(_result_values(pgn.result, sides))
-        self.games.append(_game_record(len(self.games), game, pgn.result))
+        self.games.append(_game_record(len(self.games), state, pgn.result))
         return added_samples
 
     def flush(self, output_dir: Path, shard_index: int) -> PgnShardInfo | None:
@@ -323,9 +335,87 @@ def _metadata(config: PgnIngestConfig, *, sample_count: int, game_count: int) ->
     )
 
 
-def _one_hot_policy(game: Game, move: Any) -> npt.NDArray[np.float32]:
+@dataclass(slots=True)
+class _TrainingReplayState:
+    """Minimal PGN-ingestion replay state without immutable ``Game.play`` history copies."""
+
+    board: Board
+    halfmove_clock: int
+    fullmove_number: int
+    moves: list[Move]
+    repetition_counts: dict[_PositionKey, int]
+
+    @classmethod
+    def from_game(cls, game: Game) -> _TrainingReplayState:
+        return cls(
+            board=game.board,
+            halfmove_clock=game.halfmove_clock,
+            fullmove_number=game.fullmove_number,
+            moves=list(game.moves),
+            repetition_counts=dict(game.repetition_counts),
+        )
+
+    def encode_position(self) -> npt.NDArray[np.float32]:
+        return encode_board_np(
+            self.board,
+            halfmove_clock=self.halfmove_clock,
+            fullmove_number=self.fullmove_number,
+        )
+
+    def advance(self, move: Move) -> None:
+        moving_piece = self.board.piece_at(move.from_square)
+        if moving_piece is None:
+            raise ValueError(f"cannot move from empty square {move.from_square}")
+        is_capture = _is_capture(self.board, move, moving_piece)
+        previous_side = self.board.side_to_move
+        next_board = self.board.apply_move(move)
+        next_key = _position_key(next_board)
+        self.repetition_counts[next_key] = self.repetition_counts.get(next_key, 0) + 1
+        self.halfmove_clock = (
+            0 if moving_piece.kind is PieceType.PAWN or is_capture else self.halfmove_clock + 1
+        )
+        self.fullmove_number += 1 if previous_side is Color.BLACK else 0
+        self.board = next_board
+        self.moves.append(move)
+
+    def to_outcome_game(self) -> Game:
+        """Return a minimal ``Game`` snapshot for outcome checks, not full-history replay."""
+        return Game(
+            positions=(self.board,),
+            moves=tuple(self.moves),
+            halfmove_clock=self.halfmove_clock,
+            fullmove_number=self.fullmove_number,
+            repetition_counts=dict(self.repetition_counts),
+        )
+
+    def to_fen(self) -> str:
+        return self.board.to_fen(
+            halfmove_clock=self.halfmove_clock,
+            fullmove_number=self.fullmove_number,
+        )
+
+
+def _validate_trace_matches_state(state: _TrainingReplayState, ply: PgnParsedPly) -> None:
+    if ply.board != state.board:
+        raise ValueError("PGN trace board does not match replayed game state")
+    if ply.halfmove_clock != state.halfmove_clock:
+        raise ValueError("PGN trace halfmove clock does not match replayed game state")
+    if ply.fullmove_number != state.fullmove_number:
+        raise ValueError("PGN trace fullmove number does not match replayed game state")
+
+
+def _legal_move_mask_np(board: Board, legal: tuple[Move, ...]) -> npt.NDArray[np.float32]:
+    mask = np.zeros((ACTION_SPACE_SIZE,), dtype=np.float32)
+    if not legal:
+        return mask
+    indices = np.asarray([move_to_action_index(move, board) for move in legal], dtype=np.intp)
+    np.add.at(mask, indices, np.float32(1.0))
+    return mask
+
+
+def _one_hot_policy(board: Board, move: Move) -> npt.NDArray[np.float32]:
     policy = np.zeros((ACTION_SPACE_SIZE,), dtype=np.float32)
-    policy[move_to_action_index(move, game.board)] = 1.0
+    policy[move_to_action_index(move, board)] = 1.0
     return policy
 
 
@@ -344,6 +434,23 @@ def _winner(result: str) -> Color | None:
     return None
 
 
+_PositionKey = tuple[tuple[Piece | None, ...], Color, frozenset[str], Square | None]
+
+
+def _position_key(board: Board) -> _PositionKey:
+    return (board.squares, board.side_to_move, board.castling_rights, board.en_passant_target)
+
+
+def _is_capture(board: Board, move: Move, moving_piece: Piece) -> bool:
+    if board.piece_at(move.to_square) is not None:
+        return True
+    return (
+        moving_piece.kind is PieceType.PAWN
+        and board.en_passant_target == move.to_square
+        and abs(int(move.to_square) - int(move.from_square)) in {7, 9}
+    )
+
+
 def _git_commit() -> str | None:
     try:
         result = subprocess.run(
@@ -360,19 +467,24 @@ def _git_commit() -> str | None:
     return result.stdout.strip() or None
 
 
-def _game_record(game_index: int, game: Game, result: str) -> SelfPlayGameRecord:
-    actual = game.outcome
+def _game_record(
+    game_index: int,
+    state: _TrainingReplayState,
+    result: str,
+) -> SelfPlayGameRecord:
+    outcome_game = state.to_outcome_game()
+    actual = outcome_game.outcome
     winner = _winner(result)
     reason = actual.reason if actual is not None else OutcomeReason.MAX_PLIES
     if actual is not None:
         winner = actual.winner
     return SelfPlayGameRecord(
         game_index=game_index,
-        plies=len(game.moves),
+        plies=len(state.moves),
         outcome_reason=reason.value,
         winner=None if winner is None else winner.value,
-        final_fen=game.to_fen(),
-        moves_uci=[move.to_uci() for move in game.moves],
+        final_fen=state.to_fen(),
+        moves_uci=[move.to_uci() for move in state.moves],
     )
 
 

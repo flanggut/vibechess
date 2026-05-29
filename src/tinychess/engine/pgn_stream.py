@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from tinychess.engine.pgn import PgnGame, parse_pgn
+from tinychess.engine.pgn import PgnGame, PgnGameTrace, parse_pgn, parse_pgn_with_trace
 
 _TAG_RE = re.compile(r'^\[([A-Za-z0-9_]+)\s+"((?:\\.|[^"\\])*)"\]$')
 _NAG_RE = re.compile(r"\$\d+")
@@ -83,6 +83,11 @@ def parse_ingest_pgn(text: str, *, strict: bool = False) -> PgnGame:
     return parse_pgn(text if strict else sanitize_pgn_text(text))
 
 
+def parse_ingest_pgn_with_trace(text: str, *, strict: bool = False) -> PgnGameTrace:
+    """Parse a PGN record for ingestion with per-ply parser trace data."""
+    return parse_pgn_with_trace(text if strict else sanitize_pgn_text(text))
+
+
 def _strip_brace_comments(text: str) -> str:
     result: list[str] = []
     depth = 0
@@ -121,6 +126,7 @@ __all__ = [
     "PgnRecord",
     "iter_pgn_records",
     "parse_ingest_pgn",
+    "parse_ingest_pgn_with_trace",
     "pgn_has_fen_setup",
     "pgn_tags",
     "sanitize_pgn_text",

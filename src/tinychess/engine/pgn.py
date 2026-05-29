@@ -96,6 +96,25 @@ class PgnGame:
         return format_pgn(self)
 
 
+@dataclass(frozen=True, slots=True)
+class PgnParsedPly:
+    """Parser-computed per-ply state for ingestion reuse."""
+
+    board: Board
+    halfmove_clock: int
+    fullmove_number: int
+    move: Move
+    legal_moves: tuple[Move, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PgnGameTrace:
+    """A parsed PGN game plus parser-computed per-ply trace data."""
+
+    game: PgnGame
+    plies: tuple[PgnParsedPly, ...]
+
+
 def move_to_san(board: Board, move: Move) -> str:
     """Return bounded SAN for a legal move from ``board``."""
     moving_piece = board.piece_at(move.from_square)
@@ -151,6 +170,21 @@ def _move_to_san_from_legal(
 
 def parse_san(board: Board, san: str) -> Move:
     """Resolve a bounded SAN token to a legal move from ``board``."""
+    move, _legal = _parse_san_with_legal(board, san)
+    return move
+
+
+def parse_pgn(text: str) -> PgnGame:
+    """Parse a bounded, single-mainline PGN game."""
+    return _parse_pgn(text, collect_trace=False).game
+
+
+def parse_pgn_with_trace(text: str) -> PgnGameTrace:
+    """Parse a bounded PGN game and return parser-computed per-ply trace data."""
+    return _parse_pgn(text, collect_trace=True)
+
+
+def _parse_san_with_legal(board: Board, san: str) -> tuple[Move, tuple[Move, ...]]:
     _reject_unsupported_movetext(san)
     normalized = _normalize_san_token(san)
     parsed = _parse_normalized_san_token(normalized)
@@ -164,11 +198,10 @@ def parse_san(board: Board, san: str) -> Move:
     if len(matches) > 1:
         msg = f"SAN move is ambiguous in the current position: {san!r}"
         raise ValueError(msg)
-    return matches[0]
+    return matches[0], legal
 
 
-def parse_pgn(text: str) -> PgnGame:
-    """Parse a bounded, single-mainline PGN game."""
+def _parse_pgn(text: str, *, collect_trace: bool) -> PgnGameTrace:
     tags, movetext = _split_tags_and_movetext(text)
     _reject_unsupported_movetext(movetext)
     result = tags.get("Result", "*")
@@ -179,6 +212,7 @@ def parse_pgn(text: str) -> PgnGame:
     initial_game = _initial_game_from_tags(tags)
     current = initial_game
     moves: list[Move] = []
+    plies: list[PgnParsedPly] = []
     seen_result: str | None = None
     for token in _movetext_tokens(movetext):
         if seen_result is not None:
@@ -187,7 +221,17 @@ def parse_pgn(text: str) -> PgnGame:
         if token in RESULTS:
             seen_result = token
             continue
-        move = parse_san(current.board, token)
+        move, legal = _parse_san_with_legal(current.board, token)
+        if collect_trace:
+            plies.append(
+                PgnParsedPly(
+                    board=current.board,
+                    halfmove_clock=current.halfmove_clock,
+                    fullmove_number=current.fullmove_number,
+                    move=move,
+                    legal_moves=legal,
+                )
+            )
         current = current.play(move)
         moves.append(move)
 
@@ -197,7 +241,8 @@ def parse_pgn(text: str) -> PgnGame:
             raise ValueError(msg)
         result = seen_result
     tags = {**tags, "Result": result}
-    return PgnGame(tags=tags, moves=tuple(moves), result=result, initial_game=initial_game)
+    game = PgnGame(tags=tags, moves=tuple(moves), result=result, initial_game=initial_game)
+    return PgnGameTrace(game=game, plies=tuple(plies))
 
 
 def format_pgn(game: PgnGame) -> str:
