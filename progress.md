@@ -47,3 +47,17 @@
   - Tiny dry-run benchmark CLI smoke with two PGN records (exit 0; records=2 samples=4, `trace_legal_reuse` phase exercised)
   - Tiny full-write benchmark CLI smoke with two PGN records (exit 0; records=2 samples=4 shards=1)
 - Component 4 handoff written to `plans/pgn-opt-worker-component-4.md`.
+- Parser single-legal-generation optimization complete.
+- Added `has_legal_move()` early-exit helper and switched SAN checkmate suffix checks away from full `legal_moves(next_board)`.
+- Replaced parser-internal `Game.play()` advancement with private `_PgnParserState` that reuses the SAN legal tuple for validation and terminal outcome checks while preserving strict parser APIs and dense ingestion schema.
+- Added tests proving `parse_pgn()` uses one full legal-move tuple per ply for normal and checkmate PGNs, plus terminal outcome, FEN clock trace, `has_legal_move`, and parser fast-state parity coverage.
+- Parser single-legal-generation validation passed:
+  - `uv run pytest tests/test_pgn.py tests/test_pgn_stream.py tests/test_legal_moves.py tests/nn/test_pgn_dataset.py tests/test_pgn_ingest_benchmark.py` (exit 0; 94 passed)
+  - `uv run ruff check .` (exit 0)
+  - `uv run mypy` (exit 0)
+  - `uv run pytest` (exit 0; 298 passed)
+- Parser single-legal-generation benchmarks on `lichess_elite_2025-11.pgn`:
+  - 100-game dry-run: 6.1887s, 1,566.24 samples/s, ~2.74x faster than prior 16.98s baseline.
+  - 100-game full-write: 7.2827s, 1,330.96 samples/s, ~2.42x faster than prior 17.63s baseline.
+  - 1000-game dry-run: 59.5137s, 1,570.72 samples/s; `parse_sanitize` remains dominant at ~92.44%.
+- Parser single-legal-generation handoff written to `plans/pgn-parser-single-legal-gen-worker.md`.

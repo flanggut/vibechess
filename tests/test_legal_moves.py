@@ -13,6 +13,8 @@ from tinychess.engine import (
     pseudo_legal_moves,
 )
 from tinychess.engine.board import board_from_ascii
+from tinychess.engine.fen import parse_fen
+from tinychess.engine.legal_moves import has_legal_move
 from tinychess.engine.square import parse_square
 
 
@@ -25,6 +27,24 @@ def test_start_position_legal_move_count() -> None:
 
     assert len(moves) == 20
     assert move_set(moves) >= {"e2e4", "g1f3", "b1c3"}
+
+
+@pytest.mark.parametrize(
+    "fen",
+    [
+        "startpos",
+        "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1",
+        "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1",
+        "4k3/P7/8/8/8/8/8/4K3 w - - 0 1",
+        "k3r3/8/8/8/8/8/4R3/4K3 w - - 0 1",
+        "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3",
+        "7k/5K2/6Q1/8/8/8/8/8 b - - 0 1",
+    ],
+)
+def test_has_legal_move_matches_legal_moves_bool(fen: str) -> None:
+    board = Board.starting_position() if fen == "startpos" else parse_fen(fen).board
+
+    assert has_legal_move(board) is bool(legal_moves(board))
 
 
 @pytest.mark.parametrize(("depth", "nodes"), [(1, 20), (2, 400), (3, 8902)])

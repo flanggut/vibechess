@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import importlib
+from collections.abc import Callable
+from typing import cast
+
 import pytest
 
 from tinychess.engine import (
+    Board,
     Game,
     Move,
     PgnGame,
@@ -13,6 +18,10 @@ from tinychess.engine import (
     parse_san,
 )
 from tinychess.engine.pgn import parse_pgn_with_trace
+
+game_module = importlib.import_module("tinychess.engine.game")
+legal_moves_module = importlib.import_module("tinychess.engine.legal_moves")
+pgn_module = importlib.import_module("tinychess.engine.pgn")
 
 
 def play_uci(*moves: str) -> Game:
@@ -53,6 +62,62 @@ def test_fools_mate_san_includes_checkmate_and_result() -> None:
     assert parsed.final_game.outcome is not None
 
 
+def test_parse_pgn_uses_one_full_legal_generation_per_normal_ply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    count = _count_full_legal_move_generations(monkeypatch)
+    parsed = parse_pgn('[Result "*"]\n\n1. e4 e5 2. Nf3 Nc6 *')
+
+    assert count() == len(parsed.moves)
+
+
+def test_parse_pgn_uses_one_full_legal_generation_per_checkmate_ply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    count = _count_full_legal_move_generations(monkeypatch)
+    suffix_checks = _count_has_legal_move_suffix_checks(monkeypatch)
+    parsed = parse_pgn('[Result "0-1"]\n\n1. f3 e5 2. g4 Qh4# 0-1')
+
+    assert count() == len(parsed.moves)
+    assert suffix_checks() == 1
+
+
+def test_parse_pgn_without_check_suffixes_uses_no_response_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    suffix_checks = _count_has_legal_move_suffix_checks(monkeypatch)
+    parse_pgn('[Result "*"]\n\n1. e4 e5 2. Nf3 Nc6 *')
+
+    assert suffix_checks() == 0
+
+
+def _count_full_legal_move_generations(monkeypatch: pytest.MonkeyPatch) -> Callable[[], int]:
+    original = cast(Callable[[Board], tuple[Move, ...]], legal_moves_module.legal_moves)
+    calls = 0
+
+    def counted(board: Board) -> tuple[Move, ...]:
+        nonlocal calls
+        calls += 1
+        return original(board)
+
+    monkeypatch.setattr(pgn_module, "legal_moves", counted)
+    monkeypatch.setattr(game_module, "legal_moves", counted)
+    return lambda: calls
+
+
+def _count_has_legal_move_suffix_checks(monkeypatch: pytest.MonkeyPatch) -> Callable[[], int]:
+    original = cast(Callable[[Board], bool], legal_moves_module.has_legal_move)
+    calls = 0
+
+    def counted(board: Board) -> bool:
+        nonlocal calls
+        calls += 1
+        return original(board)
+
+    monkeypatch.setattr(pgn_module, "has_legal_move", counted)
+    return lambda: calls
+
+
 def test_parse_pgn_with_trace_matches_normal_parse_and_replayed_positions() -> None:
     text = """[Event \"Trace\"]
 [Result \"1-0\"]
@@ -78,6 +143,111 @@ def test_parse_pgn_with_trace_matches_normal_parse_and_replayed_positions() -> N
         assert move in ply.legal_moves
         game = game.play(move)
     assert game.to_fen() == parsed.final_game.to_fen()
+
+
+def test_parse_pgn_with_trace_preserves_fen_clocks() -> None:
+    text = """[Event "TraceFen"]
+[SetUp "1"]
+[FEN "4k3/8/8/8/8/8/8/R3K3 w Q - 12 34"]
+[Result "*"]
+
+34. Ra2 *
+"""
+
+    traced = parse_pgn_with_trace(text)
+
+    assert len(traced.plies) == 1
+    assert traced.plies[0].halfmove_clock == 12
+    assert traced.plies[0].fullmove_number == 34
+    assert traced.game.final_game.to_fen() == play_uci_from_fen(
+        "4k3/8/8/8/8/8/8/R3K3 w Q - 12 34", "a1a2"
+    ).to_fen()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        """[Event "Castle"]
+[Result "*"]
+
+1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. O-O *
+""",
+        """[Event "EnPassant"]
+[Result "*"]
+
+1. e4 a6 2. e5 d5 3. exd6 *
+""",
+        """[Event "Promotion"]
+[SetUp "1"]
+[FEN "4k3/P7/8/8/8/8/8/4K3 w - - 0 1"]
+[Result "*"]
+
+1. a8=Q+ *
+""",
+        """[Event "Mate"]
+[Result "0-1"]
+
+1. f3 e5 2. g4 Qh4# 0-1
+""",
+    ],
+)
+def test_parse_pgn_fast_state_matches_game_play_reference(text: str) -> None:
+    parsed = parse_pgn(text)
+    reference = parsed.initial_game
+    for move in parsed.moves:
+        reference = reference.play(move)
+
+    assert parsed.final_game.to_fen() == reference.to_fen()
+    assert parsed.final_game.outcome == reference.outcome
+
+
+@pytest.mark.parametrize(
+    ("text", "match"),
+    [
+        (
+            """[Result "*"]
+
+1. f3 e5 2. g4 Qh4# 3. a3 *
+""",
+            "not legal",
+        ),
+        (
+            """[Result "*"]
+
+1. Nf3 Nf6 2. Ng1 Ng8 3. Nf3 Nf6 4. Ng1 Ng8 5. Nf3 *
+""",
+            "repetition",
+        ),
+        (
+            """[SetUp "1"]
+[FEN "4k3/8/8/8/8/8/8/R3K3 w Q - 100 1"]
+[Result "*"]
+
+1. Ra2 *
+""",
+            "fifty_move",
+        ),
+        (
+            """[SetUp "1"]
+[FEN "4k3/8/8/8/8/8/8/4K3 w - - 0 1"]
+[Result "*"]
+
+1. Kd2 *
+""",
+            "insufficient_material",
+        ),
+    ],
+)
+def test_parse_pgn_rejects_moves_after_terminal_outcomes(text: str, match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        parse_pgn(text)
+
+
+def play_uci_from_fen(fen: str, *moves: str) -> Game:
+    game = Game.from_fen(fen)
+    for notation in moves:
+        game = game.play(Move.from_uci(notation))
+    return game
 
 
 def test_castling_san_parse_and_write() -> None:

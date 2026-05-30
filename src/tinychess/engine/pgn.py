@@ -13,10 +13,11 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 
 from tinychess.engine.board import Board
-from tinychess.engine.game import Game
-from tinychess.engine.legal_moves import is_in_check, legal_moves
+from tinychess.engine.game import Game, has_insufficient_material
+from tinychess.engine.legal_moves import has_legal_move, is_in_check, legal_moves
 from tinychess.engine.move import Move
-from tinychess.engine.piece import Color, PieceType
+from tinychess.engine.outcome import Outcome, OutcomeReason
+from tinychess.engine.piece import Color, Piece, PieceType
 from tinychess.engine.square import FILES, RANKS, Square, file_index, parse_square, rank_index
 
 RESULTS = frozenset({"1-0", "0-1", "1/2-1/2", "*"})
@@ -164,7 +165,7 @@ def _move_to_san_from_legal(
 
     next_board = board.apply_move(move)
     if is_in_check(next_board, next_board.side_to_move):
-        san += "#" if not legal_moves(next_board) else "+"
+        san += "#" if not has_legal_move(next_board) else "+"
     return san
 
 
@@ -210,7 +211,7 @@ def _parse_pgn(text: str, *, collect_trace: bool) -> PgnGameTrace:
         raise ValueError(msg)
 
     initial_game = _initial_game_from_tags(tags)
-    current = initial_game
+    state = _PgnParserState.from_game(initial_game)
     moves: list[Move] = []
     plies: list[PgnParsedPly] = []
     seen_result: str | None = None
@@ -221,18 +222,18 @@ def _parse_pgn(text: str, *, collect_trace: bool) -> PgnGameTrace:
         if token in RESULTS:
             seen_result = token
             continue
-        move, legal = _parse_san_with_legal(current.board, token)
+        move, legal = _parse_san_with_legal(state.board, token)
         if collect_trace:
             plies.append(
                 PgnParsedPly(
-                    board=current.board,
-                    halfmove_clock=current.halfmove_clock,
-                    fullmove_number=current.fullmove_number,
+                    board=state.board,
+                    halfmove_clock=state.halfmove_clock,
+                    fullmove_number=state.fullmove_number,
                     move=move,
                     legal_moves=legal,
                 )
             )
-        current = current.play(move)
+        state.advance_checked(move, legal)
         moves.append(move)
 
     if seen_result is not None:
@@ -500,8 +501,89 @@ def _san_suffix_matches(board: Board, move: Move, suffix: str | None) -> bool:
     next_board = board.apply_move(move)
     if not is_in_check(next_board, next_board.side_to_move):
         return suffix is None
-    expected = "#" if not legal_moves(next_board) else "+"
+    expected = "#" if not has_legal_move(next_board) else "+"
     return suffix == expected
+
+
+@dataclass(slots=True)
+class _PgnParserState:
+    """Mutable PGN parser replay state that avoids immutable ``Game.play`` history.
+
+    This mirrors the narrow clock, repetition, capture, and pre-move outcome
+    semantics from ``Game.play()``/``determine_outcome()`` so parsing can reuse
+    the SAN legal-move tuple. Keep this state in sync when those rules change.
+    """
+
+    board: Board
+    halfmove_clock: int
+    fullmove_number: int
+    repetition_counts: dict[_PgnPositionKey, int]
+
+    @classmethod
+    def from_game(cls, game: Game) -> _PgnParserState:
+        return cls(
+            board=game.board,
+            halfmove_clock=game.halfmove_clock,
+            fullmove_number=game.fullmove_number,
+            repetition_counts=dict(game.repetition_counts),
+        )
+
+    def pre_move_outcome(self, legal: tuple[Move, ...]) -> Outcome | None:
+        if not legal:
+            if is_in_check(self.board, self.board.side_to_move):
+                return Outcome(
+                    reason=OutcomeReason.CHECKMATE,
+                    winner=self.board.side_to_move.opposite,
+                )
+            return Outcome(reason=OutcomeReason.STALEMATE)
+        if self.halfmove_clock >= 100:
+            return Outcome(reason=OutcomeReason.FIFTY_MOVE)
+        if self.repetition_counts.get(_pgn_position_key(self.board), 0) >= 3:
+            return Outcome(reason=OutcomeReason.REPETITION)
+        if has_insufficient_material(self.board):
+            return Outcome(reason=OutcomeReason.INSUFFICIENT_MATERIAL)
+        return None
+
+    def advance_checked(self, move: Move, legal: tuple[Move, ...]) -> None:
+        outcome = self.pre_move_outcome(legal)
+        if outcome is not None:
+            msg = f"cannot play move after game outcome: {outcome.reason.value}"
+            raise ValueError(msg)
+        if move not in legal:
+            msg = f"illegal move: {move}"
+            raise ValueError(msg)
+
+        moving_piece = self.board.piece_at(move.from_square)
+        if moving_piece is None:  # defensive; legal membership should prevent this
+            msg = f"cannot move from empty square {move.from_square}"
+            raise ValueError(msg)
+        is_capture = _pgn_is_capture(self.board, move, moving_piece)
+        previous_side = self.board.side_to_move
+        next_board = self.board.apply_move(move)
+        next_key = _pgn_position_key(next_board)
+        self.repetition_counts[next_key] = self.repetition_counts.get(next_key, 0) + 1
+        self.halfmove_clock = (
+            0 if moving_piece.kind is PieceType.PAWN or is_capture else self.halfmove_clock + 1
+        )
+        self.fullmove_number += 1 if previous_side is Color.BLACK else 0
+        self.board = next_board
+
+
+_PgnPositionKey = tuple[tuple[Piece | None, ...], Color, frozenset[str], Square | None]
+
+
+def _pgn_position_key(board: Board) -> _PgnPositionKey:
+    return (board.squares, board.side_to_move, board.castling_rights, board.en_passant_target)
+
+
+def _pgn_is_capture(board: Board, move: Move, moving_piece: Piece) -> bool:
+    if board.piece_at(move.to_square) is not None:
+        return True
+    return (
+        moving_piece.kind is PieceType.PAWN
+        and board.en_passant_target == move.to_square
+        and abs(int(move.to_square) - int(move.from_square)) in {7, 9}
+    )
 
 
 def _disambiguation(

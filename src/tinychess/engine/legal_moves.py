@@ -54,6 +54,16 @@ def legal_moves(board: Board) -> tuple[Move, ...]:
     return tuple(legal)
 
 
+def has_legal_move(board: Board) -> bool:
+    """Return whether the side to move has at least one legal move."""
+    moving_color = board.side_to_move
+    for move in pseudo_legal_moves(board):
+        next_board = board.apply_move(move)
+        if not is_in_check(next_board, moving_color):
+            return True
+    return False
+
+
 def perft(board: Board, depth: int) -> int:
     """Return the number of legal move leaf nodes at ``depth``."""
     if depth < 0:
