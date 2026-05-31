@@ -127,7 +127,14 @@ to evaluate every N epochs while still evaluating the final epoch, and
 each epoch loss estimate. The CLI default `--max-evaluation-samples 0` means full
 split evaluation. Per-step `metrics.jsonl` rows are exact and written after every
 optimizer step by default; for large runs, use `--metrics-every N` to write them
-every N steps while still recording the final optimizer step.
+every N steps while still recording the final optimizer step. Sharded metrics are
+streamed into the top-level metrics files as each shard finishes.
+
+By default, sharded training writes both the top-level `checkpoint-final` and
+per-shard `shard-train-*/checkpoint-final` directories. For large runs where only
+the authoritative top-level checkpoint is needed, add `--skip-shard-checkpoints`
+to skip per-shard checkpoint writes while still writing a loadable top-level
+`checkpoint-final` at the end.
 
 The current checkpoint format stores model weights, not optimizer state. During
 shard-wise training, model weights and training step continue across shards, but

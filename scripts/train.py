@@ -79,6 +79,14 @@ def main() -> None:
         help="maximum train and validation samples per epoch evaluation; 0 evaluates full splits",
     )
     parser.add_argument(
+        "--skip-shard-checkpoints",
+        action="store_true",
+        help=(
+            "skip per-shard checkpoint writes for manifest training; "
+            "top-level final checkpoint is still written"
+        ),
+    )
+    parser.add_argument(
         "--input-checkpoint",
         help="optional existing checkpoint directory to continue model weights/config from",
     )
@@ -100,6 +108,7 @@ def main() -> None:
         max_evaluation_samples=(
             None if args.max_evaluation_samples == 0 else args.max_evaluation_samples
         ),
+        write_shard_checkpoints=not args.skip_shard_checkpoints,
         validation_fraction=args.validation_fraction,
     )
     notes = "tinychess WP15 training run"

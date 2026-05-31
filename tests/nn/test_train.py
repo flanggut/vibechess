@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import subprocess
 import sys
@@ -105,6 +106,11 @@ def test_policy_value_loss_computes_finite_components() -> None:
     assert float(losses.policy.item()) > 0.0
     assert float(losses.value.item()) >= 0.0
     assert np.isfinite(float(losses.total.item()))
+
+
+def test_train_model_public_signature_does_not_expose_internal_checkpoint_toggle() -> None:
+    assert "_write_checkpoints" not in inspect.signature(train_model).parameters
+    assert "write_checkpoints" not in inspect.signature(train_model).parameters
 
 
 def test_train_model_writes_metrics_and_checkpoint(tmp_path: Path) -> None:
@@ -221,6 +227,14 @@ def test_training_config_rejects_invalid_epoch_evaluation_options() -> None:
         TrainingConfig(evaluate_every_epochs=0)
     with pytest.raises(ValueError, match="max_evaluation_samples"):
         TrainingConfig(max_evaluation_samples=0)
+
+
+def test_training_config_serializes_shard_checkpoint_setting() -> None:
+    assert TrainingConfig().to_dict()["write_shard_checkpoints"] is True
+    assert (
+        TrainingConfig(write_shard_checkpoints=False).to_dict()["write_shard_checkpoints"]
+        is False
+    )
 
 
 def test_train_model_respects_epoch_evaluation_cadence(tmp_path: Path) -> None:

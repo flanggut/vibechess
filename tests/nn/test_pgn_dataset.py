@@ -19,7 +19,11 @@ from tinychess.engine.pgn_stream import (
     parse_ingest_pgn_with_trace,
 )
 from tinychess.engine.piece import Color
-from tinychess.nn.checkpoint import DEFAULT_WEIGHTS_FILENAME, load_checkpoint_metadata
+from tinychess.nn.checkpoint import (
+    DEFAULT_WEIGHTS_FILENAME,
+    load_checkpoint,
+    load_checkpoint_metadata,
+)
 from tinychess.nn.encode import (
     ACTION_SPACE_SIZE,
     encode_game_np,
@@ -459,7 +463,52 @@ def test_train_from_directory_auto_detects_pgn_manifest(tmp_path: Path) -> None:
     assert (output_dir / "checkpoint-final" / DEFAULT_WEIGHTS_FILENAME).is_file()
     assert (output_dir / "metrics.jsonl").read_text().count("\n") == 2
     assert (output_dir / "epoch_metrics.jsonl").read_text().count("\n") == 2
+    assert (
+        output_dir / "shard-train-00000" / "checkpoint-final" / DEFAULT_WEIGHTS_FILENAME
+    ).is_file()
+    assert (
+        output_dir / "shard-train-00001" / "checkpoint-final" / DEFAULT_WEIGHTS_FILENAME
+    ).is_file()
     assert load_checkpoint_metadata(output_dir / "checkpoint-final").training_step == 2
+
+
+def test_sharded_training_can_skip_per_shard_checkpoints(tmp_path: Path) -> None:
+    input_path = tmp_path / "games.pgn"
+    dataset_dir = tmp_path / "dataset"
+    output_dir = tmp_path / "train"
+    input_path.write_text(PGN_TEXT)
+    ingest_pgn_dataset(
+        PgnIngestConfig(input_path=input_path, output_dir=dataset_dir, shard_samples=3)
+    )
+
+    result = train_from_directory(
+        dataset_dir,
+        output_dir,
+        config=TrainingConfig(
+            epochs=1,
+            batch_size=2,
+            learning_rate=1.0e-3,
+            write_shard_checkpoints=False,
+        ),
+    )
+
+    training_summary = json.loads((output_dir / "training.json").read_text())
+    loaded = load_checkpoint(output_dir / "checkpoint-final")
+
+    assert result.steps == 2
+    assert result.final_metrics.step == 2
+    assert (output_dir / "checkpoint-final" / DEFAULT_WEIGHTS_FILENAME).is_file()
+    assert loaded.metadata.training_step == 2
+    assert loaded.metadata.optimizer_state_available is False
+    assert not (output_dir / "shard-train-00000" / "checkpoint-final").exists()
+    assert not (output_dir / "shard-train-00001" / "checkpoint-final").exists()
+    assert (output_dir / "metrics.jsonl").read_text().count("\n") == 2
+    assert (output_dir / "epoch_metrics.jsonl").read_text().count("\n") == 2
+    assert training_summary["training_config"]["write_shard_checkpoints"] is False
+    assert [shard["checkpoint_written"] for shard in training_summary["shards"]] == [
+        False,
+        False,
+    ]
 
 
 def test_train_script_consumes_pgn_manifest(tmp_path: Path) -> None:
@@ -493,6 +542,7 @@ def test_train_script_consumes_pgn_manifest(tmp_path: Path) -> None:
             "1",
             "--value-hidden-dim",
             "8",
+            "--skip-shard-checkpoints",
         ],
         cwd=Path(__file__).parents[2],
         check=False,
@@ -506,3 +556,5 @@ def test_train_script_consumes_pgn_manifest(tmp_path: Path) -> None:
     assert "samples=6" in result.stdout
     assert "validation_loss=" in result.stdout
     assert (output_dir / "checkpoint-final" / DEFAULT_WEIGHTS_FILENAME).is_file()
+    assert not (output_dir / "shard-train-00000" / "checkpoint-final").exists()
+    assert not (output_dir / "shard-train-00001" / "checkpoint-final").exists()

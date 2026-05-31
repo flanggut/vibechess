@@ -52,6 +52,7 @@ class TrainingConfig:
     metrics_every: int = 1
     evaluate_every_epochs: int = 1
     max_evaluation_samples: int | None = None
+    write_shard_checkpoints: bool = True
     validation_fraction: float = 0.1
 
     def __post_init__(self) -> None:
@@ -174,6 +175,30 @@ def train_model(
     epoch_callback: Callable[[EpochMetrics], None] | None = None,
 ) -> TrainingResult:
     """Train a policy/value model on a loaded self-play dataset and save outputs."""
+    return _train_loaded_dataset(
+        dataset,
+        output_dir,
+        model=model,
+        config=config,
+        notes=notes,
+        initial_step=initial_step,
+        epoch_callback=epoch_callback,
+        write_checkpoints=True,
+    )
+
+
+def _train_loaded_dataset(
+    dataset: SelfPlayDataset,
+    output_dir: str | Path,
+    *,
+    model: PolicyValueNet | None = None,
+    config: TrainingConfig | None = None,
+    notes: str | None = None,
+    initial_step: int = 0,
+    epoch_callback: Callable[[EpochMetrics], None] | None = None,
+    write_checkpoints: bool = True,
+) -> TrainingResult:
+    """Train a loaded dataset with optional checkpoint writes for internal sharded use."""
     if initial_step < 0:
         raise ValueError("initial_step must be non-negative")
     resolved_config = TrainingConfig() if config is None else config
@@ -251,7 +276,8 @@ def train_model(
                 )
                 _append_metrics(metrics_path, final_metrics)
             checkpoint_due = (
-                resolved_config.checkpoint_every
+                write_checkpoints
+                and resolved_config.checkpoint_every
                 and run_step % resolved_config.checkpoint_every == 0
             )
             if checkpoint_due:
@@ -316,7 +342,13 @@ def train_model(
     if final_metrics is None:  # pragma: no cover - guarded by dataset validation
         raise RuntimeError("training completed without optimizer steps")
     checkpoint_dir = train_dir / "checkpoint-final"
-    _save_training_checkpoint(resolved_model, checkpoint_dir, step=final_metrics.step, notes=notes)
+    if write_checkpoints:
+        _save_training_checkpoint(
+            resolved_model,
+            checkpoint_dir,
+            step=final_metrics.step,
+            notes=notes,
+        )
     (train_dir / "training.json").write_text(
         json.dumps(
             {
@@ -427,7 +459,7 @@ def train_from_sharded_directory(
 
     for shard_index, shard_dir in enumerate(shards):
         shard_output = train_dir / f"shard-train-{shard_index:05d}"
-        result = train_model(
+        result = _train_loaded_dataset(
             load_self_play_dataset(shard_dir),
             shard_output,
             model=model,
@@ -435,6 +467,7 @@ def train_from_sharded_directory(
             notes=notes,
             initial_step=total_steps,
             epoch_callback=epoch_callback,
+            write_checkpoints=resolved_config.write_shard_checkpoints,
         )
         total_steps += result.steps
         total_samples += result.samples
@@ -442,10 +475,8 @@ def train_from_sharded_directory(
         total_validation_samples += result.validation_samples
         final_metrics = result.final_metrics
         epoch_metric_values.extend(result.epoch_metrics)
-        metrics_path.write_text(metrics_path.read_text() + result.metrics_path.read_text())
-        epoch_metrics_path.write_text(
-            epoch_metrics_path.read_text() + result.epoch_metrics_path.read_text()
-        )
+        _append_file(result.metrics_path, metrics_path)
+        _append_file(result.epoch_metrics_path, epoch_metrics_path)
         shard_summaries.append(
             {
                 "dataset_shard": str(shard_dir),
@@ -455,6 +486,7 @@ def train_from_sharded_directory(
                 "training_samples": result.training_samples,
                 "validation_samples": result.validation_samples,
                 "final_step": result.final_metrics.step,
+                "checkpoint_written": resolved_config.write_shard_checkpoints,
             }
         )
 
@@ -463,7 +495,10 @@ def train_from_sharded_directory(
     checkpoint_dir = train_dir / "checkpoint-final"
     if checkpoint_dir.exists():
         shutil.rmtree(checkpoint_dir)
-    shutil.copytree(shard_output / "checkpoint-final", checkpoint_dir)
+    if resolved_config.write_shard_checkpoints:
+        shutil.copytree(shard_output / "checkpoint-final", checkpoint_dir)
+    else:
+        _save_training_checkpoint(model, checkpoint_dir, step=final_metrics.step, notes=notes)
     (train_dir / "training.json").write_text(
         json.dumps(
             {
@@ -687,6 +722,11 @@ def _append_metrics(path: Path, metrics: TrainingMetrics) -> None:
 def _append_epoch_metrics(path: Path, metrics: EpochMetrics) -> None:
     with path.open("a") as handle:
         handle.write(json.dumps(metrics.to_dict(), sort_keys=True) + "\n")
+
+
+def _append_file(source: Path, destination: Path) -> None:
+    with source.open("rb") as source_handle, destination.open("ab") as destination_handle:
+        shutil.copyfileobj(source_handle, destination_handle)
 
 
 def _scalar(value: MLXArray) -> float:
