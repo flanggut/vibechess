@@ -50,7 +50,7 @@ WP15 consumes a self-play dataset directory and writes a local training run:
 
 ```text
 train-run/
-├── metrics.jsonl
+├── epoch_metrics.jsonl
 ├── training.json
 └── checkpoint-final/
     ├── weights.safetensors
@@ -63,8 +63,8 @@ Example:
 uv run python scripts/train.py --dataset data/selfplay/smoke --output data/checkpoints/train-smoke --epochs 1 --batch-size 2
 ```
 
-`metrics.jsonl` contains one JSON object per optimizer step with total, policy,
-and value losses. Checkpoint sidecars include schema version, model config,
-action-space version, encoder version, training step, optimizer state
-availability, and notes. The initial WP15 checkpoint writer saves model weights
-and metadata only; optimizer state is not persisted.
+`epoch_metrics.jsonl` contains one JSON object per epoch with train/validation
+total, policy, and value losses. Checkpoint sidecars include schema version,
+model config, action-space version, encoder version, training step, optimizer
+state availability, and notes. The checkpoint writer saves model weights and
+metadata only; optimizer state is not persisted.

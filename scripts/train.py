@@ -61,12 +61,6 @@ def main() -> None:
         help="also write checkpoint-step-N every N optimizer steps; 0 disables interim checkpoints",
     )
     parser.add_argument(
-        "--metrics-every",
-        type=int,
-        default=1,
-        help="write per-step metrics every N optimizer steps and always on the final step",
-    )
-    parser.add_argument(
         "--skip-shard-checkpoints",
         action="store_true",
         help=(
@@ -101,7 +95,6 @@ def main() -> None:
         learning_rate=args.learning_rate,
         seed=args.seed,
         checkpoint_every=args.checkpoint_every,
-        metrics_every=args.metrics_every,
         write_shard_checkpoints=not args.skip_shard_checkpoints,
         carry_optimizer_state_across_shards=args.carry_optimizer_state_across_shards,
         validation_fraction=args.validation_fraction,
@@ -151,16 +144,17 @@ def main() -> None:
             epoch_callback=_print_epoch_metrics,
         )
 
+    final_epoch = result.epoch_metrics[-1]
     print(
         "training complete: "
         f"steps={result.steps} samples={result.samples} "
         f"training_samples={result.training_samples} "
         f"validation_samples={result.validation_samples} "
-        f"loss={result.final_metrics.loss:.6f} "
-        f"policy_loss={result.final_metrics.policy_loss:.6f} "
-        f"value_loss={result.final_metrics.value_loss:.6f} "
+        f"training_loss={final_epoch.training_loss:.6f} "
+        f"training_policy_loss={final_epoch.training_policy_loss:.6f} "
+        f"training_value_loss={final_epoch.training_value_loss:.6f} "
         f"checkpoint={Path(result.checkpoint_dir)} "
-        f"metrics={Path(result.metrics_path)}"
+        f"epoch_metrics={Path(result.epoch_metrics_path)}"
     )
 
 

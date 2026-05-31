@@ -39,11 +39,9 @@ from tinychess.nn.model import (
 )
 from tinychess.nn.train import (
     DEFAULT_EPOCH_METRICS_FILENAME,
-    DEFAULT_METRICS_FILENAME,
     EpochMetrics,
     LossBreakdown,
     TrainingConfig,
-    TrainingMetrics,
     TrainingResult,
     compute_policy_value_loss,
     train_from_directory,
@@ -58,7 +56,6 @@ __all__ = [
     "CHECKPOINT_METADATA_SCHEMA_VERSION",
     "DEFAULT_EPOCH_METRICS_FILENAME",
     "DEFAULT_METADATA_FILENAME",
-    "DEFAULT_METRICS_FILENAME",
     "DEFAULT_WEIGHTS_FILENAME",
     "ENCODER_CHANNELS",
     "ENCODER_VERSION",
@@ -74,7 +71,6 @@ __all__ = [
     "PolicyValueNet",
     "PolicyValueOutput",
     "TrainingConfig",
-    "TrainingMetrics",
     "TrainingResult",
     "action_index_to_move",
     "encode_board",

@@ -120,11 +120,10 @@ uv run python scripts/train.py \
 
 Training reserves 10% of each dataset/shard for validation by default and prints
 training and validation loss after every epoch. Use `--validation-fraction 0` to
-train on every sample for smoke runs where validation is not useful. Per-step
-`metrics.jsonl` rows are exact and written after every optimizer step by default;
-for large runs, use `--metrics-every N` to write them every N steps while still
-recording the final optimizer step. Sharded metrics are streamed into the
-top-level metrics files as each shard finishes.
+train on every sample for smoke runs where validation is not useful. Per-epoch
+metrics are written to `epoch_metrics.jsonl`; no per-step `metrics.jsonl` is
+computed or written. Sharded epoch metrics are streamed into the top-level epoch
+metrics file as each shard finishes.
 
 By default, sharded training writes both the top-level `checkpoint-final` and
 per-shard `shard-train-*/checkpoint-final` directories. For large runs where only

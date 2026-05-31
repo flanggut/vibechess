@@ -34,7 +34,6 @@ from tinychess.nn.self_play import (
 )
 from tinychess.nn.train import (
     DEFAULT_EPOCH_METRICS_FILENAME,
-    DEFAULT_METRICS_FILENAME,
     EpochMetrics,
     TrainingConfig,
     compute_policy_value_loss,
@@ -113,9 +112,11 @@ def test_train_model_public_signature_does_not_expose_internal_checkpoint_toggle
     assert "write_checkpoints" not in inspect.signature(train_model).parameters
 
 
-def test_train_model_writes_metrics_and_checkpoint(tmp_path: Path) -> None:
+def test_train_model_writes_epoch_metrics_and_checkpoint(tmp_path: Path) -> None:
     dataset = tiny_dataset(sample_count=4)
     model = PolicyValueNet(tiny_config())
+    tmp_path.mkdir(exist_ok=True)
+    (tmp_path / "metrics.jsonl").write_text("stale\n")
     before = np.array(model(mx.array(dataset.positions[:1], dtype=mx.float32)).policy_logits)
 
     result = train_model(
@@ -126,7 +127,6 @@ def test_train_model_writes_metrics_and_checkpoint(tmp_path: Path) -> None:
         notes="unit test",
     )
 
-    metrics_lines = (tmp_path / DEFAULT_METRICS_FILENAME).read_text().splitlines()
     epoch_metrics_lines = (tmp_path / DEFAULT_EPOCH_METRICS_FILENAME).read_text().splitlines()
     metadata = load_checkpoint_metadata(result.checkpoint_dir)
     loaded = load_checkpoint(result.checkpoint_dir)
@@ -144,11 +144,10 @@ def test_train_model_writes_metrics_and_checkpoint(tmp_path: Path) -> None:
     assert result.samples == 4
     assert result.training_samples == 3
     assert result.validation_samples == 1
-    assert result.metrics_path == tmp_path / DEFAULT_METRICS_FILENAME
+    assert result.final_training_step == 3
     assert result.epoch_metrics_path == tmp_path / DEFAULT_EPOCH_METRICS_FILENAME
-    assert len(metrics_lines) == 3
     assert len(epoch_metrics_lines) == 1
-    assert json.loads(metrics_lines[-1])["step"] == 3
+    assert not (tmp_path / "metrics.jsonl").exists()
     assert json.loads(epoch_metrics_lines[-1])["validation_loss"] is not None
     assert not np.allclose(before, after)
     assert np.isfinite(float(losses.total.item()))
@@ -187,40 +186,6 @@ def test_train_model_reserves_validation_split_and_reports_epoch_losses(tmp_path
     assert callbacks == list(result.epoch_metrics)
     assert all(metrics.validation_loss is not None for metrics in result.epoch_metrics)
     assert (tmp_path / DEFAULT_EPOCH_METRICS_FILENAME).read_text().count("\n") == 2
-
-
-def test_train_model_respects_metrics_cadence_and_records_final_step(tmp_path: Path) -> None:
-    dataset = tiny_dataset(sample_count=5)
-
-    result = train_model(
-        dataset,
-        tmp_path,
-        model=PolicyValueNet(tiny_config()),
-        config=TrainingConfig(
-            epochs=1,
-            batch_size=1,
-            learning_rate=1.0e-3,
-            metrics_every=2,
-            validation_fraction=0.0,
-        ),
-    )
-
-    metrics_lines = (tmp_path / DEFAULT_METRICS_FILENAME).read_text().splitlines()
-    metric_steps = [json.loads(line)["step"] for line in metrics_lines]
-    training_summary = json.loads((tmp_path / "training.json").read_text())
-
-    assert result.steps == 5
-    assert metric_steps == [2, 4, 5]
-    assert result.final_metrics.step == 5
-    assert json.loads(metrics_lines[-1]) == result.final_metrics.to_dict()
-    assert training_summary["final_metrics"]["step"] == 5
-    assert training_summary["training_config"]["metrics_every"] == 2
-
-
-def test_training_config_rejects_invalid_metrics_every() -> None:
-    with pytest.raises(ValueError, match="metrics_every"):
-        TrainingConfig(metrics_every=0)
-
 
 
 def test_training_config_serializes_sharded_training_settings() -> None:
@@ -284,7 +249,7 @@ def test_train_model_continues_checkpoint_step_metadata(tmp_path: Path) -> None:
     )
 
     assert second.steps == 1
-    assert second.final_metrics.step == 2
+    assert second.final_training_step == 2
     assert load_checkpoint_metadata(second.checkpoint_dir).training_step == 2
 
 
@@ -307,8 +272,6 @@ def test_train_script_consumes_dataset_and_writes_checkpoint(tmp_path: Path) -> 
             "1",
             "--learning-rate",
             "0.001",
-            "--metrics-every",
-            "1",
             "--residual-channels",
             "8",
             "--residual-blocks",
@@ -332,6 +295,7 @@ def test_train_script_consumes_dataset_and_writes_checkpoint(tmp_path: Path) -> 
     assert "epoch 1:" in result.stdout
     assert "validation_loss=n/a" in result.stdout
     assert "steps=1" in result.stdout
-    assert (output_dir / DEFAULT_METRICS_FILENAME).is_file()
+    assert "epoch_metrics=" in result.stdout
+    assert not (output_dir / "metrics.jsonl").exists()
     assert (output_dir / "checkpoint-final" / DEFAULT_WEIGHTS_FILENAME).is_file()
     assert load_checkpoint_metadata(output_dir / "checkpoint-final").training_step == 1

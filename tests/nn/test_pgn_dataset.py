@@ -447,6 +447,8 @@ def test_train_from_directory_auto_detects_pgn_manifest(tmp_path: Path) -> None:
     dataset_dir = tmp_path / "dataset"
     output_dir = tmp_path / "train"
     input_path.write_text(PGN_TEXT)
+    output_dir.mkdir()
+    (output_dir / "metrics.jsonl").write_text("stale\n")
     ingest_pgn_dataset(
         PgnIngestConfig(input_path=input_path, output_dir=dataset_dir, shard_samples=3)
     )
@@ -461,8 +463,9 @@ def test_train_from_directory_auto_detects_pgn_manifest(tmp_path: Path) -> None:
     assert result.samples == 6
     assert result.training_samples == 4
     assert result.validation_samples == 2
+    assert result.final_training_step == 2
     assert (output_dir / "checkpoint-final" / DEFAULT_WEIGHTS_FILENAME).is_file()
-    assert (output_dir / "metrics.jsonl").read_text().count("\n") == 2
+    assert not (output_dir / "metrics.jsonl").exists()
     assert (output_dir / "epoch_metrics.jsonl").read_text().count("\n") == 2
     assert (
         output_dir / "shard-train-00000" / "checkpoint-final" / DEFAULT_WEIGHTS_FILENAME
@@ -497,9 +500,10 @@ def test_sharded_training_summary_records_initial_training_step(tmp_path: Path) 
     training_summary = json.loads((output_dir / "training.json").read_text())
 
     assert result.steps == 4
-    assert result.final_metrics.step == 11
+    assert result.final_training_step == 11
     assert training_summary["initial_training_step"] == 7
-    assert training_summary["final_metrics"]["step"] == 11
+    assert training_summary["final_training_step"] == 11
+    assert "final_metrics" not in training_summary
     assert load_checkpoint_metadata(output_dir / "checkpoint-final").training_step == 11
 
 
@@ -542,7 +546,7 @@ def test_sharded_training_optimizer_state_carry_is_enabled_by_default(
 
     assert default_result.steps == 4
     assert constructor_calls == 1
-    assert default_result.final_metrics.step == 4
+    assert default_result.final_training_step == 4
     assert default_metadata.training_step == 4
     assert default_metadata.optimizer_state_available is False
     assert default_summary["training_config"]["carry_optimizer_state_across_shards"] is True
@@ -590,13 +594,13 @@ def test_sharded_training_can_skip_per_shard_checkpoints(tmp_path: Path) -> None
     loaded = load_checkpoint(output_dir / "checkpoint-final")
 
     assert result.steps == 2
-    assert result.final_metrics.step == 2
+    assert result.final_training_step == 2
     assert (output_dir / "checkpoint-final" / DEFAULT_WEIGHTS_FILENAME).is_file()
     assert loaded.metadata.training_step == 2
     assert loaded.metadata.optimizer_state_available is False
     assert not (output_dir / "shard-train-00000" / "checkpoint-final").exists()
     assert not (output_dir / "shard-train-00001" / "checkpoint-final").exists()
-    assert (output_dir / "metrics.jsonl").read_text().count("\n") == 2
+    assert not (output_dir / "metrics.jsonl").exists()
     assert (output_dir / "epoch_metrics.jsonl").read_text().count("\n") == 2
     assert training_summary["training_config"]["write_shard_checkpoints"] is False
     assert [shard["checkpoint_written"] for shard in training_summary["shards"]] == [
