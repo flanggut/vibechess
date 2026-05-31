@@ -61,6 +61,12 @@ def main() -> None:
         help="also write checkpoint-step-N every N optimizer steps; 0 disables interim checkpoints",
     )
     parser.add_argument(
+        "--metrics-every",
+        type=int,
+        default=1,
+        help="write per-step metrics every N optimizer steps and always on the final step",
+    )
+    parser.add_argument(
         "--input-checkpoint",
         help="optional existing checkpoint directory to continue model weights/config from",
     )
@@ -77,6 +83,7 @@ def main() -> None:
         learning_rate=args.learning_rate,
         seed=args.seed,
         checkpoint_every=args.checkpoint_every,
+        metrics_every=args.metrics_every,
         validation_fraction=args.validation_fraction,
     )
     notes = "tinychess WP15 training run"

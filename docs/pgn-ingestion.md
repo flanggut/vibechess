@@ -120,7 +120,10 @@ uv run python scripts/train.py \
 
 Training reserves 10% of each dataset/shard for validation by default and prints
 training and validation loss after every epoch. Use `--validation-fraction 0` to
-train on every sample for smoke runs where validation is not useful.
+train on every sample for smoke runs where validation is not useful. Per-step
+`metrics.jsonl` rows are exact and written after every optimizer step by default;
+for large runs, use `--metrics-every N` to write them every N steps while still
+recording the final optimizer step.
 
 The current checkpoint format stores model weights, not optimizer state. During
 shard-wise training, model weights and training step continue across shards, but

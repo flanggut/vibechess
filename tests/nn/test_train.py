@@ -34,6 +34,7 @@ from tinychess.nn.self_play import (
 from tinychess.nn.train import (
     DEFAULT_EPOCH_METRICS_FILENAME,
     DEFAULT_METRICS_FILENAME,
+    EpochMetrics,
     TrainingConfig,
     compute_policy_value_loss,
     train_model,
@@ -156,7 +157,7 @@ def test_train_model_writes_metrics_and_checkpoint(tmp_path: Path) -> None:
 
 def test_train_model_reserves_validation_split_and_reports_epoch_losses(tmp_path: Path) -> None:
     dataset = tiny_dataset(sample_count=10)
-    callbacks = []
+    callbacks: list[EpochMetrics] = []
 
     result = train_model(
         dataset,
@@ -180,6 +181,39 @@ def test_train_model_reserves_validation_split_and_reports_epoch_losses(tmp_path
     assert callbacks == list(result.epoch_metrics)
     assert all(metrics.validation_loss is not None for metrics in result.epoch_metrics)
     assert (tmp_path / DEFAULT_EPOCH_METRICS_FILENAME).read_text().count("\n") == 2
+
+
+def test_train_model_respects_metrics_cadence_and_records_final_step(tmp_path: Path) -> None:
+    dataset = tiny_dataset(sample_count=5)
+
+    result = train_model(
+        dataset,
+        tmp_path,
+        model=PolicyValueNet(tiny_config()),
+        config=TrainingConfig(
+            epochs=1,
+            batch_size=1,
+            learning_rate=1.0e-3,
+            metrics_every=2,
+            validation_fraction=0.0,
+        ),
+    )
+
+    metrics_lines = (tmp_path / DEFAULT_METRICS_FILENAME).read_text().splitlines()
+    metric_steps = [json.loads(line)["step"] for line in metrics_lines]
+    training_summary = json.loads((tmp_path / "training.json").read_text())
+
+    assert result.steps == 5
+    assert metric_steps == [2, 4, 5]
+    assert result.final_metrics.step == 5
+    assert json.loads(metrics_lines[-1]) == result.final_metrics.to_dict()
+    assert training_summary["final_metrics"]["step"] == 5
+    assert training_summary["training_config"]["metrics_every"] == 2
+
+
+def test_training_config_rejects_invalid_metrics_every() -> None:
+    with pytest.raises(ValueError, match="metrics_every"):
+        TrainingConfig(metrics_every=0)
 
 
 def test_train_model_rejects_empty_dataset(tmp_path: Path) -> None:
@@ -251,6 +285,8 @@ def test_train_script_consumes_dataset_and_writes_checkpoint(tmp_path: Path) -> 
             "1",
             "--learning-rate",
             "0.001",
+            "--metrics-every",
+            "1",
             "--residual-channels",
             "8",
             "--residual-blocks",

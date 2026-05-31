@@ -49,6 +49,7 @@ class TrainingConfig:
     value_loss_weight: float = 1.0
     seed: int | None = 0
     checkpoint_every: int = 0
+    metrics_every: int = 1
     validation_fraction: float = 0.1
 
     def __post_init__(self) -> None:
@@ -66,6 +67,8 @@ class TrainingConfig:
             raise ValueError("at least one loss weight must be positive")
         if self.checkpoint_every < 0:
             raise ValueError("checkpoint_every must be non-negative")
+        if self.metrics_every < 1:
+            raise ValueError("metrics_every must be at least 1")
         if self.validation_fraction < 0.0 or self.validation_fraction >= 1.0:
             raise ValueError("validation_fraction must be in [0.0, 1.0)")
 
@@ -184,6 +187,11 @@ def train_model(
         validation_fraction=resolved_config.validation_fraction,
         rng=rng,
     )
+    total_optimizer_steps = _optimizer_step_count(
+        sample_count=len(train_indices),
+        batch_size=resolved_config.batch_size,
+        epochs=resolved_config.epochs,
+    )
     run_step = 0
     samples_seen = 0
     final_metrics: TrainingMetrics | None = None
@@ -207,30 +215,35 @@ def train_model(
             optimizer.update(resolved_model, gradients)
             mx.eval(resolved_model.parameters(), optimizer.state, loss_value)
 
-            losses = compute_policy_value_loss(
-                resolved_model,
-                batch.positions,
-                batch.legal_masks,
-                batch.policy_targets,
-                batch.value_targets,
-                policy_loss_weight=resolved_config.policy_loss_weight,
-                value_loss_weight=resolved_config.value_loss_weight,
-            )
-            mx.eval(losses.total, losses.policy, losses.value)
             run_step += 1
             current_step = initial_step + run_step
             samples_seen += len(indices)
-            final_metrics = TrainingMetrics(
-                step=current_step,
-                epoch=epoch,
-                batch_index=batch_index,
-                samples_seen=samples_seen,
-                loss=_scalar(losses.total),
-                policy_loss=_scalar(losses.policy),
-                value_loss=_scalar(losses.value),
-                learning_rate=resolved_config.learning_rate,
-            )
-            _append_metrics(metrics_path, final_metrics)
+            if _should_record_step_metrics(
+                run_step,
+                total_steps=total_optimizer_steps,
+                metrics_every=resolved_config.metrics_every,
+            ):
+                losses = compute_policy_value_loss(
+                    resolved_model,
+                    batch.positions,
+                    batch.legal_masks,
+                    batch.policy_targets,
+                    batch.value_targets,
+                    policy_loss_weight=resolved_config.policy_loss_weight,
+                    value_loss_weight=resolved_config.value_loss_weight,
+                )
+                mx.eval(losses.total, losses.policy, losses.value)
+                final_metrics = TrainingMetrics(
+                    step=current_step,
+                    epoch=epoch,
+                    batch_index=batch_index,
+                    samples_seen=samples_seen,
+                    loss=_scalar(losses.total),
+                    policy_loss=_scalar(losses.policy),
+                    value_loss=_scalar(losses.value),
+                    learning_rate=resolved_config.learning_rate,
+                )
+                _append_metrics(metrics_path, final_metrics)
             checkpoint_due = (
                 resolved_config.checkpoint_every
                 and run_step % resolved_config.checkpoint_every == 0
@@ -566,6 +579,17 @@ def _batch_indices(
 ) -> Iterator[npt.NDArray[np.int64]]:
     for start in range(0, len(indices), batch_size):
         yield indices[start : start + batch_size]
+
+
+def _optimizer_step_count(*, sample_count: int, batch_size: int, epochs: int) -> int:
+    batches_per_epoch = (sample_count + batch_size - 1) // batch_size
+    return batches_per_epoch * epochs
+
+
+def _should_record_step_metrics(
+    run_step: int, *, total_steps: int, metrics_every: int
+) -> bool:
+    return run_step % metrics_every == 0 or run_step == total_steps
 
 
 def _validate_dataset_has_samples(dataset: SelfPlayDataset) -> None:
