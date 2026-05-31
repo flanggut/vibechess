@@ -137,5 +137,9 @@ to skip per-shard checkpoint writes while still writing a loadable top-level
 `checkpoint-final` at the end.
 
 The current checkpoint format stores model weights, not optimizer state. During
-shard-wise training, model weights and training step continue across shards, but
-optimizer state is reinitialized per shard.
+shard-wise training, model weights and training step continue across shards. By
+default, Adam optimizer state is reinitialized per shard to preserve legacy
+behavior. Add `--carry-optimizer-state-across-shards` to carry Adam state in
+memory across shards during a single training process. Checkpoint metadata still
+reports `optimizer_state_available=false`, and resuming from `--input-checkpoint`
+starts with fresh optimizer state for the new process.

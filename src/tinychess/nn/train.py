@@ -53,6 +53,7 @@ class TrainingConfig:
     evaluate_every_epochs: int = 1
     max_evaluation_samples: int | None = None
     write_shard_checkpoints: bool = True
+    carry_optimizer_state_across_shards: bool = False
     validation_fraction: float = 0.1
 
     def __post_init__(self) -> None:
@@ -197,6 +198,7 @@ def _train_loaded_dataset(
     initial_step: int = 0,
     epoch_callback: Callable[[EpochMetrics], None] | None = None,
     write_checkpoints: bool = True,
+    optimizer: Any | None = None,
 ) -> TrainingResult:
     """Train a loaded dataset with optional checkpoint writes for internal sharded use."""
     if initial_step < 0:
@@ -211,7 +213,9 @@ def _train_loaded_dataset(
     epoch_metrics_path.write_text("")
 
     resolved_model = PolicyValueNet() if model is None else model
-    optimizer = optim.Adam(learning_rate=resolved_config.learning_rate)
+    resolved_optimizer = (
+        optim.Adam(learning_rate=resolved_config.learning_rate) if optimizer is None else optimizer
+    )
     rng = np.random.default_rng(resolved_config.seed)
     train_indices, validation_indices = _split_train_validation_indices(
         dataset.metadata.sample_count,
@@ -243,8 +247,8 @@ def _train_loaded_dataset(
                 resolved_config.policy_loss_weight,
                 resolved_config.value_loss_weight,
             )
-            optimizer.update(resolved_model, gradients)
-            mx.eval(resolved_model.parameters(), optimizer.state, loss_value)
+            resolved_optimizer.update(resolved_model, gradients)
+            mx.eval(resolved_model.parameters(), resolved_optimizer.state, loss_value)
 
             run_step += 1
             current_step = initial_step + run_step
@@ -427,7 +431,8 @@ def train_from_sharded_directory(
 ) -> TrainingResult:
     """Train over PGN ingestion shards one shard at a time to bound memory use.
 
-    Optimizer state is intentionally not carried between shards because the
+    Optimizer state is reinitialized per shard by default. When configured,
+    Adam state is carried in memory across shards for this process only. The
     current checkpoint format persists model weights only. Training step and
     model weights are carried forward, and per-shard metrics are aggregated into
     the top-level ``metrics.jsonl``.
@@ -456,6 +461,11 @@ def train_from_sharded_directory(
     shards = shard_directories(dataset_dir)
     if not shards:
         raise ValueError("sharded training requires at least one shard")
+    shared_optimizer = (
+        optim.Adam(learning_rate=resolved_config.learning_rate)
+        if resolved_config.carry_optimizer_state_across_shards
+        else None
+    )
 
     for shard_index, shard_dir in enumerate(shards):
         shard_output = train_dir / f"shard-train-{shard_index:05d}"
@@ -468,6 +478,7 @@ def train_from_sharded_directory(
             initial_step=total_steps,
             epoch_callback=epoch_callback,
             write_checkpoints=resolved_config.write_shard_checkpoints,
+            optimizer=shared_optimizer,
         )
         total_steps += result.steps
         total_samples += result.samples
@@ -503,6 +514,7 @@ def train_from_sharded_directory(
         json.dumps(
             {
                 "training_config": resolved_config.to_dict(),
+                "initial_training_step": initial_step,
                 "dataset_manifest_dir": str(Path(dataset_dir)),
                 "sharded": True,
                 "shards": shard_summaries,

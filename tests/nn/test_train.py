@@ -229,11 +229,18 @@ def test_training_config_rejects_invalid_epoch_evaluation_options() -> None:
         TrainingConfig(max_evaluation_samples=0)
 
 
-def test_training_config_serializes_shard_checkpoint_setting() -> None:
+def test_training_config_serializes_sharded_training_settings() -> None:
     assert TrainingConfig().to_dict()["write_shard_checkpoints"] is True
+    assert TrainingConfig().to_dict()["carry_optimizer_state_across_shards"] is False
     assert (
         TrainingConfig(write_shard_checkpoints=False).to_dict()["write_shard_checkpoints"]
         is False
+    )
+    assert (
+        TrainingConfig(carry_optimizer_state_across_shards=True).to_dict()[
+            "carry_optimizer_state_across_shards"
+        ]
+        is True
     )
 
 

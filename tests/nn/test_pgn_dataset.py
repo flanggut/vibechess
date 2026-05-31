@@ -9,6 +9,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
+import tinychess.nn.train as train_module
 from tinychess.engine.game import Game
 from tinychess.engine.legal_moves import legal_moves
 from tinychess.engine.move import Move
@@ -40,7 +41,7 @@ from tinychess.nn.pgn_dataset import (
     shard_directories,
 )
 from tinychess.nn.self_play import load_self_play_dataset
-from tinychess.nn.train import TrainingConfig, train_from_directory
+from tinychess.nn.train import TrainingConfig, train_from_directory, train_from_sharded_directory
 
 PGN_TEXT = """[Event "Tiny"]
 [Result "1-0"]
@@ -472,6 +473,102 @@ def test_train_from_directory_auto_detects_pgn_manifest(tmp_path: Path) -> None:
     assert load_checkpoint_metadata(output_dir / "checkpoint-final").training_step == 2
 
 
+def test_sharded_training_summary_records_initial_training_step(tmp_path: Path) -> None:
+    input_path = tmp_path / "games.pgn"
+    dataset_dir = tmp_path / "dataset"
+    output_dir = tmp_path / "train"
+    input_path.write_text(PGN_TEXT)
+    ingest_pgn_dataset(
+        PgnIngestConfig(input_path=input_path, output_dir=dataset_dir, shard_samples=3)
+    )
+
+    result = train_from_sharded_directory(
+        dataset_dir,
+        output_dir,
+        config=TrainingConfig(
+            epochs=1,
+            batch_size=2,
+            learning_rate=1.0e-3,
+            validation_fraction=0.0,
+        ),
+        initial_step=7,
+    )
+
+    training_summary = json.loads((output_dir / "training.json").read_text())
+
+    assert result.steps == 4
+    assert result.final_metrics.step == 11
+    assert training_summary["initial_training_step"] == 7
+    assert training_summary["final_metrics"]["step"] == 11
+    assert load_checkpoint_metadata(output_dir / "checkpoint-final").training_step == 11
+
+
+def test_sharded_training_optimizer_state_carry_is_opt_in(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_path = tmp_path / "games.pgn"
+    dataset_dir = tmp_path / "dataset"
+    default_output = tmp_path / "train-default"
+    carry_output = tmp_path / "train-carry"
+    input_path.write_text(PGN_TEXT)
+    ingest_pgn_dataset(
+        PgnIngestConfig(input_path=input_path, output_dir=dataset_dir, shard_samples=3)
+    )
+
+    optimizer_module = vars(train_module)["optim"]
+    original_adam = optimizer_module.Adam
+    constructor_calls = 0
+
+    def counted_adam(*args: object, **kwargs: object) -> object:
+        nonlocal constructor_calls
+        constructor_calls += 1
+        return original_adam(*args, **kwargs)
+
+    monkeypatch.setattr(optimizer_module, "Adam", counted_adam)
+
+    default_result = train_from_directory(
+        dataset_dir,
+        default_output,
+        config=TrainingConfig(
+            epochs=1,
+            batch_size=2,
+            learning_rate=1.0e-3,
+            validation_fraction=0.0,
+        ),
+    )
+    assert default_result.steps == 4
+    assert constructor_calls == 2
+    assert (
+        json.loads((default_output / "training.json").read_text())["training_config"][
+            "carry_optimizer_state_across_shards"
+        ]
+        is False
+    )
+
+    constructor_calls = 0
+    carry_result = train_from_directory(
+        dataset_dir,
+        carry_output,
+        config=TrainingConfig(
+            epochs=1,
+            batch_size=2,
+            learning_rate=1.0e-3,
+            validation_fraction=0.0,
+            carry_optimizer_state_across_shards=True,
+        ),
+    )
+    carry_metadata = load_checkpoint_metadata(carry_output / "checkpoint-final")
+    carry_summary = json.loads((carry_output / "training.json").read_text())
+
+    assert carry_result.steps == 4
+    assert constructor_calls == 1
+    assert carry_result.final_metrics.step == 4
+    assert carry_metadata.training_step == 4
+    assert carry_metadata.optimizer_state_available is False
+    assert carry_summary["training_config"]["carry_optimizer_state_across_shards"] is True
+
+
 def test_sharded_training_can_skip_per_shard_checkpoints(tmp_path: Path) -> None:
     input_path = tmp_path / "games.pgn"
     dataset_dir = tmp_path / "dataset"
@@ -543,6 +640,7 @@ def test_train_script_consumes_pgn_manifest(tmp_path: Path) -> None:
             "--value-hidden-dim",
             "8",
             "--skip-shard-checkpoints",
+            "--carry-optimizer-state-across-shards",
         ],
         cwd=Path(__file__).parents[2],
         check=False,
@@ -555,6 +653,9 @@ def test_train_script_consumes_pgn_manifest(tmp_path: Path) -> None:
     assert "training complete" in result.stdout
     assert "samples=6" in result.stdout
     assert "validation_loss=" in result.stdout
+    training_summary = json.loads((output_dir / "training.json").read_text())
+
     assert (output_dir / "checkpoint-final" / DEFAULT_WEIGHTS_FILENAME).is_file()
     assert not (output_dir / "shard-train-00000" / "checkpoint-final").exists()
     assert not (output_dir / "shard-train-00001" / "checkpoint-final").exists()
+    assert training_summary["training_config"]["carry_optimizer_state_across_shards"] is True

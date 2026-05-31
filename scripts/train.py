@@ -87,6 +87,14 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--carry-optimizer-state-across-shards",
+        action="store_true",
+        help=(
+            "carry Adam optimizer state in memory across manifest shards; "
+            "checkpoint metadata still reports no persisted optimizer state"
+        ),
+    )
+    parser.add_argument(
         "--input-checkpoint",
         help="optional existing checkpoint directory to continue model weights/config from",
     )
@@ -109,6 +117,7 @@ def main() -> None:
             None if args.max_evaluation_samples == 0 else args.max_evaluation_samples
         ),
         write_shard_checkpoints=not args.skip_shard_checkpoints,
+        carry_optimizer_state_across_shards=args.carry_optimizer_state_across_shards,
         validation_fraction=args.validation_fraction,
     )
     notes = "tinychess WP15 training run"
