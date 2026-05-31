@@ -30,6 +30,7 @@ from tinychess.nn.encode import (
     ACTION_SPACE_VERSION,
     ENCODER_VERSION,
     encode_board_np,
+    legal_move_mask_from_board_moves_np,
     move_to_action_index,
 )
 from tinychess.nn.self_play import (
@@ -278,7 +279,7 @@ class _ShardBuilder:
             if ply.move not in ply.legal_moves:
                 raise ValueError("PGN trace move is not legal in parser-provided legal moves")
             positions.append(state.encode_position())
-            legal_masks.append(_legal_move_mask_np(ply.board, ply.legal_moves))
+            legal_masks.append(legal_move_mask_from_board_moves_np(ply.board, ply.legal_moves))
             policies.append(_one_hot_policy(ply.board, ply.move))
             sides.append(ply.board.side_to_move)
             state.advance(ply.move)
@@ -402,15 +403,6 @@ def _validate_trace_matches_state(state: _TrainingReplayState, ply: PgnParsedPly
         raise ValueError("PGN trace halfmove clock does not match replayed game state")
     if ply.fullmove_number != state.fullmove_number:
         raise ValueError("PGN trace fullmove number does not match replayed game state")
-
-
-def _legal_move_mask_np(board: Board, legal: tuple[Move, ...]) -> npt.NDArray[np.float32]:
-    mask = np.zeros((ACTION_SPACE_SIZE,), dtype=np.float32)
-    if not legal:
-        return mask
-    indices = np.asarray([move_to_action_index(move, board) for move in legal], dtype=np.intp)
-    np.add.at(mask, indices, np.float32(1.0))
-    return mask
 
 
 def _one_hot_policy(board: Board, move: Move) -> npt.NDArray[np.float32]:

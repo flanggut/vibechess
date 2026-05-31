@@ -282,10 +282,21 @@ def legal_move_mask_from_legal_moves_np(
     The returned vector matches
     ``np.asarray(legal_move_mask_from_legal_moves(game, legal), dtype=np.float32)``.
     """
+    return legal_move_mask_from_board_moves_np(game.board, legal)
+
+
+def legal_move_mask_from_board_moves_np(
+    board: Board, legal: tuple[Move, ...]
+) -> npt.NDArray[np.float32]:
+    """Return a NumPy legal-action mask from a board and precomputed legal moves.
+
+    Precondition: ``legal`` must be the legal move tuple for exactly ``board``.
+    This board-based helper avoids constructing a ``Game`` for PGN/dataset replay paths.
+    """
     mask = np.zeros((ACTION_SPACE_SIZE,), dtype=np.float32)
     if not legal:
         return mask
-    indices = np.asarray([move_to_action_index(move, game.board) for move in legal], dtype=np.intp)
+    indices = np.asarray([move_to_action_index(move, board) for move in legal], dtype=np.intp)
     np.add.at(mask, indices, np.float32(1.0))
     return mask
 

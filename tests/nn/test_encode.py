@@ -17,6 +17,7 @@ from tinychess.nn import (
     encode_game,
     encode_game_np,
     legal_move_mask,
+    legal_move_mask_from_board_moves_np,
     legal_move_mask_from_legal_moves_np,
     move_to_action_index,
     tensor_shape,
@@ -239,6 +240,7 @@ def test_legal_move_mask_from_legal_moves_matches_public_mask(game: Game) -> Non
     public_mask = legal_move_mask(game)
     helper_mask = legal_move_mask_from_legal_moves(game, legal)
     helper_mask_np = legal_move_mask_from_legal_moves_np(game, legal)
+    board_helper_mask_np = legal_move_mask_from_board_moves_np(game.board, legal)
 
     assert helper_mask.dtype == mx.float32
     assert tensor_shape(helper_mask) == (ACTION_SPACE_SIZE,)
@@ -253,6 +255,9 @@ def test_legal_move_mask_from_legal_moves_matches_public_mask(game: Game) -> Non
         helper_mask_np,
         np.asarray(public_mask, dtype=np.float32),
     )
+    assert board_helper_mask_np.dtype == np.float32
+    assert board_helper_mask_np.shape == (ACTION_SPACE_SIZE,)
+    np.testing.assert_array_equal(board_helper_mask_np, helper_mask_np)
 
 
 def test_to_mlx_is_idempotent_for_mlx_arrays_and_converts_array_like_values() -> None:
