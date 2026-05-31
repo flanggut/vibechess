@@ -222,88 +222,20 @@ def test_training_config_rejects_invalid_metrics_every() -> None:
         TrainingConfig(metrics_every=0)
 
 
-def test_training_config_rejects_invalid_epoch_evaluation_options() -> None:
-    with pytest.raises(ValueError, match="evaluate_every_epochs"):
-        TrainingConfig(evaluate_every_epochs=0)
-    with pytest.raises(ValueError, match="max_evaluation_samples"):
-        TrainingConfig(max_evaluation_samples=0)
-
 
 def test_training_config_serializes_sharded_training_settings() -> None:
     assert TrainingConfig().to_dict()["write_shard_checkpoints"] is True
-    assert TrainingConfig().to_dict()["carry_optimizer_state_across_shards"] is False
+    assert TrainingConfig().to_dict()["carry_optimizer_state_across_shards"] is True
     assert (
         TrainingConfig(write_shard_checkpoints=False).to_dict()["write_shard_checkpoints"]
         is False
     )
     assert (
-        TrainingConfig(carry_optimizer_state_across_shards=True).to_dict()[
+        TrainingConfig(carry_optimizer_state_across_shards=False).to_dict()[
             "carry_optimizer_state_across_shards"
         ]
-        is True
+        is False
     )
-
-
-def test_train_model_respects_epoch_evaluation_cadence(tmp_path: Path) -> None:
-    dataset = tiny_dataset(sample_count=4)
-    callbacks: list[EpochMetrics] = []
-
-    result = train_model(
-        dataset,
-        tmp_path,
-        model=PolicyValueNet(tiny_config()),
-        config=TrainingConfig(
-            epochs=3,
-            batch_size=2,
-            learning_rate=1.0e-3,
-            evaluate_every_epochs=2,
-            validation_fraction=0.0,
-        ),
-        epoch_callback=callbacks.append,
-    )
-
-    epoch_metrics_lines = (tmp_path / DEFAULT_EPOCH_METRICS_FILENAME).read_text().splitlines()
-    training_summary = json.loads((tmp_path / "training.json").read_text())
-
-    assert [metrics.epoch for metrics in result.epoch_metrics] == [2, 3]
-    assert callbacks == list(result.epoch_metrics)
-    assert [json.loads(line)["epoch"] for line in epoch_metrics_lines] == [2, 3]
-    assert [metrics["epoch"] for metrics in training_summary["epoch_metrics"]] == [2, 3]
-    assert training_summary["training_config"]["evaluate_every_epochs"] == 2
-
-
-def test_train_model_caps_epoch_evaluation_samples_without_changing_split_counts(
-    tmp_path: Path,
-) -> None:
-    dataset = tiny_dataset(sample_count=10)
-
-    result = train_model(
-        dataset,
-        tmp_path,
-        model=PolicyValueNet(tiny_config()),
-        config=TrainingConfig(
-            epochs=1,
-            batch_size=2,
-            learning_rate=1.0e-3,
-            max_evaluation_samples=3,
-            validation_fraction=0.5,
-        ),
-    )
-
-    epoch_metrics = result.epoch_metrics[0]
-    training_summary = json.loads((tmp_path / "training.json").read_text())
-
-    assert result.training_samples == 5
-    assert result.validation_samples == 5
-    assert epoch_metrics.training_samples == 3
-    assert epoch_metrics.validation_samples == 3
-    assert np.isfinite(epoch_metrics.training_loss)
-    assert epoch_metrics.validation_loss is not None
-    assert np.isfinite(epoch_metrics.validation_loss)
-    assert training_summary["training_samples"] == 5
-    assert training_summary["validation_samples"] == 5
-    assert training_summary["epoch_metrics"][0]["training_samples"] == 3
-    assert training_summary["training_config"]["max_evaluation_samples"] == 3
 
 
 def test_train_model_rejects_empty_dataset(tmp_path: Path) -> None:
@@ -377,10 +309,6 @@ def test_train_script_consumes_dataset_and_writes_checkpoint(tmp_path: Path) -> 
             "0.001",
             "--metrics-every",
             "1",
-            "--evaluate-every-epochs",
-            "1",
-            "--max-evaluation-samples",
-            "0",
             "--residual-channels",
             "8",
             "--residual-blocks",

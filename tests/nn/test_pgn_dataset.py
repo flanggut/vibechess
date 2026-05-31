@@ -503,7 +503,7 @@ def test_sharded_training_summary_records_initial_training_step(tmp_path: Path) 
     assert load_checkpoint_metadata(output_dir / "checkpoint-final").training_step == 11
 
 
-def test_sharded_training_optimizer_state_carry_is_opt_in(
+def test_sharded_training_optimizer_state_carry_is_enabled_by_default(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -537,17 +537,18 @@ def test_sharded_training_optimizer_state_carry_is_opt_in(
             validation_fraction=0.0,
         ),
     )
+    default_metadata = load_checkpoint_metadata(default_output / "checkpoint-final")
+    default_summary = json.loads((default_output / "training.json").read_text())
+
     assert default_result.steps == 4
-    assert constructor_calls == 2
-    assert (
-        json.loads((default_output / "training.json").read_text())["training_config"][
-            "carry_optimizer_state_across_shards"
-        ]
-        is False
-    )
+    assert constructor_calls == 1
+    assert default_result.final_metrics.step == 4
+    assert default_metadata.training_step == 4
+    assert default_metadata.optimizer_state_available is False
+    assert default_summary["training_config"]["carry_optimizer_state_across_shards"] is True
 
     constructor_calls = 0
-    carry_result = train_from_directory(
+    reset_result = train_from_directory(
         dataset_dir,
         carry_output,
         config=TrainingConfig(
@@ -555,18 +556,14 @@ def test_sharded_training_optimizer_state_carry_is_opt_in(
             batch_size=2,
             learning_rate=1.0e-3,
             validation_fraction=0.0,
-            carry_optimizer_state_across_shards=True,
+            carry_optimizer_state_across_shards=False,
         ),
     )
-    carry_metadata = load_checkpoint_metadata(carry_output / "checkpoint-final")
-    carry_summary = json.loads((carry_output / "training.json").read_text())
+    reset_summary = json.loads((carry_output / "training.json").read_text())
 
-    assert carry_result.steps == 4
-    assert constructor_calls == 1
-    assert carry_result.final_metrics.step == 4
-    assert carry_metadata.training_step == 4
-    assert carry_metadata.optimizer_state_available is False
-    assert carry_summary["training_config"]["carry_optimizer_state_across_shards"] is True
+    assert reset_result.steps == 4
+    assert constructor_calls == 2
+    assert reset_summary["training_config"]["carry_optimizer_state_across_shards"] is False
 
 
 def test_sharded_training_can_skip_per_shard_checkpoints(tmp_path: Path) -> None:
@@ -640,7 +637,6 @@ def test_train_script_consumes_pgn_manifest(tmp_path: Path) -> None:
             "--value-hidden-dim",
             "8",
             "--skip-shard-checkpoints",
-            "--carry-optimizer-state-across-shards",
         ],
         cwd=Path(__file__).parents[2],
         check=False,

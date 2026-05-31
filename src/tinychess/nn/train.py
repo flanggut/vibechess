@@ -50,10 +50,8 @@ class TrainingConfig:
     seed: int | None = 0
     checkpoint_every: int = 0
     metrics_every: int = 1
-    evaluate_every_epochs: int = 1
-    max_evaluation_samples: int | None = None
     write_shard_checkpoints: bool = True
-    carry_optimizer_state_across_shards: bool = False
+    carry_optimizer_state_across_shards: bool = True
     validation_fraction: float = 0.1
 
     def __post_init__(self) -> None:
@@ -73,10 +71,6 @@ class TrainingConfig:
             raise ValueError("checkpoint_every must be non-negative")
         if self.metrics_every < 1:
             raise ValueError("metrics_every must be at least 1")
-        if self.evaluate_every_epochs < 1:
-            raise ValueError("evaluate_every_epochs must be at least 1")
-        if self.max_evaluation_samples is not None and self.max_evaluation_samples < 1:
-            raise ValueError("max_evaluation_samples must be at least 1 when provided")
         if self.validation_fraction < 0.0 or self.validation_fraction >= 1.0:
             raise ValueError("validation_fraction must be in [0.0, 1.0)")
 
@@ -292,56 +286,39 @@ def _train_loaded_dataset(
                     notes=notes,
                 )
 
-        if _should_evaluate_epoch(
-            epoch,
-            total_epochs=resolved_config.epochs,
-            evaluate_every_epochs=resolved_config.evaluate_every_epochs,
-        ):
-            train_evaluation_indices = _evaluation_indices(
-                train_indices,
-                resolved_config.max_evaluation_samples,
-            )
-            validation_evaluation_indices = _evaluation_indices(
-                validation_indices,
-                resolved_config.max_evaluation_samples,
-            )
-            train_loss = _evaluate_loss(
+        train_loss = _evaluate_loss(
+            resolved_model,
+            dataset,
+            train_indices,
+            batch_size=resolved_config.batch_size,
+            config=resolved_config,
+        )
+        validation_loss = (
+            _evaluate_loss(
                 resolved_model,
                 dataset,
-                train_evaluation_indices,
+                validation_indices,
                 batch_size=resolved_config.batch_size,
                 config=resolved_config,
             )
-            validation_loss = (
-                _evaluate_loss(
-                    resolved_model,
-                    dataset,
-                    validation_evaluation_indices,
-                    batch_size=resolved_config.batch_size,
-                    config=resolved_config,
-                )
-                if len(validation_evaluation_indices) > 0
-                else None
-            )
-            epoch_metrics = EpochMetrics(
-                epoch=epoch,
-                training_samples=len(train_evaluation_indices),
-                validation_samples=len(validation_evaluation_indices),
-                training_loss=train_loss.loss,
-                training_policy_loss=train_loss.policy_loss,
-                training_value_loss=train_loss.value_loss,
-                validation_loss=None if validation_loss is None else validation_loss.loss,
-                validation_policy_loss=(
-                    None if validation_loss is None else validation_loss.policy_loss
-                ),
-                validation_value_loss=(
-                    None if validation_loss is None else validation_loss.value_loss
-                ),
-            )
-            epoch_metric_values.append(epoch_metrics)
-            _append_epoch_metrics(epoch_metrics_path, epoch_metrics)
-            if epoch_callback is not None:
-                epoch_callback(epoch_metrics)
+            if len(validation_indices) > 0
+            else None
+        )
+        epoch_metrics = EpochMetrics(
+            epoch=epoch,
+            training_samples=len(train_indices),
+            validation_samples=len(validation_indices),
+            training_loss=train_loss.loss,
+            training_policy_loss=train_loss.policy_loss,
+            training_value_loss=train_loss.value_loss,
+            validation_loss=None if validation_loss is None else validation_loss.loss,
+            validation_policy_loss=None if validation_loss is None else validation_loss.policy_loss,
+            validation_value_loss=None if validation_loss is None else validation_loss.value_loss,
+        )
+        epoch_metric_values.append(epoch_metrics)
+        _append_epoch_metrics(epoch_metrics_path, epoch_metrics)
+        if epoch_callback is not None:
+            epoch_callback(epoch_metrics)
 
     if final_metrics is None:  # pragma: no cover - guarded by dataset validation
         raise RuntimeError("training completed without optimizer steps")
@@ -431,11 +408,11 @@ def train_from_sharded_directory(
 ) -> TrainingResult:
     """Train over PGN ingestion shards one shard at a time to bound memory use.
 
-    Optimizer state is reinitialized per shard by default. When configured,
-    Adam state is carried in memory across shards for this process only. The
-    current checkpoint format persists model weights only. Training step and
-    model weights are carried forward, and per-shard metrics are aggregated into
-    the top-level ``metrics.jsonl``.
+    Adam optimizer state is carried in memory across shards by default for this
+    process only, unless configured to reset per shard. The current checkpoint
+    format persists model weights only. Training step and model weights are
+    carried forward, and per-shard metrics are aggregated into the top-level
+    ``metrics.jsonl``.
     """
     from tinychess.nn.pgn_dataset import shard_directories
     from tinychess.nn.self_play import load_self_play_dataset
@@ -661,19 +638,6 @@ def _should_record_step_metrics(
 ) -> bool:
     return run_step % metrics_every == 0 or run_step == total_steps
 
-
-def _should_evaluate_epoch(
-    epoch: int, *, total_epochs: int, evaluate_every_epochs: int
-) -> bool:
-    return epoch % evaluate_every_epochs == 0 or epoch == total_epochs
-
-
-def _evaluation_indices(
-    indices: npt.NDArray[np.int64], max_evaluation_samples: int | None
-) -> npt.NDArray[np.int64]:
-    if max_evaluation_samples is None or len(indices) <= max_evaluation_samples:
-        return indices
-    return indices[:max_evaluation_samples]
 
 
 def _validate_dataset_has_samples(dataset: SelfPlayDataset) -> None:

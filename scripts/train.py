@@ -67,18 +67,6 @@ def main() -> None:
         help="write per-step metrics every N optimizer steps and always on the final step",
     )
     parser.add_argument(
-        "--evaluate-every-epochs",
-        type=int,
-        default=1,
-        help="evaluate train/validation losses every N epochs and always on the final epoch",
-    )
-    parser.add_argument(
-        "--max-evaluation-samples",
-        type=int,
-        default=0,
-        help="maximum train and validation samples per epoch evaluation; 0 evaluates full splits",
-    )
-    parser.add_argument(
         "--skip-shard-checkpoints",
         action="store_true",
         help=(
@@ -88,9 +76,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--carry-optimizer-state-across-shards",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help=(
             "carry Adam optimizer state in memory across manifest shards; "
+            "use --no-carry-optimizer-state-across-shards to reset per shard; "
             "checkpoint metadata still reports no persisted optimizer state"
         ),
     )
@@ -112,10 +102,6 @@ def main() -> None:
         seed=args.seed,
         checkpoint_every=args.checkpoint_every,
         metrics_every=args.metrics_every,
-        evaluate_every_epochs=args.evaluate_every_epochs,
-        max_evaluation_samples=(
-            None if args.max_evaluation_samples == 0 else args.max_evaluation_samples
-        ),
         write_shard_checkpoints=not args.skip_shard_checkpoints,
         carry_optimizer_state_across_shards=args.carry_optimizer_state_across_shards,
         validation_fraction=args.validation_fraction,
