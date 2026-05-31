@@ -452,11 +452,14 @@ def test_train_from_directory_auto_detects_pgn_manifest(tmp_path: Path) -> None:
         config=TrainingConfig(epochs=1, batch_size=2, learning_rate=1.0e-3),
     )
 
-    assert result.steps == 4
+    assert result.steps == 2
     assert result.samples == 6
+    assert result.training_samples == 4
+    assert result.validation_samples == 2
     assert (output_dir / "checkpoint-final" / DEFAULT_WEIGHTS_FILENAME).is_file()
-    assert (output_dir / "metrics.jsonl").read_text().count("\n") == 4
-    assert load_checkpoint_metadata(output_dir / "checkpoint-final").training_step == 4
+    assert (output_dir / "metrics.jsonl").read_text().count("\n") == 2
+    assert (output_dir / "epoch_metrics.jsonl").read_text().count("\n") == 2
+    assert load_checkpoint_metadata(output_dir / "checkpoint-final").training_step == 2
 
 
 def test_train_script_consumes_pgn_manifest(tmp_path: Path) -> None:
@@ -501,4 +504,5 @@ def test_train_script_consumes_pgn_manifest(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert "training complete" in result.stdout
     assert "samples=6" in result.stdout
+    assert "validation_loss=" in result.stdout
     assert (output_dir / "checkpoint-final" / DEFAULT_WEIGHTS_FILENAME).is_file()

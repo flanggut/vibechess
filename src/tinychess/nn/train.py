@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeAlias
@@ -26,6 +26,7 @@ MLXArray: TypeAlias = Any
 nn: Any = _nn
 
 DEFAULT_METRICS_FILENAME = "metrics.jsonl"
+DEFAULT_EPOCH_METRICS_FILENAME = "epoch_metrics.jsonl"
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +49,7 @@ class TrainingConfig:
     value_loss_weight: float = 1.0
     seed: int | None = 0
     checkpoint_every: int = 0
+    validation_fraction: float = 0.1
 
     def __post_init__(self) -> None:
         if self.epochs < 1:
@@ -64,6 +66,8 @@ class TrainingConfig:
             raise ValueError("at least one loss weight must be positive")
         if self.checkpoint_every < 0:
             raise ValueError("checkpoint_every must be non-negative")
+        if self.validation_fraction < 0.0 or self.validation_fraction >= 1.0:
+            raise ValueError("validation_fraction must be in [0.0, 1.0)")
 
     def to_dict(self) -> dict[str, object]:
         """Return JSON-serializable training settings."""
@@ -89,14 +93,37 @@ class TrainingMetrics:
 
 
 @dataclass(frozen=True, slots=True)
+class EpochMetrics:
+    """Serializable average training/validation metrics for one epoch."""
+
+    epoch: int
+    training_samples: int
+    validation_samples: int
+    training_loss: float
+    training_policy_loss: float
+    training_value_loss: float
+    validation_loss: float | None
+    validation_policy_loss: float | None
+    validation_value_loss: float | None
+
+    def to_dict(self) -> dict[str, object]:
+        """Return JSON-serializable epoch metrics."""
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
 class TrainingResult:
     """Summary of a training run."""
 
     steps: int
     samples: int
+    training_samples: int
+    validation_samples: int
     final_metrics: TrainingMetrics
+    epoch_metrics: tuple[EpochMetrics, ...]
     checkpoint_dir: Path
     metrics_path: Path
+    epoch_metrics_path: Path
 
 
 def compute_policy_value_loss(
@@ -135,6 +162,7 @@ def train_model(
     config: TrainingConfig | None = None,
     notes: str | None = None,
     initial_step: int = 0,
+    epoch_callback: Callable[[EpochMetrics], None] | None = None,
 ) -> TrainingResult:
     """Train a policy/value model on a loaded self-play dataset and save outputs."""
     if initial_step < 0:
@@ -144,17 +172,25 @@ def train_model(
     train_dir = Path(output_dir)
     train_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = train_dir / DEFAULT_METRICS_FILENAME
+    epoch_metrics_path = train_dir / DEFAULT_EPOCH_METRICS_FILENAME
     metrics_path.write_text("")
+    epoch_metrics_path.write_text("")
 
     resolved_model = PolicyValueNet() if model is None else model
     optimizer = optim.Adam(learning_rate=resolved_config.learning_rate)
     rng = np.random.default_rng(resolved_config.seed)
+    train_indices, validation_indices = _split_train_validation_indices(
+        dataset.metadata.sample_count,
+        validation_fraction=resolved_config.validation_fraction,
+        rng=rng,
+    )
     run_step = 0
     samples_seen = 0
     final_metrics: TrainingMetrics | None = None
+    epoch_metric_values: list[EpochMetrics] = []
 
     for epoch in range(1, resolved_config.epochs + 1):
-        order = np.arange(dataset.metadata.sample_count)
+        order = np.array(train_indices, copy=True)
         rng.shuffle(order)
         batches = _batch_indices(order, resolved_config.batch_size)
         for batch_index, indices in enumerate(batches, start=1):
@@ -207,6 +243,40 @@ def train_model(
                     notes=notes,
                 )
 
+        train_loss = _evaluate_loss(
+            resolved_model,
+            dataset,
+            train_indices,
+            batch_size=resolved_config.batch_size,
+            config=resolved_config,
+        )
+        validation_loss = (
+            _evaluate_loss(
+                resolved_model,
+                dataset,
+                validation_indices,
+                batch_size=resolved_config.batch_size,
+                config=resolved_config,
+            )
+            if len(validation_indices) > 0
+            else None
+        )
+        epoch_metrics = EpochMetrics(
+            epoch=epoch,
+            training_samples=len(train_indices),
+            validation_samples=len(validation_indices),
+            training_loss=train_loss.loss,
+            training_policy_loss=train_loss.policy_loss,
+            training_value_loss=train_loss.value_loss,
+            validation_loss=None if validation_loss is None else validation_loss.loss,
+            validation_policy_loss=None if validation_loss is None else validation_loss.policy_loss,
+            validation_value_loss=None if validation_loss is None else validation_loss.value_loss,
+        )
+        epoch_metric_values.append(epoch_metrics)
+        _append_epoch_metrics(epoch_metrics_path, epoch_metrics)
+        if epoch_callback is not None:
+            epoch_callback(epoch_metrics)
+
     if final_metrics is None:  # pragma: no cover - guarded by dataset validation
         raise RuntimeError("training completed without optimizer steps")
     checkpoint_dir = train_dir / "checkpoint-final"
@@ -217,7 +287,10 @@ def train_model(
                 "training_config": resolved_config.to_dict(),
                 "initial_training_step": initial_step,
                 "dataset_metadata": dataset.metadata.to_dict(),
+                "training_samples": len(train_indices),
+                "validation_samples": len(validation_indices),
                 "final_metrics": final_metrics.to_dict(),
+                "epoch_metrics": [metrics.to_dict() for metrics in epoch_metric_values],
                 "checkpoint_dir": str(checkpoint_dir),
             },
             indent=2,
@@ -228,9 +301,13 @@ def train_model(
     return TrainingResult(
         steps=run_step,
         samples=dataset.metadata.sample_count,
+        training_samples=len(train_indices),
+        validation_samples=len(validation_indices),
         final_metrics=final_metrics,
+        epoch_metrics=tuple(epoch_metric_values),
         checkpoint_dir=checkpoint_dir,
         metrics_path=metrics_path,
+        epoch_metrics_path=epoch_metrics_path,
     )
 
 
@@ -241,6 +318,7 @@ def train_from_directory(
     model_config: PolicyValueConfig | None = None,
     config: TrainingConfig | None = None,
     notes: str | None = None,
+    epoch_callback: Callable[[EpochMetrics], None] | None = None,
 ) -> TrainingResult:
     """Load a dataset directory or PGN shard manifest and train a model."""
     from tinychess.nn.pgn_dataset import DEFAULT_MANIFEST_FILENAME
@@ -254,6 +332,7 @@ def train_from_directory(
             model_config=model_config,
             config=config,
             notes=notes,
+            epoch_callback=epoch_callback,
         )
 
     model = PolicyValueNet(model_config)
@@ -263,6 +342,7 @@ def train_from_directory(
         model=model,
         config=config,
         notes=notes,
+        epoch_callback=epoch_callback,
     )
 
 
@@ -275,6 +355,7 @@ def train_from_sharded_directory(
     config: TrainingConfig | None = None,
     notes: str | None = None,
     initial_step: int = 0,
+    epoch_callback: Callable[[EpochMetrics], None] | None = None,
 ) -> TrainingResult:
     """Train over PGN ingestion shards one shard at a time to bound memory use.
 
@@ -292,12 +373,17 @@ def train_from_sharded_directory(
     train_dir = Path(output_dir)
     train_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = train_dir / DEFAULT_METRICS_FILENAME
+    epoch_metrics_path = train_dir / DEFAULT_EPOCH_METRICS_FILENAME
     metrics_path.write_text("")
+    epoch_metrics_path.write_text("")
 
     model = PolicyValueNet(model_config) if model is None else model
     total_steps = initial_step
     total_samples = 0
+    total_training_samples = 0
+    total_validation_samples = 0
     final_metrics: TrainingMetrics | None = None
+    epoch_metric_values: list[EpochMetrics] = []
     shard_summaries: list[dict[str, object]] = []
     shards = shard_directories(dataset_dir)
     if not shards:
@@ -312,12 +398,17 @@ def train_from_sharded_directory(
             config=resolved_config,
             notes=notes,
             initial_step=total_steps,
+            epoch_callback=epoch_callback,
         )
         total_steps += result.steps
         total_samples += result.samples
+        total_training_samples += result.training_samples
+        total_validation_samples += result.validation_samples
         final_metrics = result.final_metrics
-        metrics_path.write_text(
-            metrics_path.read_text() + result.metrics_path.read_text()
+        epoch_metric_values.extend(result.epoch_metrics)
+        metrics_path.write_text(metrics_path.read_text() + result.metrics_path.read_text())
+        epoch_metrics_path.write_text(
+            epoch_metrics_path.read_text() + result.epoch_metrics_path.read_text()
         )
         shard_summaries.append(
             {
@@ -325,6 +416,8 @@ def train_from_sharded_directory(
                 "training_output": str(shard_output),
                 "steps": result.steps,
                 "samples": result.samples,
+                "training_samples": result.training_samples,
+                "validation_samples": result.validation_samples,
                 "final_step": result.final_metrics.step,
             }
         )
@@ -342,7 +435,10 @@ def train_from_sharded_directory(
                 "dataset_manifest_dir": str(Path(dataset_dir)),
                 "sharded": True,
                 "shards": shard_summaries,
+                "training_samples": total_training_samples,
+                "validation_samples": total_validation_samples,
                 "final_metrics": final_metrics.to_dict(),
+                "epoch_metrics": [metrics.to_dict() for metrics in epoch_metric_values],
                 "checkpoint_dir": str(checkpoint_dir),
             },
             indent=2,
@@ -353,9 +449,77 @@ def train_from_sharded_directory(
     return TrainingResult(
         steps=total_steps - initial_step,
         samples=total_samples,
+        training_samples=total_training_samples,
+        validation_samples=total_validation_samples,
         final_metrics=final_metrics,
+        epoch_metrics=tuple(epoch_metric_values),
         checkpoint_dir=checkpoint_dir,
         metrics_path=metrics_path,
+        epoch_metrics_path=epoch_metrics_path,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _LossSummary:
+    loss: float
+    policy_loss: float
+    value_loss: float
+
+
+def _split_train_validation_indices(
+    sample_count: int,
+    *,
+    validation_fraction: float,
+    rng: np.random.Generator,
+) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+    indices = np.arange(sample_count, dtype=np.int64)
+    if sample_count < 2 or validation_fraction == 0.0:
+        return indices, np.array([], dtype=np.int64)
+
+    shuffled = np.array(indices, copy=True)
+    rng.shuffle(shuffled)
+    validation_count = int(sample_count * validation_fraction + 0.5)
+    validation_count = max(1, min(validation_count, sample_count - 1))
+    return shuffled[validation_count:], shuffled[:validation_count]
+
+
+def _evaluate_loss(
+    model: PolicyValueNet,
+    dataset: SelfPlayDataset,
+    indices: npt.NDArray[np.int64],
+    *,
+    batch_size: int,
+    config: TrainingConfig,
+) -> _LossSummary:
+    if len(indices) < 1:
+        raise ValueError("loss evaluation requires at least one sample")
+
+    weighted_loss = 0.0
+    weighted_policy_loss = 0.0
+    weighted_value_loss = 0.0
+    total_samples = 0
+    for batch_indices in _batch_indices(indices, batch_size):
+        batch = _Batch.from_dataset(dataset, batch_indices)
+        losses = compute_policy_value_loss(
+            model,
+            batch.positions,
+            batch.legal_masks,
+            batch.policy_targets,
+            batch.value_targets,
+            policy_loss_weight=config.policy_loss_weight,
+            value_loss_weight=config.value_loss_weight,
+        )
+        mx.eval(losses.total, losses.policy, losses.value)
+        samples = len(batch_indices)
+        weighted_loss += _scalar(losses.total) * samples
+        weighted_policy_loss += _scalar(losses.policy) * samples
+        weighted_value_loss += _scalar(losses.value) * samples
+        total_samples += samples
+
+    return _LossSummary(
+        loss=weighted_loss / total_samples,
+        policy_loss=weighted_policy_loss / total_samples,
+        value_loss=weighted_value_loss / total_samples,
     )
 
 
@@ -459,12 +623,19 @@ def _append_metrics(path: Path, metrics: TrainingMetrics) -> None:
         handle.write(json.dumps(metrics.to_dict(), sort_keys=True) + "\n")
 
 
+def _append_epoch_metrics(path: Path, metrics: EpochMetrics) -> None:
+    with path.open("a") as handle:
+        handle.write(json.dumps(metrics.to_dict(), sort_keys=True) + "\n")
+
+
 def _scalar(value: MLXArray) -> float:
     return float(value.item())
 
 
 __all__ = [
+    "DEFAULT_EPOCH_METRICS_FILENAME",
     "DEFAULT_METRICS_FILENAME",
+    "EpochMetrics",
     "LossBreakdown",
     "TrainingConfig",
     "TrainingMetrics",

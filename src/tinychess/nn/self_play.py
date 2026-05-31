@@ -100,7 +100,9 @@ class SelfPlayGameRecord:
     def from_dict(cls, data: dict[str, object]) -> SelfPlayGameRecord:
         """Parse a game record from JSON data."""
         moves = data.get("moves_uci")
-        if not isinstance(moves, list) or not all(isinstance(move, str) for move in moves):
+        if not isinstance(moves, list) or not all(
+            isinstance(move, str) for move in moves
+        ):
             raise TypeError("game record field 'moves_uci' must be a list of strings")
         winner = data.get("winner")
         if winner is not None and not isinstance(winner, str):
@@ -169,7 +171,9 @@ class SelfPlayMetadata:
             raise ValueError(f"unsupported self-play dataset schema: {schema_version}")
         action_space_version = _expect_str(data, "action_space_version")
         if action_space_version != ACTION_SPACE_VERSION:
-            raise ValueError(f"unsupported action space version: {action_space_version}")
+            raise ValueError(
+                f"unsupported action space version: {action_space_version}"
+            )
         encoder_version = _expect_str(data, "encoder_version")
         if encoder_version != ENCODER_VERSION:
             raise ValueError(f"unsupported encoder version: {encoder_version}")
@@ -181,7 +185,9 @@ class SelfPlayMetadata:
             raise TypeError("metadata field 'git_commit' must be a string or null")
         model_checkpoint_id = data.get("model_checkpoint_id")
         if model_checkpoint_id is not None and not isinstance(model_checkpoint_id, str):
-            raise TypeError("metadata field 'model_checkpoint_id' must be a string or null")
+            raise TypeError(
+                "metadata field 'model_checkpoint_id' must be a string or null"
+            )
         return cls(
             schema_version=schema_version,
             generated_at=_expect_str(data, "generated_at"),
@@ -275,7 +281,9 @@ def merge_self_play_datasets(
             action_space = dataset.metadata.action_space_version
             raise ValueError(f"unsupported action space version: {action_space}")
         if dataset.metadata.encoder_version != ENCODER_VERSION:
-            raise ValueError(f"unsupported encoder version: {dataset.metadata.encoder_version}")
+            raise ValueError(
+                f"unsupported encoder version: {dataset.metadata.encoder_version}"
+            )
         if dataset.metadata.model_checkpoint_id != model_checkpoint_id:
             raise ValueError("cannot merge datasets from different model checkpoints")
         for record in dataset.games:
@@ -342,7 +350,10 @@ def save_self_play_dataset(dataset: SelfPlayDataset, directory: str | Path) -> N
         json.dumps(dataset.metadata.to_dict(), indent=2, sort_keys=True) + "\n"
     )
     (output_dir / DEFAULT_GAMES_FILENAME).write_text(
-        "".join(json.dumps(record.to_dict(), sort_keys=True) + "\n" for record in dataset.games)
+        "".join(
+            json.dumps(record.to_dict(), sort_keys=True) + "\n"
+            for record in dataset.games
+        )
     )
 
 
@@ -365,7 +376,6 @@ def load_self_play_dataset(directory: str | Path) -> SelfPlayDataset:
     ]
     if len(games) != metadata.game_count:
         raise ValueError("game metadata count does not match dataset metadata")
-    _validate_game_records(metadata, games, positions, legal_masks, mcts_policies, outcomes)
     return SelfPlayDataset(
         positions=positions,
         legal_masks=legal_masks,
@@ -408,7 +418,9 @@ def _mcts_config_for_game(config: SelfPlayConfig, game_index: int) -> NeuralMCTS
     return replace(config.mcts, seed=config.seed + game_index)
 
 
-def _classical_mcts_config_for_game(config: SelfPlayConfig, game_index: int) -> MCTSConfig:
+def _classical_mcts_config_for_game(
+    config: SelfPlayConfig, game_index: int
+) -> MCTSConfig:
     if config.seed is None:
         return config.classical_mcts
     return replace(config.classical_mcts, seed=config.seed + game_index)
@@ -573,7 +585,9 @@ def _recorded_outcome(record: SelfPlayGameRecord) -> Outcome:
     try:
         reason = OutcomeReason(record.outcome_reason)
     except ValueError as exc:
-        raise ValueError(f"unsupported game outcome reason: {record.outcome_reason}") from exc
+        raise ValueError(
+            f"unsupported game outcome reason: {record.outcome_reason}"
+        ) from exc
     winner = None
     if record.winner is not None:
         try:

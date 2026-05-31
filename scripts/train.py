@@ -11,11 +11,25 @@ from tinychess.nn.model import PolicyValueConfig
 from tinychess.nn.pgn_dataset import DEFAULT_MANIFEST_FILENAME
 from tinychess.nn.self_play import load_self_play_dataset
 from tinychess.nn.train import (
+    EpochMetrics,
     TrainingConfig,
     train_from_directory,
     train_from_sharded_directory,
     train_model,
 )
+
+
+def _print_epoch_metrics(metrics: EpochMetrics) -> None:
+    validation_loss = (
+        "n/a" if metrics.validation_loss is None else f"{metrics.validation_loss:.6f}"
+    )
+    print(
+        f"epoch {metrics.epoch}: "
+        f"training_loss={metrics.training_loss:.6f} "
+        f"validation_loss={validation_loss} "
+        f"training_samples={metrics.training_samples} "
+        f"validation_samples={metrics.validation_samples}"
+    )
 
 
 def main() -> None:
@@ -33,6 +47,12 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--learning-rate", type=float, default=1.0e-3)
+    parser.add_argument(
+        "--validation-fraction",
+        type=float,
+        default=0.1,
+        help="fraction of samples to reserve for validation; 0 disables validation",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
         "--checkpoint-every",
@@ -57,6 +77,7 @@ def main() -> None:
         learning_rate=args.learning_rate,
         seed=args.seed,
         checkpoint_every=args.checkpoint_every,
+        validation_fraction=args.validation_fraction,
     )
     notes = "tinychess WP15 training run"
 
@@ -73,6 +94,7 @@ def main() -> None:
                 config=train_config,
                 notes=notes,
                 initial_step=loaded.metadata.training_step,
+                epoch_callback=_print_epoch_metrics,
             )
         else:
             dataset = load_self_play_dataset(dataset_path)
@@ -83,6 +105,7 @@ def main() -> None:
                 config=train_config,
                 notes=notes,
                 initial_step=loaded.metadata.training_step,
+                epoch_callback=_print_epoch_metrics,
             )
     else:
         model_config = PolicyValueConfig(
@@ -98,11 +121,14 @@ def main() -> None:
             model_config=model_config,
             config=train_config,
             notes=notes,
+            epoch_callback=_print_epoch_metrics,
         )
 
     print(
         "training complete: "
         f"steps={result.steps} samples={result.samples} "
+        f"training_samples={result.training_samples} "
+        f"validation_samples={result.validation_samples} "
         f"loss={result.final_metrics.loss:.6f} "
         f"policy_loss={result.final_metrics.policy_loss:.6f} "
         f"value_loss={result.final_metrics.value_loss:.6f} "

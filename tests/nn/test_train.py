@@ -32,6 +32,7 @@ from tinychess.nn.self_play import (
     save_self_play_dataset,
 )
 from tinychess.nn.train import (
+    DEFAULT_EPOCH_METRICS_FILENAME,
     DEFAULT_METRICS_FILENAME,
     TrainingConfig,
     compute_policy_value_loss,
@@ -106,7 +107,7 @@ def test_policy_value_loss_computes_finite_components() -> None:
 
 
 def test_train_model_writes_metrics_and_checkpoint(tmp_path: Path) -> None:
-    dataset = tiny_dataset(sample_count=2)
+    dataset = tiny_dataset(sample_count=4)
     model = PolicyValueNet(tiny_config())
     before = np.array(model(mx.array(dataset.positions[:1], dtype=mx.float32)).policy_logits)
 
@@ -119,6 +120,7 @@ def test_train_model_writes_metrics_and_checkpoint(tmp_path: Path) -> None:
     )
 
     metrics_lines = (tmp_path / DEFAULT_METRICS_FILENAME).read_text().splitlines()
+    epoch_metrics_lines = (tmp_path / DEFAULT_EPOCH_METRICS_FILENAME).read_text().splitlines()
     metadata = load_checkpoint_metadata(result.checkpoint_dir)
     loaded = load_checkpoint(result.checkpoint_dir)
     after = np.array(model(mx.array(dataset.positions[:1], dtype=mx.float32)).policy_logits)
@@ -131,20 +133,53 @@ def test_train_model_writes_metrics_and_checkpoint(tmp_path: Path) -> None:
     )
     mx.eval(losses.total)
 
-    assert result.steps == 2
-    assert result.samples == 2
+    assert result.steps == 3
+    assert result.samples == 4
+    assert result.training_samples == 3
+    assert result.validation_samples == 1
     assert result.metrics_path == tmp_path / DEFAULT_METRICS_FILENAME
-    assert len(metrics_lines) == 2
-    assert json.loads(metrics_lines[-1])["step"] == 2
+    assert result.epoch_metrics_path == tmp_path / DEFAULT_EPOCH_METRICS_FILENAME
+    assert len(metrics_lines) == 3
+    assert len(epoch_metrics_lines) == 1
+    assert json.loads(metrics_lines[-1])["step"] == 3
+    assert json.loads(epoch_metrics_lines[-1])["validation_loss"] is not None
     assert not np.allclose(before, after)
     assert np.isfinite(float(losses.total.item()))
     assert (result.checkpoint_dir / DEFAULT_WEIGHTS_FILENAME).is_file()
     assert (result.checkpoint_dir / DEFAULT_METADATA_FILENAME).is_file()
-    assert metadata.training_step == 2
-    assert loaded.metadata.training_step == 2
+    assert metadata.training_step == 3
+    assert loaded.metadata.training_step == 3
     assert metadata.optimizer_state_available is False
     assert metadata.notes == "unit test"
     assert (tmp_path / "training.json").is_file()
+
+
+def test_train_model_reserves_validation_split_and_reports_epoch_losses(tmp_path: Path) -> None:
+    dataset = tiny_dataset(sample_count=10)
+    callbacks = []
+
+    result = train_model(
+        dataset,
+        tmp_path,
+        model=PolicyValueNet(tiny_config()),
+        config=TrainingConfig(
+            epochs=2,
+            batch_size=3,
+            learning_rate=1.0e-3,
+            seed=7,
+            validation_fraction=0.2,
+        ),
+        epoch_callback=callbacks.append,
+    )
+
+    assert result.samples == 10
+    assert result.training_samples == 8
+    assert result.validation_samples == 2
+    assert result.steps == 6
+    assert len(result.epoch_metrics) == 2
+    assert callbacks == list(result.epoch_metrics)
+    assert all(metrics.validation_loss is not None for metrics in result.epoch_metrics)
+    assert (tmp_path / DEFAULT_EPOCH_METRICS_FILENAME).read_text().count("\n") == 2
 
 
 def test_train_model_rejects_empty_dataset(tmp_path: Path) -> None:
@@ -236,6 +271,8 @@ def test_train_script_consumes_dataset_and_writes_checkpoint(tmp_path: Path) -> 
 
     assert result.returncode == 0, result.stderr
     assert "training complete" in result.stdout
+    assert "epoch 1:" in result.stdout
+    assert "validation_loss=n/a" in result.stdout
     assert "steps=1" in result.stdout
     assert (output_dir / DEFAULT_METRICS_FILENAME).is_file()
     assert (output_dir / "checkpoint-final" / DEFAULT_WEIGHTS_FILENAME).is_file()

@@ -23,7 +23,7 @@ The neural player uses:
 - A value head for side-to-move outcome prediction. (Implemented in `tinychess.nn.model.PolicyValueNet`.)
 - PUCT search using neural policy priors, legal-move expansion only, side-to-move value backup, and visit-count temperature move selection. (Implemented in `tinychess.ai.neural_mcts`.)
 - Self-play datasets with versioned metadata. (Implemented in `tinychess.nn.self_play`.)
-- Policy/value training losses, basic JSONL metrics, and smoke-friendly checkpoint writes. (Implemented in `tinychess.nn.train` and `scripts/train.py`.)
+- Policy/value training losses, validation split tracking, epoch loss reporting, basic JSONL metrics, and smoke-friendly checkpoint writes. (Implemented in `tinychess.nn.train` and `scripts/train.py`.)
 - MLX-native checkpoints with sidecar metadata. (Implemented in `tinychess.nn.checkpoint`.)
 - Checkpoint-vs-baseline evaluation with early smoke promotion criteria. (Implemented in `tinychess.ai.evaluation` and `scripts/evaluate.py`.)
 
@@ -44,7 +44,7 @@ Implemented:
 - `tinychess.nn.checkpoint`: MLX `weights.safetensors` save/load helpers with `metadata.json` sidecars containing schema, model config, encoder/action-space versions, training step, optimizer-state availability, and notes.
 - `tinychess.nn.self_play`: versioned compressed NPZ datasets containing encoded positions, legal masks, MCTS policy targets, outcome targets, metadata, and game records. Self-play can use neural or classical MCTS labels.
 - `tinychess.nn.pgn_dataset`: external PGN games converted into sharded supervised policy/value datasets with one-hot played-move policy targets.
-- `tinychess.nn.train`: masked policy cross-entropy, value MSE, a tiny MLX optimizer loop, shard-wise training support, `metrics.jsonl`, `training.json`, and `checkpoint-final` output.
+- `tinychess.nn.train`: masked policy cross-entropy, value MSE, a tiny MLX optimizer loop, default 10% validation holdout when enough samples are available, shard-wise training support, per-step `metrics.jsonl`, per-epoch `epoch_metrics.jsonl`, `training.json`, and `checkpoint-final` output.
 - `tinychess.ai.evaluation`: player-vs-player match runner, checkpoint player loading, random/classical MCTS baseline comparisons, JSON reports, and explicit early promotion criteria.
 
 The terminal `play` command accepts `mcts` as a player kind. `scripts/mcts_benchmark.py` reports MCTS simulations/sec from the starting position, `scripts/mlx_inference_benchmark.py` reports policy/value inference latency, `scripts/benchmark.py` combines engine/search/MLX benchmark results with an optional batched-inference measurement and conservative suite-time Swift-acceleration heuristic, `scripts/self_play.py` creates neural/classical MCTS datasets, `scripts/pgn_ingest.py` converts external PGN collections into shards, `scripts/train.py` trains single datasets or PGN shard manifests, and `scripts/evaluate.py` evaluates checkpoints against random and MCTS baselines.

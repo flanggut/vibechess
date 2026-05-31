@@ -118,6 +118,10 @@ uv run python scripts/train.py \
   --batch-size 64
 ```
 
+Training reserves 10% of each dataset/shard for validation by default and prints
+training and validation loss after every epoch. Use `--validation-fraction 0` to
+train on every sample for smoke runs where validation is not useful.
+
 The current checkpoint format stores model weights, not optimizer state. During
 shard-wise training, model weights and training step continue across shards, but
 optimizer state is reinitialized per shard.
