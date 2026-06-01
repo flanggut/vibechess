@@ -13,6 +13,11 @@ class MCTSConfig:
     expansion. Set it to ``0`` for the high-simulation static leaf mode, which evaluates
     the selected leaf directly without making random rollout moves. The default remains
     ``16`` to preserve existing random-rollout behavior.
+
+    ``reuse_tree`` keeps the searched tree between calls and reuses an existing subtree
+    only when the next searched game is an exact descendant of the stored root and that
+    path already exists in the tree. Per-search node budgets count only newly created
+    nodes; previously visited reused subtrees are not pruned to satisfy a new budget.
     """
 
     simulations: int = 25
@@ -21,6 +26,7 @@ class MCTSConfig:
     exploration: float = 1.41421356237
     max_rollout_plies: int = 16
     seed: int | None = None
+    reuse_tree: bool = True
 
     def __post_init__(self) -> None:
         if self.simulations < 1:

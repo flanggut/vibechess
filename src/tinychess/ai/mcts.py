@@ -108,15 +108,20 @@ class MCTSResult:
 
 @dataclass(slots=True)
 class MCTSPlayer:
-    """Classical MCTS player using random rollouts or static leaf evaluation."""
+    """Classical MCTS player with optional tree reuse across exact game descendants."""
 
     config: MCTSConfig = field(default_factory=MCTSConfig)
     rng: random.Random | None = None
     _rng: random.Random = field(init=False, repr=False)
     last_result: MCTSResult | None = field(init=False, default=None)
+    _tree_root: MCTSNode | None = field(init=False, default=None, repr=False)
 
     def __post_init__(self) -> None:
         self._rng = random.Random(self.config.seed) if self.rng is None else self.rng
+
+    def clear_tree(self) -> None:
+        """Discard reusable MCTS search state."""
+        self._tree_root = None
 
     def select_move(self, game: Game) -> Move:
         """Return an MCTS-selected legal move, or raise for terminal/no-legal positions."""
@@ -125,7 +130,7 @@ class MCTSPlayer:
     def search(self, game: Game) -> MCTSResult:
         """Run MCTS from ``game`` and return the selected move plus budget metadata."""
         start = time.perf_counter()
-        root = MCTSNode.create(game, rng=self._rng)
+        root, nodes_created, adopted_root = self._root_for_game(game)
         if root.outcome is not None:
             msg = f"cannot select a move from a terminal game: {root.outcome.reason.value}"
             raise NoLegalMoveError(msg)
@@ -133,13 +138,15 @@ class MCTSPlayer:
         if not legal:
             msg = "cannot select a move from a position with no legal moves"
             raise NoLegalMoveError(msg)
+        if adopted_root:
+            self._detach_root(root)
+        self._tree_root = root
 
         root_color = game.board.side_to_move
         deadline = None
         if self.config.time_limit_seconds is not None:
             deadline = start + self.config.time_limit_seconds
         node_budget = self.config.node_budget
-        nodes_created = 1
         simulations = 0
 
         while simulations < self.config.simulations:
@@ -181,7 +188,40 @@ class MCTSPlayer:
             visit_counts={move: child.visits for move, child in root.children.items()},
         )
         self.last_result = result
+        self._tree_root = root
         return result
+
+    def _root_for_game(self, game: Game) -> tuple[MCTSNode, int, bool]:
+        if self.config.reuse_tree:
+            adopted = self._adopt_descendant_root(game)
+            if adopted is not None:
+                return adopted, 0, True
+        return MCTSNode.create(game, rng=self._rng), 1, False
+
+    def _adopt_descendant_root(self, game: Game) -> MCTSNode | None:
+        root = self._tree_root
+        if root is None:
+            return None
+        root_moves = root.game.moves
+        requested_moves = game.moves
+        if len(root_moves) > len(requested_moves):
+            return None
+        if requested_moves[: len(root_moves)] != root_moves:
+            return None
+
+        current = root
+        for move in requested_moves[len(root_moves) :]:
+            child = current.children.get(move)
+            if child is None:
+                return None
+            current = child
+        if current.game != game:
+            return None
+        return current
+
+    @staticmethod
+    def _detach_root(root: MCTSNode) -> None:
+        root.parent = None
 
     def _rollout_value(
         self,

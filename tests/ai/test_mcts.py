@@ -147,6 +147,112 @@ def test_mcts_player_zero_time_budget_returns_legal_fallback_without_searching()
     assert result.move in game.legal_moves
 
 
+def test_mcts_reuses_selected_child_after_actual_move() -> None:
+    game = Game.new()
+    player = MCTSPlayer(MCTSConfig(simulations=1, seed=1, max_rollout_plies=0))
+
+    first = player.search(game)
+    assert player._tree_root is not None
+    saved_child = player._tree_root.children[first.move]
+
+    second = player.search(game.play(first.move))
+
+    assert player._tree_root is saved_child
+    assert saved_child.parent is None
+    assert second.move in saved_child.game.legal_moves
+
+
+def test_mcts_reuses_deeper_descendant_and_counts_only_new_nodes() -> None:
+    game = Game.new()
+    move = Move.from_uci("e2e4")
+    reply = Move.from_uci("e7e5")
+    next_game = game.play(move)
+    target_game = next_game.play(reply)
+    root = MCTSNode.create(game, rng=random.Random(1))
+    child = MCTSNode.create(next_game, rng=random.Random(2), parent=root, move=move)
+    grandchild = MCTSNode.create(target_game, rng=random.Random(3), parent=child, move=reply)
+    root.children[move] = child
+    child.children[reply] = grandchild
+    player = MCTSPlayer(MCTSConfig(simulations=10, time_limit_seconds=0, seed=4))
+    player._tree_root = root
+
+    result = player.search(target_game)
+
+    assert player._tree_root is grandchild
+    assert grandchild.parent is None
+    assert result.simulations == 0
+    assert result.nodes == 0
+    assert result.move in target_game.legal_moves
+
+
+def test_mcts_falls_back_when_descendant_path_is_missing() -> None:
+    game = Game.new()
+    player = MCTSPlayer(MCTSConfig(simulations=1, seed=1, max_rollout_plies=0))
+
+    first = player.search(game)
+    assert player._tree_root is not None
+    root = player._tree_root
+    next_game = game.play(first.move)
+    missing_reply = next_game.legal_moves[0]
+    target_game = next_game.play(missing_reply)
+
+    player.search(target_game)
+
+    assert player._tree_root is not None
+    assert player._tree_root is not root.children[first.move]
+    assert player._tree_root.game == target_game
+    assert player._tree_root.parent is None
+
+
+def test_mcts_does_not_reuse_unrelated_game_with_matching_empty_history() -> None:
+    game = Game.new()
+    unrelated = Game.from_fen(
+        "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
+    )
+    root = MCTSNode.create(game, rng=random.Random(1))
+    player = MCTSPlayer(MCTSConfig(simulations=10, time_limit_seconds=0, seed=2))
+    player._tree_root = root
+
+    result = player.search(unrelated)
+
+    assert player._tree_root is not root
+    assert player._tree_root is not None
+    assert player._tree_root.game == unrelated
+    assert result.nodes == 1
+    assert result.move in unrelated.legal_moves
+
+
+def test_mcts_clear_tree_forces_fresh_root() -> None:
+    game = Game.new()
+    root = MCTSNode.create(game, rng=random.Random(1))
+    player = MCTSPlayer(MCTSConfig(simulations=10, time_limit_seconds=0, seed=2))
+    player._tree_root = root
+
+    player.clear_tree()
+    result = player.search(game)
+
+    assert player._tree_root is not root
+    assert player._tree_root is not None
+    assert player._tree_root.game == game
+    assert result.nodes == 1
+
+
+def test_mcts_reuse_tree_false_keeps_fresh_root_behavior() -> None:
+    game = Game.new()
+    root = MCTSNode.create(game, rng=random.Random(1))
+    player = MCTSPlayer(
+        MCTSConfig(simulations=10, time_limit_seconds=0, seed=2, reuse_tree=False)
+    )
+    player._tree_root = root
+
+    result = player.search(game)
+
+    assert player._tree_root is not root
+    assert player._tree_root is not None
+    assert player._tree_root.game == game
+    assert result.nodes == 1
+
+
 def test_mcts_config_validates_budgets() -> None:
     with pytest.raises(ValueError, match="simulations"):
         MCTSConfig(simulations=0)
