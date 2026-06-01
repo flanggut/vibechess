@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 
 from tinychess.ai.player import NoLegalMoveError
 from tinychess.ai.search_config import MCTSConfig
-from tinychess.engine.game import Game
+from tinychess.engine.game import Game, determine_outcome
 from tinychess.engine.move import Move
 from tinychess.engine.outcome import Outcome
 from tinychess.engine.piece import Color, PieceType
@@ -22,6 +22,8 @@ class MCTSNode:
     game: Game
     parent: MCTSNode | None = None
     move: Move | None = None
+    legal_moves: tuple[Move, ...] = ()
+    outcome: Outcome | None = None
     untried_moves: list[Move] = field(default_factory=list)
     children: dict[Move, MCTSNode] = field(default_factory=dict)
     visits: int = 0
@@ -36,15 +38,23 @@ class MCTSNode:
         parent: MCTSNode | None = None,
         move: Move | None = None,
     ) -> MCTSNode:
-        """Create a node with locally shuffled expansion order."""
-        untried = list(game.legal_moves) if game.outcome is None else []
+        """Create a node with cached position state and shuffled expansion order."""
+        legal, outcome = _position_info(game)
+        untried = list(legal) if outcome is None else []
         rng.shuffle(untried)
-        return cls(game=game, parent=parent, move=move, untried_moves=untried)
+        return cls(
+            game=game,
+            parent=parent,
+            move=move,
+            legal_moves=legal,
+            outcome=outcome,
+            untried_moves=untried,
+        )
 
     @property
     def is_terminal(self) -> bool:
         """Return whether this node's game is terminal."""
-        return self.game.outcome is not None or not self.game.legal_moves
+        return self.outcome is not None or not self.legal_moves
 
     @property
     def is_fully_expanded(self) -> bool:
@@ -114,23 +124,22 @@ class MCTSPlayer:
 
     def search(self, game: Game) -> MCTSResult:
         """Run MCTS from ``game`` and return the selected move plus budget metadata."""
-        outcome = game.outcome
-        if outcome is not None:
-            msg = f"cannot select a move from a terminal game: {outcome.reason.value}"
+        start = time.perf_counter()
+        root = MCTSNode.create(game, rng=self._rng)
+        if root.outcome is not None:
+            msg = f"cannot select a move from a terminal game: {root.outcome.reason.value}"
             raise NoLegalMoveError(msg)
-        legal = game.legal_moves
+        legal = root.legal_moves
         if not legal:
             msg = "cannot select a move from a position with no legal moves"
             raise NoLegalMoveError(msg)
 
         root_color = game.board.side_to_move
-        start = time.perf_counter()
         deadline = None
         if self.config.time_limit_seconds is not None:
             deadline = start + self.config.time_limit_seconds
         node_budget = self.config.node_budget
         nodes_created = 1
-        root = MCTSNode.create(game, rng=self._rng)
         simulations = 0
 
         while simulations < self.config.simulations:
@@ -145,13 +154,18 @@ class MCTSPlayer:
             may_create_node = node_budget is None or nodes_created < node_budget
             if not node.is_terminal and node.untried_moves and may_create_node:
                 move = node.untried_moves.pop()
-                child_game = node.game.play(move)
+                child_game = node.game.play_known_legal(move)
                 child = MCTSNode.create(child_game, rng=self._rng, parent=node, move=move)
                 node.children[move] = child
                 node = child
                 nodes_created += 1
 
-            value = self._rollout_value(node.game, root_color)
+            value = self._rollout_value(
+                node.game,
+                root_color,
+                legal_moves=node.legal_moves,
+                outcome=node.outcome,
+            )
             self._backup(node, value)
             simulations += 1
 
@@ -169,19 +183,33 @@ class MCTSPlayer:
         self.last_result = result
         return result
 
-    def _rollout_value(self, game: Game, root_color: Color) -> float:
+    def _rollout_value(
+        self,
+        game: Game,
+        root_color: Color,
+        *,
+        legal_moves: tuple[Move, ...] | None = None,
+        outcome: Outcome | None = None,
+    ) -> float:
         current = game
+        current_legal = legal_moves
+        current_outcome = outcome
         for _ in range(self.config.max_rollout_plies):
-            outcome = current.outcome
-            if outcome is not None:
-                return _outcome_value(outcome, root_color)
-            legal = current.legal_moves
-            if not legal:
+            if current_outcome is not None:
+                return _outcome_value(current_outcome, root_color)
+            if current_legal is None:
+                current_legal, current_outcome = _position_info(current)
+                if current_outcome is not None:
+                    return _outcome_value(current_outcome, root_color)
+            if not current_legal:
                 return 0.0
-            current = current.play(self._rng.choice(legal))
-        outcome = current.outcome
-        if outcome is not None:
-            return _outcome_value(outcome, root_color)
+            current = current.play_known_legal(self._rng.choice(current_legal))
+            current_legal = None
+            current_outcome = None
+        if current_outcome is None and current_legal is None:
+            current_legal, current_outcome = _position_info(current)
+        if current_outcome is not None:
+            return _outcome_value(current_outcome, root_color)
         return _material_value(current, root_color)
 
     @staticmethod
@@ -191,6 +219,11 @@ class MCTSPlayer:
             current.visits += 1
             current.total_value += value
             current = current.parent
+
+
+def _position_info(game: Game) -> tuple[tuple[Move, ...], Outcome | None]:
+    legal = game.legal_moves
+    return legal, determine_outcome(game, legal_moves=legal)
 
 
 def _most_visited_move(root: MCTSNode) -> Move | None:

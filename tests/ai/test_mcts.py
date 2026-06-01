@@ -27,6 +27,28 @@ def test_mcts_player_selects_legal_move_from_start_position() -> None:
     assert player.last_result.simulations == 8
 
 
+def test_mcts_node_create_caches_legal_moves_and_outcome() -> None:
+    game = Game.new()
+
+    node = MCTSNode.create(game, rng=random.Random(1))
+
+    assert node.legal_moves == game.legal_moves
+    assert node.outcome == game.outcome
+    assert sorted(node.untried_moves, key=Move.to_uci) == sorted(game.legal_moves, key=Move.to_uci)
+    assert not node.is_terminal
+
+
+def test_mcts_node_create_caches_terminal_outcome_without_untried_moves() -> None:
+    game = Game.new(board_from_ascii("7k/5Q2/6K1/8/8/8/8/8", side_to_move=Color.BLACK))
+
+    node = MCTSNode.create(game, rng=random.Random(1))
+
+    assert node.outcome == game.outcome
+    assert node.legal_moves == ()
+    assert node.untried_moves == []
+    assert node.is_terminal
+
+
 def test_mcts_player_terminal_position_raises_clear_error() -> None:
     game = Game.new(board_from_ascii("7k/5Q2/6K1/8/8/8/8/8", side_to_move=Color.BLACK))
 

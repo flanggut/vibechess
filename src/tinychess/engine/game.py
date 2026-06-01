@@ -7,7 +7,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
 from tinychess.engine.board import Board
-from tinychess.engine.legal_moves import is_in_check, legal_moves
+from tinychess.engine.legal_moves import is_in_check
+from tinychess.engine.legal_moves import legal_moves as generate_legal_moves
 from tinychess.engine.move import Move
 from tinychess.engine.outcome import Outcome, OutcomeReason
 from tinychess.engine.piece import Color, Piece, PieceType
@@ -90,7 +91,7 @@ class Game:
     @property
     def legal_moves(self) -> tuple[Move, ...]:
         """Return legal moves in the current position."""
-        return legal_moves(self.board)
+        return generate_legal_moves(self.board)
 
     @property
     def outcome(self) -> Outcome | None:
@@ -99,14 +100,27 @@ class Game:
 
     def play(self, move: Move) -> Game:
         """Return the game after applying a legal move."""
-        if self.outcome is not None:
-            msg = f"cannot play move after game outcome: {self.outcome.reason.value}"
+        if self.forced_outcome is not None:
+            msg = f"cannot play move after game outcome: {self.forced_outcome.reason.value}"
             raise ValueError(msg)
         legal = self.legal_moves
+        outcome = determine_outcome(self, legal_moves=legal)
+        if outcome is not None:
+            msg = f"cannot play move after game outcome: {outcome.reason.value}"
+            raise ValueError(msg)
         if move not in legal:
             msg = f"illegal move: {move}"
             raise ValueError(msg)
+        return self.play_known_legal(move)
 
+    def play_known_legal(self, move: Move) -> Game:
+        """Return the game after applying a move already known to be legal.
+
+        This is a narrow performance path for search code that selected ``move`` from
+        this game's legal move tuple and already established that the game is ongoing.
+        Normal callers should use :meth:`play`, which preserves terminal and legal-move
+        validation before delegating here.
+        """
         board = self.board
         moving_piece = board.piece_at(move.from_square)
         if moving_piece is None:  # defensive; legal membership should prevent this
@@ -135,12 +149,14 @@ class Game:
         )
 
 
-def determine_outcome(game: Game) -> Outcome | None:
+def determine_outcome(
+    game: Game, *, legal_moves: tuple[Move, ...] | None = None
+) -> Outcome | None:
     """Return the pragmatic game outcome, or ``None`` if the game is ongoing."""
     if game.forced_outcome is not None:
         return game.forced_outcome
     board = game.board
-    moves = legal_moves(board)
+    moves = legal_moves if legal_moves is not None else generate_legal_moves(board)
     if not moves:
         if is_in_check(board, board.side_to_move):
             return Outcome(reason=OutcomeReason.CHECKMATE, winner=board.side_to_move.opposite)

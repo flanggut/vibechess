@@ -38,6 +38,46 @@ def test_game_rejects_illegal_move() -> None:
         game.play(Move.from_uci("e2e5"))
 
 
+def test_play_known_legal_matches_play_for_representative_moves() -> None:
+    quiet = (Game.new(), Move.from_uci("e2e4"))
+
+    capture_game = Game.new().play(Move.from_uci("e2e4")).play(Move.from_uci("d7d5"))
+    capture = (capture_game, Move.from_uci("e4d5"))
+
+    castle = (
+        Game.from_fen("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1"),
+        Move.from_uci("e1g1"),
+    )
+
+    en_passant_game = Game.new()
+    for notation in ("e2e4", "h7h5", "e4e5", "d7d5"):
+        en_passant_game = en_passant_game.play(Move.from_uci(notation))
+    en_passant = (en_passant_game, Move.from_uci("e5d6"))
+
+    promotion = (
+        Game.from_fen("4k3/P7/8/8/8/8/8/4K3 w - - 0 1"),
+        Move.from_uci("a7a8q"),
+    )
+
+    repetition_game = Game.new(
+        board_from_ascii("r3k3/8/8/8/8/8/8/R3K3", side_to_move=Color.WHITE)
+    )
+    for notation in ("a1a2", "a8a7", "a2a1", "a7a8"):
+        repetition_game = repetition_game.play(Move.from_uci(notation))
+    repetition_sensitive = (repetition_game, Move.from_uci("a1a2"))
+
+    for game, move in (
+        quiet,
+        capture,
+        castle,
+        en_passant,
+        promotion,
+        repetition_sensitive,
+    ):
+        assert move in game.legal_moves
+        assert game.play_known_legal(move) == game.play(move)
+
+
 def test_fools_mate_is_checkmate() -> None:
     game = Game.new()
     for notation in ("f2f3", "e7e5", "g2g4", "d8h4"):
