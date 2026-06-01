@@ -108,7 +108,7 @@ class MCTSResult:
 
 @dataclass(slots=True)
 class MCTSPlayer:
-    """Classical MCTS player using random rollouts and no neural model."""
+    """Classical MCTS player using random rollouts or static leaf evaluation."""
 
     config: MCTSConfig = field(default_factory=MCTSConfig)
     rng: random.Random | None = None
@@ -208,9 +208,7 @@ class MCTSPlayer:
             current_outcome = None
         if current_outcome is None and current_legal is None:
             current_legal, current_outcome = _position_info(current)
-        if current_outcome is not None:
-            return _outcome_value(current_outcome, root_color)
-        return _material_value(current, root_color)
+        return _static_leaf_value(current, root_color, outcome=current_outcome)
 
     @staticmethod
     def _backup(node: MCTSNode, value: float) -> None:
@@ -253,6 +251,22 @@ _PIECE_VALUES = {
     PieceType.QUEEN: 9.0,
     PieceType.KING: 0.0,
 }
+
+
+def _static_leaf_value(
+    game: Game,
+    root_color: Color,
+    *,
+    outcome: Outcome | None = None,
+) -> float:
+    """Return a bounded value for a selected leaf from the root side's perspective.
+
+    Terminal outcomes are exact. Ongoing positions use material only, which keeps
+    ``max_rollout_plies=0`` cheap and avoids extra legal-move generation.
+    """
+    if outcome is not None:
+        return _outcome_value(outcome, root_color)
+    return _material_value(game, root_color)
 
 
 def _material_value(game: Game, root_color: Color) -> float:

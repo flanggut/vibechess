@@ -14,16 +14,34 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run a tinychess classical MCTS benchmark.")
     parser.add_argument("--simulations", type=int, default=25)
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--rollout-plies", type=int, default=16)
+    parser.add_argument(
+        "--rollout-plies",
+        type=int,
+        default=None,
+        help="random rollout plies per simulation; use 0 for static leaf evaluation (default: 16)",
+    )
+    parser.add_argument(
+        "--fast-leaf",
+        action="store_true",
+        help="benchmark static leaf evaluation mode (equivalent to --rollout-plies 0)",
+    )
     parser.add_argument("--time-limit", type=float, default=None)
     parser.add_argument("--node-budget", type=int, default=None)
     args = parser.parse_args()
+    if args.fast_leaf and args.rollout_plies is not None:
+        parser.error("--fast-leaf cannot be combined with --rollout-plies")
+    if args.fast_leaf:
+        rollout_plies = 0
+    elif args.rollout_plies is None:
+        rollout_plies = 16
+    else:
+        rollout_plies = args.rollout_plies
 
     config = MCTSConfig(
         simulations=args.simulations,
         time_limit_seconds=args.time_limit,
         node_budget=args.node_budget,
-        max_rollout_plies=args.rollout_plies,
+        max_rollout_plies=rollout_plies,
         seed=args.seed,
     )
     player = MCTSPlayer(config)

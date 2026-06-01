@@ -29,6 +29,7 @@ class PlayConfig:
     max_plies: int = 512
     seed: int | None = None
     mcts_simulations: int = 25
+    mcts_rollout_plies: int = 16
     unicode: bool = False
     coordinates: bool = True
 
@@ -66,7 +67,13 @@ def play_terminal(
     input_stream = sys.stdin if stdin is None else stdin
     output_stream = sys.stdout if stdout is None else stdout
     random_player = RandomPlayer(seed=config.seed)
-    mcts_player = MCTSPlayer(MCTSConfig(simulations=config.mcts_simulations, seed=config.seed))
+    mcts_player = MCTSPlayer(
+        MCTSConfig(
+            simulations=config.mcts_simulations,
+            max_rollout_plies=config.mcts_rollout_plies,
+            seed=config.seed,
+        )
+    )
     players = {"white": config.white, "black": config.black}
     game = Game.new()
     last_move: Move | None = None

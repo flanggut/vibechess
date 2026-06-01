@@ -109,7 +109,12 @@ def _parse_args() -> argparse.Namespace:
         help="Classical MCTS simulations",
     )
     parser.add_argument("--mcts-node-budget", type=int, default=None, help="Optional MCTS node cap")
-    parser.add_argument("--mcts-rollout-plies", type=int, default=2, help="MCTS rollout cap")
+    parser.add_argument(
+        "--mcts-rollout-plies",
+        type=int,
+        default=2,
+        help="Classical MCTS rollout cap; use 0 for static leaf evaluation",
+    )
     parser.add_argument(
         "--min-games-per-baseline",
         type=int,

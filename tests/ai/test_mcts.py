@@ -7,10 +7,10 @@ from io import StringIO
 
 import pytest
 
-from tinychess.ai.mcts import MCTSNode, MCTSPlayer
+from tinychess.ai.mcts import MCTSNode, MCTSPlayer, _static_leaf_value
 from tinychess.ai.player import NoLegalMoveError, RandomPlayer, play_game
 from tinychess.ai.search_config import MCTSConfig
-from tinychess.engine import Game, Move, OutcomeReason
+from tinychess.engine import Game, Move, Outcome, OutcomeReason
 from tinychess.engine.board import board_from_ascii
 from tinychess.engine.piece import Color
 from tinychess.ui.terminal import PlayConfig, play_terminal
@@ -76,6 +76,39 @@ def test_mcts_player_seeded_selection_is_deterministic() -> None:
     assert first == second
 
 
+def test_mcts_zero_rollout_plies_uses_static_leaf_mode() -> None:
+    game = Game.new()
+    node = MCTSNode.create(game, rng=random.Random(1))
+    player = MCTSPlayer(MCTSConfig(simulations=5, seed=5, max_rollout_plies=0))
+
+    assert player._rollout_value(
+        game,
+        Color.WHITE,
+        legal_moves=node.legal_moves,
+        outcome=node.outcome,
+    ) == 0.0
+    result = player.search(game)
+
+    assert result.simulations == 5
+    assert result.move in game.legal_moves
+
+
+def test_static_leaf_value_handles_terminal_outcomes_from_root_perspective() -> None:
+    game = Game.new()
+
+    assert _static_leaf_value(
+        game,
+        Color.WHITE,
+        outcome=Outcome(OutcomeReason.CHECKMATE, winner=Color.WHITE),
+    ) == 1.0
+    assert _static_leaf_value(
+        game,
+        Color.WHITE,
+        outcome=Outcome(OutcomeReason.CHECKMATE, winner=Color.BLACK),
+    ) == -1.0
+    assert _static_leaf_value(game, Color.WHITE, outcome=Outcome(OutcomeReason.STALEMATE)) == 0.0
+
+
 def test_mcts_opponent_nodes_minimize_root_value() -> None:
     root_color = Color.WHITE
     black_to_move = Game.new().play(Move.from_uci("e2e4"))
@@ -121,6 +154,8 @@ def test_mcts_config_validates_budgets() -> None:
         MCTSConfig(node_budget=0)
     with pytest.raises(ValueError, match="time_limit"):
         MCTSConfig(time_limit_seconds=-1)
+    with pytest.raises(ValueError, match="max_rollout_plies"):
+        MCTSConfig(max_rollout_plies=-1)
 
 
 def test_mcts_vs_random_smoke_path_reaches_ply_cap() -> None:
@@ -168,3 +203,44 @@ def test_mcts_benchmark_script_smoke() -> None:
     assert "bestmove=" in result.stdout
     assert "simulations=1" in result.stdout
     assert "sims_per_sec=" in result.stdout
+
+
+def test_mcts_benchmark_fast_leaf_flag_smoke() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/mcts_benchmark.py",
+            "--simulations",
+            "1",
+            "--fast-leaf",
+            "--seed",
+            "1",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert "bestmove=" in result.stdout
+    assert "simulations=1" in result.stdout
+
+
+def test_mcts_benchmark_fast_leaf_rejects_explicit_rollout_plies() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/mcts_benchmark.py",
+            "--simulations",
+            "1",
+            "--fast-leaf",
+            "--rollout-plies",
+            "0",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "cannot be combined" in result.stderr

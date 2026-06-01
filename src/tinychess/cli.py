@@ -34,6 +34,12 @@ def build_parser() -> argparse.ArgumentParser:
     play.add_argument("--max-plies", type=int, default=512)
     play.add_argument("--seed", type=int, default=None, help="seed for random/MCTS players")
     play.add_argument("--mcts-simulations", type=int, default=25, help="MCTS simulations per move")
+    play.add_argument(
+        "--mcts-rollout-plies",
+        type=int,
+        default=16,
+        help="MCTS random rollout plies per simulation; use 0 for static leaf evaluation",
+    )
     play.add_argument("--unicode", action="store_true", help="render Unicode chess pieces")
     play.add_argument(
         "--no-coordinates",
@@ -70,6 +76,7 @@ def main(
             max_plies=args.max_plies,
             seed=args.seed,
             mcts_simulations=args.mcts_simulations,
+            mcts_rollout_plies=args.mcts_rollout_plies,
             unicode=args.unicode,
             coordinates=not args.no_coordinates,
         )

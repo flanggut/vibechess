@@ -58,6 +58,32 @@ def test_cli_play_random_vs_random() -> None:
     assert "random plays" in output.getvalue()
 
 
+def test_cli_play_mcts_supports_static_leaf_rollout_plies() -> None:
+    output = StringIO()
+
+    code = main(
+        [
+            "play",
+            "--white",
+            "mcts",
+            "--black",
+            "random",
+            "--max-plies",
+            "1",
+            "--mcts-simulations",
+            "1",
+            "--mcts-rollout-plies",
+            "0",
+            "--seed",
+            "1",
+        ],
+        stdout=output,
+    )
+
+    assert code == 0
+    assert "white mcts plays" in output.getvalue()
+
+
 def test_cli_play_unicode_without_coordinates() -> None:
     output = StringIO()
 

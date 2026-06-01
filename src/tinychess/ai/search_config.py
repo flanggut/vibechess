@@ -7,7 +7,13 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class MCTSConfig:
-    """Budgets and rollout settings for the classical MCTS baseline."""
+    """Budgets and rollout settings for the classical MCTS baseline.
+
+    ``max_rollout_plies`` caps the number of random rollout moves after selection and
+    expansion. Set it to ``0`` for the high-simulation static leaf mode, which evaluates
+    the selected leaf directly without making random rollout moves. The default remains
+    ``16`` to preserve existing random-rollout behavior.
+    """
 
     simulations: int = 25
     time_limit_seconds: float | None = None

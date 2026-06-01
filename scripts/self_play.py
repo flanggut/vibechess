@@ -125,7 +125,12 @@ def main() -> int:
     parser.add_argument("--simulations", type=int, default=2)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--classical-exploration", type=float, default=1.41421356237)
-    parser.add_argument("--classical-max-rollout-plies", type=int, default=16)
+    parser.add_argument(
+        "--classical-max-rollout-plies",
+        type=int,
+        default=16,
+        help="classical MCTS rollout cap; use 0 for static leaf evaluation",
+    )
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--channels", type=int, default=4)
     parser.add_argument("--blocks", type=int, default=0)
