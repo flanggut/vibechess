@@ -253,6 +253,10 @@ def test_mcts_reuse_tree_false_keeps_fresh_root_behavior() -> None:
     assert result.nodes == 1
 
 
+def test_mcts_config_defaults_to_static_leaf_mode() -> None:
+    assert MCTSConfig().max_rollout_plies == 0
+
+
 def test_mcts_config_validates_budgets() -> None:
     with pytest.raises(ValueError, match="simulations"):
         MCTSConfig(simulations=0)

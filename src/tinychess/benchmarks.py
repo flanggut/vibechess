@@ -131,7 +131,7 @@ def benchmark_complete_games(
 def benchmark_mcts(
     *,
     simulations: int = 50,
-    rollout_plies: int = 16,
+    rollout_plies: int = 0,
     seed: int = 1,
     time_limit_seconds: float | None = None,
     node_budget: int | None = None,

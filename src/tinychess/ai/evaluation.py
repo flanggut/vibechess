@@ -311,7 +311,7 @@ def mcts_player_spec(
     name: str = "mcts",
 ) -> PlayerSpec:
     """Return a classical-MCTS baseline spec."""
-    search_config = MCTSConfig(simulations=1, max_rollout_plies=2) if config is None else config
+    search_config = MCTSConfig(simulations=1, max_rollout_plies=0) if config is None else config
 
     def factory() -> Player:
         return MCTSPlayer(search_config)

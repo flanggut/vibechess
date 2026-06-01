@@ -29,7 +29,7 @@ class PlayConfig:
     max_plies: int = 512
     seed: int | None = None
     mcts_simulations: int = 25
-    mcts_rollout_plies: int = 16
+    mcts_rollout_plies: int = 0
     unicode: bool = False
     coordinates: bool = True
 

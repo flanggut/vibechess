@@ -58,6 +58,10 @@ def test_cli_play_random_vs_random() -> None:
     assert "random plays" in output.getvalue()
 
 
+def test_play_config_defaults_to_static_leaf_mcts() -> None:
+    assert PlayConfig().mcts_rollout_plies == 0
+
+
 def test_cli_play_mcts_supports_static_leaf_rollout_plies() -> None:
     output = StringIO()
 

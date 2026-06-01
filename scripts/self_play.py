@@ -128,8 +128,8 @@ def main() -> int:
     parser.add_argument(
         "--classical-max-rollout-plies",
         type=int,
-        default=16,
-        help="classical MCTS rollout cap; use 0 for static leaf evaluation",
+        default=0,
+        help="classical MCTS rollout cap; default 0 uses static leaf evaluation",
     )
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--channels", type=int, default=4)

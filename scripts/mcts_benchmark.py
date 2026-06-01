@@ -18,7 +18,7 @@ def main() -> int:
         "--rollout-plies",
         type=int,
         default=None,
-        help="random rollout plies per simulation; use 0 for static leaf evaluation (default: 16)",
+        help="random rollout plies per simulation; default 0 uses static leaf evaluation",
     )
     parser.add_argument(
         "--fast-leaf",
@@ -30,12 +30,7 @@ def main() -> int:
     args = parser.parse_args()
     if args.fast_leaf and args.rollout_plies is not None:
         parser.error("--fast-leaf cannot be combined with --rollout-plies")
-    if args.fast_leaf:
-        rollout_plies = 0
-    elif args.rollout_plies is None:
-        rollout_plies = 16
-    else:
-        rollout_plies = args.rollout_plies
+    rollout_plies = 0 if args.fast_leaf or args.rollout_plies is None else args.rollout_plies
 
     config = MCTSConfig(
         simulations=args.simulations,

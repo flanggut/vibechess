@@ -11,8 +11,9 @@ class MCTSConfig:
 
     ``max_rollout_plies`` caps the number of random rollout moves after selection and
     expansion. Set it to ``0`` for the high-simulation static leaf mode, which evaluates
-    the selected leaf directly without making random rollout moves. The default remains
-    ``16`` to preserve existing random-rollout behavior.
+    the selected leaf directly without making random rollout moves. The default is ``0``
+    so scripts and players use fast static leaf evaluation unless random rollouts are
+    explicitly requested.
 
     ``reuse_tree`` keeps the searched tree between calls and reuses an existing subtree
     only when the next searched game is an exact descendant of the stored root and that
@@ -24,7 +25,7 @@ class MCTSConfig:
     time_limit_seconds: float | None = None
     node_budget: int | None = None
     exploration: float = 1.41421356237
-    max_rollout_plies: int = 16
+    max_rollout_plies: int = 0
     seed: int | None = None
     reuse_tree: bool = True
 

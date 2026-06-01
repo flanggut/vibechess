@@ -37,8 +37,8 @@ def build_parser() -> argparse.ArgumentParser:
     play.add_argument(
         "--mcts-rollout-plies",
         type=int,
-        default=16,
-        help="MCTS random rollout plies per simulation; use 0 for static leaf evaluation",
+        default=0,
+        help="MCTS random rollout plies per simulation; default 0 uses static leaf evaluation",
     )
     play.add_argument("--unicode", action="store_true", help="render Unicode chess pieces")
     play.add_argument(
