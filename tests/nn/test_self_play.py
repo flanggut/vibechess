@@ -10,11 +10,17 @@ from typing import Any
 import mlx.core as mx
 import numpy as np
 
+import tinychess.nn.self_play as self_play
 from tinychess.ai.neural_mcts import NeuralMCTSConfig
 from tinychess.ai.search_config import MCTSConfig
 from tinychess.engine import Game, Move, OutcomeReason
 from tinychess.nn.checkpoint import save_checkpoint
-from tinychess.nn.encode import ACTION_SPACE_SIZE, TENSOR_SHAPE, move_to_action_index
+from tinychess.nn.encode import (
+    ACTION_SPACE_SIZE,
+    TENSOR_SHAPE,
+    legal_move_mask_from_legal_moves_np,
+    move_to_action_index,
+)
 from tinychess.nn.model import (
     InferenceResult,
     PolicyValueConfig,
@@ -196,6 +202,36 @@ def test_batched_neural_self_play_is_reproducible_for_fixed_seed() -> None:
     assert [record.moves_uci for record in first.games] == [
         record.moves_uci for record in second.games
     ]
+
+
+def test_serial_recording_reuses_precomputed_legal_masks(monkeypatch: Any) -> None:
+    recorded_legal_counts: list[int] = []
+
+    def spy_legal_mask(game: Game, legal: tuple[Move, ...]) -> Any:
+        recorded_legal_counts.append(len(legal))
+        return legal_move_mask_from_legal_moves_np(game, legal)
+
+    monkeypatch.setattr(self_play, "legal_move_mask_from_legal_moves_np", spy_legal_mask)
+
+    dataset = generate_self_play_dataset(
+        FakeInference(),
+        SelfPlayConfig(
+            games=1,
+            max_plies=2,
+            mcts=NeuralMCTSConfig(simulations=1, temperature=0.0, seed=29),
+            seed=29,
+        ),
+    )
+
+    start = Game.new()
+    np.testing.assert_array_equal(
+        dataset.legal_masks[0],
+        legal_move_mask_from_legal_moves_np(start, start.legal_moves),
+    )
+    assert recorded_legal_counts == [20, 20]
+    assert dataset.positions.shape == (2, *TENSOR_SHAPE)
+    assert dataset.legal_masks.shape == (2, ACTION_SPACE_SIZE)
+    assert np.allclose(dataset.mcts_policies.sum(axis=1), 1.0)
 
 
 def test_generate_self_play_dataset_can_use_classical_mcts_labels() -> None:

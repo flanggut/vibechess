@@ -16,7 +16,7 @@ import tinychess
 from tinychess.ai.mcts import MCTSPlayer
 from tinychess.ai.neural_mcts import NeuralInference, NeuralMCTSConfig, NeuralMCTSPlayer
 from tinychess.ai.search_config import MCTSConfig
-from tinychess.engine.game import Game
+from tinychess.engine.game import Game, determine_outcome
 from tinychess.engine.move import Move
 from tinychess.engine.outcome import Outcome, OutcomeReason
 from tinychess.engine.piece import Color
@@ -25,9 +25,8 @@ from tinychess.nn.encode import (
     ACTION_SPACE_VERSION,
     ENCODER_VERSION,
     TENSOR_SHAPE,
-    encode_game,
-    legal_move_mask,
-    legal_move_mask_from_legal_moves,
+    encode_game_np,
+    legal_move_mask_from_legal_moves_np,
     move_to_action_index,
 )
 from tinychess.nn.model import InferenceResult, PolicyValueInference
@@ -250,16 +249,20 @@ def _generate_serial_self_play_dataset(
         player = _player_for_game(inference, config, game_index)
         game_sides: list[Color] = []
         for _ply in range(config.max_plies):
-            if game.outcome is not None:
+            legal = game.legal_moves
+            if determine_outcome(game, legal_moves=legal) is not None:
                 break
-            if not game.legal_moves:
+            if not legal:
                 break
             result = player.search(game)
-            positions.append(np.asarray(encode_game(game), dtype=np.float32))
-            legal_masks.append(np.asarray(legal_move_mask(game), dtype=np.float32))
+            if result.move not in legal:
+                msg = f"search selected illegal move: {result.move}"
+                raise ValueError(msg)
+            positions.append(encode_game_np(game))
+            legal_masks.append(legal_move_mask_from_legal_moves_np(game, legal))
             policies.append(_policy_target(game, result.visit_counts, result.move))
             game_sides.append(game.board.side_to_move)
-            game = game.play(result.move)
+            game = game.play_known_legal(result.move)
         if game.outcome is None:
             game = _with_max_plies_outcome(game)
         outcome_values.extend(_outcome_values(game, game_sides))
@@ -321,16 +324,14 @@ def _record_batched_decision(
     selected_move: Move,
     visit_counts: dict[Any, int],
 ) -> None:
-    state.positions.append(np.asarray(encode_game(state.game), dtype=np.float32))
-    state.legal_masks.append(
-        np.asarray(
-            legal_move_mask_from_legal_moves(state.game, legal),
-            dtype=np.float32,
-        )
-    )
+    if selected_move not in legal:
+        msg = f"search selected illegal move: {selected_move}"
+        raise ValueError(msg)
+    state.positions.append(encode_game_np(state.game))
+    state.legal_masks.append(legal_move_mask_from_legal_moves_np(state.game, legal))
     state.policies.append(_policy_target(state.game, visit_counts, selected_move))
     state.game_sides.append(state.game.board.side_to_move)
-    state.game = state.game.play(selected_move)
+    state.game = state.game.play_known_legal(selected_move)
 
 
 def _generate_batched_neural_self_play_dataset(
@@ -359,9 +360,9 @@ def _generate_batched_neural_self_play_dataset(
         for _ply in range(config.max_plies):
             decisions: list[tuple[_BatchedGameState, tuple[Move, ...]]] = []
             for state in states:
-                if state.game.outcome is not None:
-                    continue
                 legal = state.game.legal_moves
+                if determine_outcome(state.game, legal_moves=legal) is not None:
+                    continue
                 if legal:
                     decisions.append((state, legal))
             if not decisions:
@@ -558,6 +559,7 @@ def load_self_play_dataset(directory: str | Path) -> SelfPlayDataset:
     ]
     if len(games) != metadata.game_count:
         raise ValueError("game metadata count does not match dataset metadata")
+    _validate_game_records(metadata, games, positions, legal_masks, mcts_policies, outcomes)
     return SelfPlayDataset(
         positions=positions,
         legal_masks=legal_masks,
@@ -701,18 +703,19 @@ def _validate_game_records(
         for move_uci in record.moves_uci:
             if sample_index >= metadata.sample_count:
                 raise ValueError("game records contain more plies than tensor samples")
-            expected_position = np.asarray(encode_game(game), dtype=np.float32)
+            expected_position = encode_game_np(game)
             if not np.allclose(positions[sample_index], expected_position):
                 raise ValueError("position tensor does not match replayed game state")
-            expected_mask = np.asarray(legal_move_mask(game), dtype=np.float32)
+            legal = game.legal_moves
+            expected_mask = legal_move_mask_from_legal_moves_np(game, legal)
             if not np.array_equal(legal_masks[sample_index], expected_mask):
                 raise ValueError("legal mask does not match replayed game state")
             _validate_policy_row(mcts_policies[sample_index], expected_mask)
             move = Move.from_uci(move_uci)
-            if move not in game.legal_moves:
+            if move not in legal:
                 raise ValueError(f"illegal move in game record: {move_uci}")
             sides.append(game.board.side_to_move)
-            game = game.play(move)
+            game = game.play_known_legal(move)
             sample_index += 1
         if game.to_fen() != record.final_fen:
             raise ValueError("game record final_fen does not match replayed moves")
