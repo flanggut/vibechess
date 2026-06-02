@@ -23,6 +23,7 @@ from tinychess.ai.search_config import MCTSConfig
 from tinychess.engine import Game, Move, OutcomeReason
 from tinychess.engine.board import Board, board_from_ascii
 from tinychess.engine.piece import Color
+from tinychess.nn import model as model_module
 from tinychess.nn.encode import ACTION_SPACE_SIZE, move_to_action_index
 from tinychess.nn.model import (
     InferenceResult,
@@ -54,10 +55,47 @@ class FakeInference:
         return InferenceResult(policy_logits=policy, policy=policy, value=self.value)
 
 
+class RecordingPolicyValueInference(PolicyValueInference):
+    legal_calls: int
+    predict_calls: int
+    seen_legal_moves: list[tuple[Move, ...]]
+
+    def __init__(self) -> None:
+        tiny_config = PolicyValueConfig(
+            residual_channels=4,
+            residual_blocks=0,
+            policy_channels=1,
+            value_channels=1,
+            value_hidden_dim=4,
+        )
+        super().__init__(PolicyValueNet(tiny_config))
+        self.legal_calls = 0
+        self.predict_calls = 0
+        self.seen_legal_moves = []
+
+    def predict(self, game: Game, *, mask_legal_moves: bool = True) -> InferenceResult:
+        self.predict_calls += 1
+        return super().predict(game, mask_legal_moves=mask_legal_moves)
+
+    def predict_with_legal_moves(
+        self,
+        game: Game,
+        legal_moves: tuple[Move, ...],
+    ) -> InferenceResult:
+        self.legal_calls += 1
+        self.seen_legal_moves.append(legal_moves)
+        return super().predict_with_legal_moves(game, legal_moves)
+
+
 def _policy_result(values: list[float], *, value: float = 0.0) -> InferenceResult:
     policy = mx.array(values, dtype=mx.float32)
     mx.eval(policy)
     return InferenceResult(policy_logits=policy, policy=policy, value=value)
+
+
+class PolicyAccessRaises:
+    def __getitem__(self, _index: int) -> object:
+        raise AssertionError("compact legal priors should not index the full policy")
 
 
 def test_neural_node_create_caches_legal_moves_and_is_terminal_uses_cache(
@@ -119,6 +157,31 @@ def test_legal_priors_use_cached_legal_moves_and_filter_illegal_actions(
     assert priors[preferred] == pytest.approx(1.0)
 
 
+def test_legal_priors_use_compact_legal_policy_without_full_policy_indexing() -> None:
+    game = Game.new()
+    node = NeuralMCTSNode.create(game)
+    legal = node.legal_moves[:2]
+    prediction = InferenceResult(
+        policy_logits=mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32),
+        policy=PolicyAccessRaises(),
+        value=0.0,
+        legal_moves=legal,
+        legal_policy=mx.array([0.25, 0.75], dtype=mx.float32),
+    )
+
+    priors = _legal_priors(node, prediction, legal_moves=legal)
+
+    assert priors == {legal[0]: pytest.approx(0.25), legal[1]: pytest.approx(0.75)}
+
+
+def test_legal_priors_return_empty_for_empty_legal_moves() -> None:
+    game = Game.from_fen("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1")
+    node = NeuralMCTSNode.create(game)
+    prediction = _policy_result([1.0] * ACTION_SPACE_SIZE)
+
+    assert _legal_priors(node, prediction) == {}
+
+
 def test_expand_creates_legal_edges_without_materializing_child_games(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -172,6 +235,26 @@ def test_neural_mcts_with_policy_value_net_searches_start_position() -> None:
     assert result.nodes <= 2
     assert result.nodes == 1
     assert set(result.visit_counts) == set(game.legal_moves)
+
+
+def test_neural_mcts_uses_policy_value_legal_move_inference_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    game = Game.new()
+    inference = RecordingPolicyValueInference()
+
+    def fail_legal_move_mask(_game: Game) -> object:
+        raise AssertionError("neural MCTS should use cached legal moves instead of legal_move_mask")
+
+    monkeypatch.setattr(model_module, "legal_move_mask", fail_legal_move_mask)
+    player = NeuralMCTSPlayer(inference, NeuralMCTSConfig(simulations=1, seed=1))
+
+    result = player.search(game)
+
+    assert result.move in game.legal_moves
+    assert inference.legal_calls == 1
+    assert inference.predict_calls == 0
+    assert inference.seen_legal_moves == [game.legal_moves]
 
 
 def test_neural_mcts_one_simulation_materializes_only_root() -> None:

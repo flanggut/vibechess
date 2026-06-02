@@ -9,6 +9,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Protocol
 
+import numpy as np
+
 from tinychess.ai.player import NoLegalMoveError
 from tinychess.engine.game import Game, determine_outcome
 from tinychess.engine.move import Move
@@ -258,7 +260,7 @@ class NeuralMCTSPlayer:
             if node.is_terminal:
                 value = _terminal_value(node.outcome, node.game.board.side_to_move)
             elif budget_blocked:
-                value = self._evaluate(node.game)
+                value = self._evaluate(node)
             else:
                 value = self._expand(node)
             self._backup(node, value)
@@ -311,7 +313,7 @@ class NeuralMCTSPlayer:
         root.parent = None
 
     def _expand(self, node: NeuralMCTSNode) -> float:
-        prediction = self.inference.predict(node.game, mask_legal_moves=True)
+        prediction = self._predict(node)
         priors = _legal_priors(node, prediction)
         node.edges = {
             move: NeuralMCTSEdge(move=move, prior=prior, child=node.children.get(move))
@@ -337,8 +339,13 @@ class NeuralMCTSPlayer:
         node.children[edge.move] = child
         return child
 
-    def _evaluate(self, game: Game) -> float:
-        return self.inference.predict(game, mask_legal_moves=True).value
+    def _predict(self, node: NeuralMCTSNode) -> InferenceResult:
+        if isinstance(self.inference, PolicyValueInference):
+            return self.inference.predict_with_legal_moves(node.game, node.legal_moves)
+        return self.inference.predict(node.game, mask_legal_moves=True)
+
+    def _evaluate(self, node: NeuralMCTSNode) -> float:
+        return self._predict(node).value
 
     @staticmethod
     def _backup(node: NeuralMCTSNode, value: float) -> None:
@@ -375,16 +382,27 @@ def _legal_priors(
     if not legal:
         return {}
 
-    raw_priors: dict[Move, float] = {}
-    total = 0.0
+    if prediction.legal_policy is not None and prediction.legal_moves == legal:
+        compact_priors = np.asarray(prediction.legal_policy, dtype=np.float32).reshape(-1)
+        if compact_priors.shape == (len(legal),):
+            compact_raw_priors = {
+                move: max(0.0, float(prior))
+                for move, prior in zip(legal, compact_priors, strict=True)
+            }
+            return _normalize_priors(compact_raw_priors)
+
+    full_raw_priors: dict[Move, float] = {}
     for move in legal:
         index = move_to_action_index(move, game.board)
-        prior = max(0.0, float(prediction.policy[index].item()))
-        raw_priors[move] = prior
-        total += prior
+        full_raw_priors[move] = max(0.0, float(prediction.policy[index].item()))
+    return _normalize_priors(full_raw_priors)
+
+
+def _normalize_priors(raw_priors: dict[Move, float]) -> dict[Move, float]:
+    total = sum(raw_priors.values())
     if total <= 0.0 or not math.isfinite(total):
-        uniform = 1.0 / len(legal)
-        return {move: uniform for move in legal}
+        uniform = 1.0 / len(raw_priors)
+        return {move: uniform for move in raw_priors}
     return {move: prior / total for move, prior in raw_priors.items()}
 
 

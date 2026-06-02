@@ -16,6 +16,7 @@ from tinychess.nn import (
     encode_board_np,
     encode_game,
     encode_game_np,
+    legal_action_indices,
     legal_move_mask,
     legal_move_mask_from_board_moves_np,
     legal_move_mask_from_legal_moves_np,
@@ -241,14 +242,16 @@ def test_legal_move_mask_from_legal_moves_matches_public_mask(game: Game) -> Non
     helper_mask = legal_move_mask_from_legal_moves(game, legal)
     helper_mask_np = legal_move_mask_from_legal_moves_np(game, legal)
     board_helper_mask_np = legal_move_mask_from_board_moves_np(game.board, legal)
+    expected_indices = {move_to_action_index(legal_move, game.board) for legal_move in legal}
 
+    assert legal_action_indices(game, legal) == tuple(
+        move_to_action_index(legal_move, game.board) for legal_move in legal
+    )
     assert helper_mask.dtype == mx.float32
     assert tensor_shape(helper_mask) == (ACTION_SPACE_SIZE,)
     assert scalar(mx.sum(helper_mask)) == scalar(mx.sum(public_mask))
     assert active_indices(helper_mask) == active_indices(public_mask)
-    assert active_indices(helper_mask) == {
-        move_to_action_index(legal_move, game.board) for legal_move in legal
-    }
+    assert active_indices(helper_mask) == expected_indices
     assert helper_mask_np.dtype == np.float32
     assert helper_mask_np.shape == (ACTION_SPACE_SIZE,)
     np.testing.assert_array_equal(

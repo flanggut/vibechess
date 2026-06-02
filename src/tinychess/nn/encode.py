@@ -260,13 +260,22 @@ def legal_move_mask(game: Game) -> MLXArray:
     return legal_move_mask_from_legal_moves(game, game.legal_moves)
 
 
+def legal_action_indices(game: Game, legal: tuple[Move, ...]) -> tuple[int, ...]:
+    """Return fixed-policy action indices for precomputed legal moves.
+
+    Precondition: ``legal`` must be the legal move tuple for exactly ``game.board``.
+    This helper intentionally does not validate, filter, or recompute legal moves.
+    """
+    return tuple(move_to_action_index(move, game.board) for move in legal)
+
+
 def legal_move_mask_from_legal_moves(game: Game, legal: tuple[Move, ...]) -> MLXArray:
     """Return a legal-action mask from precomputed legal moves.
 
     Precondition: ``legal`` must be the legal move tuple for exactly ``game.board``.
     This helper intentionally does not validate, filter, or recompute legal moves.
     """
-    legal_indices = [move_to_action_index(move, game.board) for move in legal]
+    legal_indices = legal_action_indices(game, legal)
     if not legal_indices:
         return mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32)
     indices = mx.array(legal_indices)

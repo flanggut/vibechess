@@ -1,10 +1,12 @@
 import json
 from pathlib import Path
+from typing import Any, cast
 
 import mlx.core as mx
+import numpy as np
 import pytest
 
-from tinychess.engine import Game
+from tinychess.engine import Game, Move
 from tinychess.nn import (
     ACTION_SPACE_SIZE,
     ACTION_SPACE_VERSION,
@@ -16,10 +18,13 @@ from tinychess.nn import (
     PolicyValueConfig,
     PolicyValueInference,
     PolicyValueNet,
+    PolicyValueOutput,
     encode_game,
+    legal_action_indices,
     legal_move_mask,
     load_checkpoint,
     load_checkpoint_metadata,
+    move_to_action_index,
     save_checkpoint,
     tensor_shape,
 )
@@ -37,6 +42,22 @@ def tiny_config() -> PolicyValueConfig:
         value_channels=1,
         value_hidden_dim=8,
     )
+
+
+class FixedOutputModel:
+    def __init__(self, logits: Any, *, value: float = 0.125) -> None:
+        self.logits = mx.array(logits, dtype=mx.float32)
+        self.value = value
+
+    def __call__(self, _inputs: object) -> PolicyValueOutput:
+        return PolicyValueOutput(
+            policy_logits=self.logits.reshape(1, ACTION_SPACE_SIZE),
+            value=mx.array([self.value], dtype=mx.float32),
+        )
+
+
+def fixed_inference(logits: Any, *, value: float = 0.125) -> PolicyValueInference:
+    return PolicyValueInference(cast(PolicyValueNet, FixedOutputModel(logits, value=value)))
 
 
 def test_policy_value_model_forward_shapes_and_value_range() -> None:
@@ -114,6 +135,71 @@ def test_inference_wrapper_returns_zero_policy_for_terminal_position() -> None:
     mx.eval(result.policy)
 
     assert result.legal_mask is not None
+    assert scalar(mx.sum(result.legal_mask)) == 0.0
+    assert scalar(mx.sum(result.policy)) == 0.0
+
+
+@pytest.mark.parametrize(
+    "game",
+    [
+        Game.new(),
+        Game.from_fen("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1"),
+        Game.from_fen("4k3/P7/8/8/8/8/8/4K3 w - - 0 1"),
+    ],
+)
+def test_predict_with_legal_moves_matches_masked_full_softmax(game: Game) -> None:
+    logits = np.linspace(-1.0, 1.0, ACTION_SPACE_SIZE, dtype=np.float32)
+    inference = fixed_inference(logits)
+
+    full = inference.predict(game, mask_legal_moves=True)
+    compact = inference.predict_with_legal_moves(game, game.legal_moves)
+    mx.eval(full.policy, compact.policy, compact.legal_mask, compact.legal_policy)
+
+    assert tensor_shape(compact.policy_logits) == (ACTION_SPACE_SIZE,)
+    assert tensor_shape(compact.policy) == (ACTION_SPACE_SIZE,)
+    assert compact.legal_mask is not None
+    assert tensor_shape(compact.legal_mask) == (ACTION_SPACE_SIZE,)
+    assert compact.legal_moves == game.legal_moves
+    assert compact.legal_action_indices == legal_action_indices(game, game.legal_moves)
+    assert compact.legal_policy is not None
+    assert tensor_shape(compact.legal_policy) == (len(game.legal_moves),)
+    np.testing.assert_allclose(
+        np.asarray(compact.policy, dtype=np.float32),
+        np.asarray(full.policy, dtype=np.float32),
+        rtol=1e-6,
+        atol=1e-7,
+    )
+
+
+def test_predict_with_legal_moves_ignores_illegal_high_logits() -> None:
+    game = Game.new()
+    legal_move = Move.from_uci("e2e4")
+    illegal_move = Move.from_uci("e2e5")
+    logits = np.zeros((ACTION_SPACE_SIZE,), dtype=np.float32)
+    logits[move_to_action_index(legal_move, game.board)] = 1.0
+    logits[move_to_action_index(illegal_move, game.board)] = 1000.0
+    inference = fixed_inference(logits)
+
+    result = inference.predict_with_legal_moves(game, game.legal_moves)
+    mx.eval(result.policy, result.legal_policy)
+
+    assert illegal_move not in game.legal_moves
+    assert scalar(result.policy[move_to_action_index(illegal_move, game.board)]) == 0.0
+    assert scalar(mx.sum(result.policy)) == pytest.approx(1.0)
+    assert scalar(result.policy[move_to_action_index(legal_move, game.board)]) > 0.0
+
+
+def test_predict_with_legal_moves_returns_zero_policy_for_empty_legal_list() -> None:
+    game = Game.from_fen("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1")
+    inference = fixed_inference(np.ones((ACTION_SPACE_SIZE,), dtype=np.float32))
+    result = inference.predict_with_legal_moves(game, game.legal_moves)
+    mx.eval(result.policy, result.legal_mask, result.legal_policy)
+
+    assert result.legal_mask is not None
+    assert result.legal_moves == ()
+    assert result.legal_action_indices == ()
+    assert result.legal_policy is not None
+    assert tensor_shape(result.legal_policy) == (0,)
     assert scalar(mx.sum(result.legal_mask)) == 0.0
     assert scalar(mx.sum(result.policy)) == 0.0
 

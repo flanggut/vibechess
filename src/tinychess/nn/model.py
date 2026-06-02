@@ -9,11 +9,13 @@ import mlx.core as mx
 import mlx.nn as _nn
 
 from tinychess.engine.game import Game
+from tinychess.engine.move import Move
 from tinychess.nn.encode import (
     ACTION_SPACE_SIZE,
     ENCODER_CHANNELS,
     TENSOR_SHAPE,
     encode_game,
+    legal_action_indices,
     legal_move_mask,
     tensor_shape,
     to_mlx,
@@ -63,12 +65,20 @@ class PolicyValueOutput:
 
 @dataclass(frozen=True, slots=True)
 class InferenceResult:
-    """Single-position inference result with optional legal-move masking."""
+    """Single-position inference result with optional legal-move masking.
+
+    ``legal_moves``, ``legal_action_indices``, and ``legal_policy`` are populated only
+    by search-oriented helpers that receive a precomputed legal move tuple. Public
+    ``predict()`` callers continue to receive the full 4672-action policy contract.
+    """
 
     policy_logits: MLXArray
     policy: MLXArray
     value: float
     legal_mask: MLXArray | None = None
+    legal_moves: tuple[Move, ...] | None = None
+    legal_action_indices: tuple[int, ...] = ()
+    legal_policy: MLXArray | None = None
 
 
 class ResidualBlock(nn.Module):  # type: ignore[misc]
@@ -180,6 +190,46 @@ class PolicyValueInference:
             policy = policy / mx.sum(policy)
         mx.eval(policy)
         return InferenceResult(policy_logits=logits, policy=policy, value=value, legal_mask=mask)
+
+    def predict_with_legal_moves(
+        self,
+        game: Game,
+        legal_moves: tuple[Move, ...],
+    ) -> InferenceResult:
+        """Run inference using precomputed legal moves for compact legal priors.
+
+        The returned ``policy`` and ``legal_mask`` keep the public 4672-action shape,
+        but only the compact legal softmax vector is evaluated eagerly. This avoids
+        recomputing legal moves and avoids synchronizing a full policy vector in
+        search code that only needs priors for cached legal moves.
+        """
+        legal = tuple(legal_moves)
+        output = self.model(encode_game(game))
+        logits = cast(MLXArray, output.policy_logits[0])
+        value = float(output.value[0].item())
+        indices = legal_action_indices(game, legal)
+        if not indices:
+            legal_policy = mx.zeros((0,), dtype=mx.float32)
+            policy = mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32)
+            mask = mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32)
+        else:
+            index_array = mx.array(indices)
+            legal_logits = logits[index_array]
+            legal_policy = mx.softmax(legal_logits)
+            policy = mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32).at[index_array].add(
+                legal_policy
+            )
+            mask = mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32).at[index_array].add(1.0)
+        mx.eval(legal_policy)
+        return InferenceResult(
+            policy_logits=logits,
+            policy=policy,
+            value=value,
+            legal_mask=mask,
+            legal_moves=legal,
+            legal_action_indices=indices,
+            legal_policy=legal_policy,
+        )
 
 
 def _prepare_batch(inputs: MLXArray) -> MLXArray:
