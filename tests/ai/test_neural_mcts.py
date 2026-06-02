@@ -12,6 +12,7 @@ import tinychess.engine.game as game_module
 from tinychess.ai.mcts import MCTSPlayer
 from tinychess.ai.neural_mcts import (
     NeuralMCTSConfig,
+    NeuralMCTSEdge,
     NeuralMCTSNode,
     NeuralMCTSPlayer,
     _legal_priors,
@@ -118,27 +119,25 @@ def test_legal_priors_use_cached_legal_moves_and_filter_illegal_actions(
     assert priors[preferred] == pytest.approx(1.0)
 
 
-def test_expand_uses_known_legal_transitions_equivalent_to_play(
+def test_expand_creates_legal_edges_without_materializing_child_games(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     game = Game.new()
-    expected_games = {move: game.play(move) for move in game.legal_moves}
     root = NeuralMCTSNode.create(game)
     player = NeuralMCTSPlayer(FakeInference(), NeuralMCTSConfig(simulations=1, seed=1))
 
-    def fail_play(self: Game, move: Move) -> Game:
-        raise AssertionError(f"play() should not validate cached legal move {move}")
+    def fail_play_known_legal(self: Game, move: Move) -> Game:
+        raise AssertionError(f"expansion should not create child game for {move}")
 
-    monkeypatch.setattr(Game, "play", fail_play)
+    monkeypatch.setattr(Game, "play_known_legal", fail_play_known_legal)
 
-    _value, created = player._expand(root)
+    value = player._expand(root)
 
-    assert created == len(root.legal_moves)
-    assert set(root.children) == set(root.legal_moves)
-    for move, child in root.children.items():
-        assert child.game == expected_games[move]
-        assert child.parent is root
-        assert child.move == move
+    assert value == pytest.approx(0.25)
+    assert root.is_expanded
+    assert root.children == {}
+    assert set(root.edges) == set(root.legal_moves)
+    assert all(edge.child is None for edge in root.edges.values())
 
 
 def test_neural_mcts_selects_legal_move_from_start_position() -> None:
@@ -170,8 +169,23 @@ def test_neural_mcts_with_policy_value_net_searches_start_position() -> None:
 
     assert result.move in game.legal_moves
     assert result.simulations == 1
-    assert result.nodes > 1
-    assert result.visit_counts
+    assert result.nodes <= 2
+    assert result.nodes == 1
+    assert set(result.visit_counts) == set(game.legal_moves)
+
+
+def test_neural_mcts_one_simulation_materializes_only_root() -> None:
+    game = Game.new()
+    player = NeuralMCTSPlayer(FakeInference(), NeuralMCTSConfig(simulations=1, seed=1))
+
+    result = player.search(game)
+
+    assert result.nodes == 1
+    assert player._tree_root is not None
+    assert player._tree_root.children == {}
+    assert set(player._tree_root.edges) == set(game.legal_moves)
+    assert set(result.visit_counts) == set(game.legal_moves)
+    assert all(visits == 0 for visits in result.visit_counts.values())
 
 
 def test_neural_mcts_masks_illegal_policy_actions_before_expansion() -> None:
@@ -186,18 +200,67 @@ def test_neural_mcts_masks_illegal_policy_actions_before_expansion() -> None:
     result = player.search(game)
 
     assert result.move in game.legal_moves
+    assert player._tree_root is not None
+    assert illegal not in player._tree_root.edges
     assert illegal not in result.visit_counts
-    assert set(result.visit_counts).issubset(set(game.legal_moves))
+    assert set(player._tree_root.edges) == set(game.legal_moves)
+    assert set(result.visit_counts) == set(game.legal_moves)
+
+
+def test_high_prior_unmaterialized_edge_materializes_on_descent() -> None:
+    game = Game.new()
+    preferred = Move.from_uci("e2e4")
+    player = NeuralMCTSPlayer(
+        FakeInference(preferred_move=preferred),
+        NeuralMCTSConfig(simulations=2, puct_exploration=1.5, seed=2),
+    )
+
+    result = player.search(game)
+
+    assert result.nodes == 2
+    assert player._tree_root is not None
+    preferred_edge = player._tree_root.edges[preferred]
+    assert preferred_edge.child is not None
+    assert player._tree_root.children[preferred] is preferred_edge.child
+    assert result.visit_counts[preferred] == 1
+
+
+def test_materialize_child_uses_known_legal_transition_equivalent_to_play(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    game = Game.new()
+    preferred = Move.from_uci("e2e4")
+    expected_game = game.play(preferred)
+    root = NeuralMCTSNode.create(game)
+    player = NeuralMCTSPlayer(FakeInference(preferred_move=preferred))
+    player._expand(root)
+    edge = root.edges[preferred]
+
+    def fail_play(self: Game, move: Move) -> Game:
+        raise AssertionError(f"materialization should not validate cached legal move {move}")
+
+    monkeypatch.setattr(Game, "play", fail_play)
+
+    child = player._materialize_child(root, edge)
+
+    assert child.game == expected_game
+    assert child.parent is root
+    assert child.move == preferred
+    assert edge.child is child
+    assert root.children[preferred] is child
 
 
 def test_neural_value_backup_flips_side_to_move_perspective() -> None:
     root = NeuralMCTSNode.create(Game.new())
     move = Move.from_uci("e2e4")
     child = NeuralMCTSNode.create(root.game.play(move), parent=root, move=move, prior=1.0)
+    root.edges[move] = NeuralMCTSEdge(move=move, prior=1.0, child=child)
     root.children[move] = child
 
     NeuralMCTSPlayer._backup(child, 0.7)
 
+    assert root.edges[move].visits == 1
+    assert root.edges[move].total_value == pytest.approx(0.7)
     assert child.visits == 1
     assert child.total_value == pytest.approx(0.7)
     assert root.visits == 1
@@ -224,6 +287,22 @@ def test_neural_puct_selection_uses_child_value_from_parent_perspective() -> Non
     good_for_root.visits = 5
     good_for_root.total_value = -1.0
     root.visits = 10
+    root.edges = {
+        first_move: NeuralMCTSEdge(
+            move=first_move,
+            prior=0.5,
+            child=bad_for_root,
+            visits=5,
+            total_value=4.0,
+        ),
+        second_move: NeuralMCTSEdge(
+            move=second_move,
+            prior=0.5,
+            child=good_for_root,
+            visits=5,
+            total_value=-1.0,
+        ),
+    }
     root.children = {first_move: bad_for_root, second_move: good_for_root}
 
     assert root.best_child(exploration=0.0).move == second_move
@@ -247,6 +326,20 @@ def test_neural_puct_selection_uses_priors_when_values_and_visits_match() -> Non
         prior=0.9,
     )
     high_prior.visits = 3
+    root.edges = {
+        low_prior_move: NeuralMCTSEdge(
+            move=low_prior_move,
+            prior=0.1,
+            child=low_prior,
+            visits=3,
+        ),
+        high_prior_move: NeuralMCTSEdge(
+            move=high_prior_move,
+            prior=0.9,
+            child=high_prior,
+            visits=3,
+        ),
+    }
     root.children = {low_prior_move: low_prior, high_prior_move: high_prior}
 
     assert root.best_child(exploration=1.5).move == high_prior_move
@@ -255,15 +348,10 @@ def test_neural_puct_selection_uses_priors_when_values_and_visits_match() -> Non
 def test_select_by_temperature_zero_selects_highest_visit_count() -> None:
     root = NeuralMCTSNode.create(Game.new())
     low_visit_move, high_visit_move = root.legal_moves[:2]
-    low_visit = NeuralMCTSNode.create(
-        root.game.play(low_visit_move), parent=root, move=low_visit_move
-    )
-    low_visit.visits = 1
-    high_visit = NeuralMCTSNode.create(
-        root.game.play(high_visit_move), parent=root, move=high_visit_move
-    )
-    high_visit.visits = 5
-    root.children = {low_visit_move: low_visit, high_visit_move: high_visit}
+    root.edges = {
+        low_visit_move: NeuralMCTSEdge(move=low_visit_move, prior=0.5, visits=1),
+        high_visit_move: NeuralMCTSEdge(move=high_visit_move, prior=0.5, visits=5),
+    }
 
     selected = _select_by_temperature(root, temperature=0.0, rng=random.Random(1))
 
@@ -273,12 +361,10 @@ def test_select_by_temperature_zero_selects_highest_visit_count() -> None:
 def test_select_by_temperature_positive_weights_exclude_zero_visit_children() -> None:
     root = NeuralMCTSNode.create(Game.new())
     visited_move, zero_visit_move = root.legal_moves[:2]
-    visited = NeuralMCTSNode.create(root.game.play(visited_move), parent=root, move=visited_move)
-    visited.visits = 2
-    zero_visit = NeuralMCTSNode.create(
-        root.game.play(zero_visit_move), parent=root, move=zero_visit_move
-    )
-    root.children = {visited_move: visited, zero_visit_move: zero_visit}
+    root.edges = {
+        visited_move: NeuralMCTSEdge(move=visited_move, prior=0.5, visits=2),
+        zero_visit_move: NeuralMCTSEdge(move=zero_visit_move, prior=0.5),
+    }
 
     selections = {
         _select_by_temperature(root, temperature=1.0, rng=random.Random(seed))
@@ -291,19 +377,10 @@ def test_select_by_temperature_positive_weights_exclude_zero_visit_children() ->
 def test_select_by_temperature_all_zero_visits_falls_back_safely() -> None:
     root = NeuralMCTSNode.create(Game.new())
     prior_move, other_move = root.legal_moves[:2]
-    prior_child = NeuralMCTSNode.create(
-        root.game.play(prior_move),
-        parent=root,
-        move=prior_move,
-        prior=1.0,
-    )
-    other_child = NeuralMCTSNode.create(
-        root.game.play(other_move),
-        parent=root,
-        move=other_move,
-        prior=0.0,
-    )
-    root.children = {prior_move: prior_child, other_move: other_child}
+    root.edges = {
+        prior_move: NeuralMCTSEdge(move=prior_move, prior=1.0),
+        other_move: NeuralMCTSEdge(move=other_move, prior=0.0),
+    }
 
     selected = _select_by_temperature(root, temperature=1.0, rng=random.Random(1))
 
@@ -341,6 +418,22 @@ def test_neural_mcts_respects_node_budget() -> None:
 
     assert result.nodes <= 3
     assert result.move in Game.new().legal_moves
+
+
+def test_neural_mcts_node_budget_one_expands_edges_without_children() -> None:
+    game = Game.new()
+    player = NeuralMCTSPlayer(
+        FakeInference(), NeuralMCTSConfig(simulations=4, node_budget=1, seed=2)
+    )
+
+    result = player.search(game)
+
+    assert result.nodes == 1
+    assert result.move in game.legal_moves
+    assert player._tree_root is not None
+    assert player._tree_root.children == {}
+    assert set(result.visit_counts) == set(game.legal_moves)
+    assert all(visits == 0 for visits in result.visit_counts.values())
 
 
 def test_neural_mcts_node_budget_counts_reused_root() -> None:
@@ -402,12 +495,11 @@ def test_neural_clear_tree_discards_reusable_state() -> None:
 
 def test_neural_tree_reuse_rejects_same_board_non_descendant_and_absent_child() -> None:
     game = Game.new()
-    move = Move.from_uci("e2e4")
     player = NeuralMCTSPlayer(FakeInference(), NeuralMCTSConfig(simulations=2, seed=1))
-    player.search(game)
+    result = player.search(game)
     root = player._tree_root
     assert root is not None
-    child = root.children[move]
+    child = root.children[result.move]
 
     same_board_non_descendant = Game.from_fen(child.game.to_fen())
 
@@ -420,7 +512,8 @@ def test_neural_tree_reuse_rejects_same_board_non_descendant_and_absent_child() 
     capped_root = capped_player._tree_root
     assert capped_root is not None
     assert not capped_root.children
-    descendant_with_absent_child = game.play(move)
+    lazy_only_move = next(move for move in capped_root.edges if move not in capped_root.children)
+    descendant_with_absent_child = game.play(lazy_only_move)
 
     assert capped_player._adopt_descendant_root(descendant_with_absent_child) is None
 

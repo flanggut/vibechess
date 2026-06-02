@@ -29,9 +29,10 @@ class NeuralInference(Protocol):
 class NeuralMCTSConfig:
     """Budgets and PUCT settings for neural MCTS.
 
-    ``node_budget`` caps the total number of tree nodes, including the root. When
-    the cap is reached, search keeps simulating but evaluates selected leaves
-    without expanding additional children.
+    ``node_budget`` caps materialized tree nodes, including the root. Legal edge
+    priors are cached without creating child nodes; when the cap is reached,
+    search keeps simulating but evaluates the current node instead of
+    materializing a selected child.
     """
 
     simulations: int = 25
@@ -60,11 +61,36 @@ class NeuralMCTSConfig:
 
 
 @dataclass(slots=True)
+class NeuralMCTSEdge:
+    """Selectable legal edge in a neural PUCT search tree.
+
+    Edge statistics store values from the child side-to-move perspective, matching
+    the materialized child node when one exists. Unmaterialized edges have a prior
+    and zero visits/value until they are selected and a child node can be created.
+    """
+
+    move: Move
+    prior: float
+    child: NeuralMCTSNode | None = None
+    visits: int = 0
+    total_value: float = 0.0
+
+    @property
+    def mean_value(self) -> float:
+        """Return the mean value from the child side-to-move perspective."""
+        if self.visits == 0:
+            return 0.0
+        return self.total_value / self.visits
+
+
+@dataclass(slots=True)
 class NeuralMCTSNode:
     """One node in a neural PUCT search tree.
 
     ``total_value`` stores values from this node's side-to-move perspective. During
     backup, signs are flipped at each ply because the side to move alternates.
+    Legal move edges are materialized lazily: expansion creates edge priors/stats,
+    and a child ``Game``/node is created only when an edge is selected for descent.
     """
 
     game: Game
@@ -73,6 +99,7 @@ class NeuralMCTSNode:
     prior: float = 0.0
     legal_moves: tuple[Move, ...] = ()
     outcome: Outcome | None = None
+    edges: dict[Move, NeuralMCTSEdge] = field(default_factory=dict)
     children: dict[Move, NeuralMCTSNode] = field(default_factory=dict)
     visits: int = 0
     total_value: float = 0.0
@@ -117,24 +144,32 @@ class NeuralMCTSNode:
             return 0.0
         return self.total_value / self.visits
 
-    def best_child(self, exploration: float) -> NeuralMCTSNode:
-        """Return the child with the highest PUCT score for this node's mover."""
-        if not self.children:
-            msg = "cannot select best child from an unexpanded leaf"
+    def best_edge(self, exploration: float) -> NeuralMCTSEdge:
+        """Return the legal edge with the highest PUCT score for this node's mover."""
+        if not self.edges:
+            msg = "cannot select best edge from an unexpanded leaf"
             raise ValueError(msg)
         parent_visits = max(1, self.visits)
 
-        def score(child: NeuralMCTSNode) -> float:
-            # Child values are from the opponent's perspective, so negate for the
-            # current node's side to move.
-            q_value = -child.mean_value
-            u_value = exploration * child.prior * math.sqrt(parent_visits) / (1 + child.visits)
+        def score(edge: NeuralMCTSEdge) -> float:
+            # Edge values are from the child/opponent perspective, so negate for
+            # the current node's side to move.
+            q_value = -edge.mean_value
+            u_value = exploration * edge.prior * math.sqrt(parent_visits) / (1 + edge.visits)
             return q_value + u_value
 
         return max(
-            self.children.values(),
-            key=lambda child: (score(child), child.move.to_uci() if child.move else ""),
+            self.edges.values(),
+            key=lambda edge: (score(edge), edge.move.to_uci()),
         )
+
+    def best_child(self, exploration: float) -> NeuralMCTSNode:
+        """Return the materialized child behind the highest-scoring legal edge."""
+        edge = self.best_edge(exploration)
+        if edge.child is None:
+            msg = "best edge has no materialized child"
+            raise ValueError(msg)
+        return edge.child
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,20 +239,28 @@ class NeuralMCTSPlayer:
             if deadline is not None and time.perf_counter() >= deadline:
                 break
 
-            while node.is_expanded and node.children and not node.is_terminal:
-                node = node.best_child(self.config.puct_exploration)
+            budget_blocked = False
+            while node.is_expanded and node.edges and not node.is_terminal:
+                edge = node.best_edge(self.config.puct_exploration)
+                if edge.child is None:
+                    budget_reached = (
+                        self.config.node_budget is not None
+                        and nodes_created >= self.config.node_budget
+                    )
+                    if budget_reached:
+                        budget_blocked = True
+                        break
+                    node = self._materialize_child(node, edge)
+                    nodes_created += 1
+                else:
+                    node = edge.child
 
             if node.is_terminal:
                 value = _terminal_value(node.outcome, node.game.board.side_to_move)
+            elif budget_blocked:
+                value = self._evaluate(node.game)
             else:
-                remaining_nodes = None
-                if self.config.node_budget is not None:
-                    remaining_nodes = max(0, self.config.node_budget - nodes_created)
-                if remaining_nodes == 0:
-                    value = self._evaluate(node.game)
-                else:
-                    value, created = self._expand(node, max_children=remaining_nodes)
-                    nodes_created += created
+                value = self._expand(node)
             self._backup(node, value)
             simulations += 1
 
@@ -230,7 +273,7 @@ class NeuralMCTSPlayer:
             simulations=simulations,
             nodes=nodes_created,
             elapsed_seconds=elapsed,
-            visit_counts={move: child.visits for move, child in root.children.items()},
+            visit_counts={move: edge.visits for move, edge in root.edges.items()},
         )
         self.last_result = result
         self._tree_root = root
@@ -267,28 +310,32 @@ class NeuralMCTSPlayer:
     def _detach_root(root: NeuralMCTSNode) -> None:
         root.parent = None
 
-    def _expand(
-        self,
-        node: NeuralMCTSNode,
-        *,
-        max_children: int | None = None,
-    ) -> tuple[float, int]:
+    def _expand(self, node: NeuralMCTSNode) -> float:
         prediction = self.inference.predict(node.game, mask_legal_moves=True)
         priors = _legal_priors(node, prediction)
-        created = 0
-        for move, prior in priors.items():
-            if max_children is not None and created >= max_children:
-                break
-            child = NeuralMCTSNode.create(
-                node.game.play_known_legal(move),
-                parent=node,
-                move=move,
-                prior=prior,
-            )
-            node.children[move] = child
-            created += 1
+        node.edges = {
+            move: NeuralMCTSEdge(move=move, prior=prior, child=node.children.get(move))
+            for move, prior in priors.items()
+        }
+        for move, child in node.children.items():
+            edge = node.edges.get(move)
+            if edge is not None:
+                edge.visits = child.visits
+                edge.total_value = child.total_value
         node.is_expanded = True
-        return prediction.value, created
+        return prediction.value
+
+    @staticmethod
+    def _materialize_child(node: NeuralMCTSNode, edge: NeuralMCTSEdge) -> NeuralMCTSNode:
+        child = NeuralMCTSNode.create(
+            node.game.play_known_legal(edge.move),
+            parent=node,
+            move=edge.move,
+            prior=edge.prior,
+        )
+        edge.child = child
+        node.children[edge.move] = child
+        return child
 
     def _evaluate(self, game: Game) -> float:
         return self.inference.predict(game, mask_legal_moves=True).value
@@ -300,8 +347,14 @@ class NeuralMCTSPlayer:
         while current is not None:
             current.visits += 1
             current.total_value += current_value
+            parent = current.parent
+            if parent is not None and current.move is not None:
+                edge = parent.edges.get(current.move)
+                if edge is not None:
+                    edge.visits += 1
+                    edge.total_value += current_value
             current_value = -current_value
-            current = current.parent
+            current = parent
 
 
 def _legal_priors(
@@ -346,21 +399,21 @@ def _select_by_temperature(
     temperature: float,
     rng: random.Random,
 ) -> Move | None:
-    if not root.children:
+    if not root.edges:
         return None
-    children = list(root.children.values())
+    edges = list(root.edges.values())
     if temperature == 0.0:
         return max(
-            children,
-            key=lambda child: (
-                child.visits,
-                -child.mean_value,
-                child.move.to_uci() if child.move else "",
+            edges,
+            key=lambda edge: (
+                edge.visits,
+                -edge.mean_value,
+                edge.move.to_uci(),
             ),
         ).move
-    weights = [float(child.visits) ** (1.0 / temperature) for child in children]
+    weights = [float(edge.visits) ** (1.0 / temperature) for edge in edges]
     if sum(weights) <= 0.0:
-        weights = [child.prior for child in children]
+        weights = [edge.prior for edge in edges]
     if sum(weights) <= 0.0:
-        weights = [1.0 for _child in children]
-    return rng.choices([child.move for child in children], weights=weights, k=1)[0]
+        weights = [1.0 for _edge in edges]
+    return rng.choices([edge.move for edge in edges], weights=weights, k=1)[0]
