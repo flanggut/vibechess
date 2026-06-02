@@ -40,7 +40,7 @@ Implemented:
 - `PolicyValueNet`: a small configurable residual CNN that returns 4672 policy logits and a side-to-move value in `[-1, 1]`.
 - `PolicyValueInference`: single-position inference that can normalize over all actions or mask probabilities to legal moves only.
 - `NeuralMCTSConfig`: simulation, time, node, PUCT exploration, temperature, and seed settings for neural search.
-- `NeuralMCTSPlayer`: AlphaZero-style PUCT search that requests masked neural policy probabilities, expands only legal moves, backs up values from each node's side-to-move perspective, and selects from visit counts with configurable temperature.
+- `NeuralMCTSPlayer`: AlphaZero-style PUCT search that requests masked neural policy probabilities, expands only legal moves, caches each node's legal moves/outcome, backs up values from each node's side-to-move perspective, and selects from visit counts with configurable temperature. It reuses exact-descendant subtrees across calls by matching `Game.moves`; reused subtrees intentionally keep prior visits, so call `clear_tree()` for a fresh-root neural search. Node budgets still count the active root toward the cap, including an adopted root.
 - `tinychess.nn.checkpoint`: MLX `weights.safetensors` save/load helpers with `metadata.json` sidecars containing schema, model config, encoder/action-space versions, training step, optimizer-state availability, and notes.
 - `tinychess.nn.self_play`: versioned compressed NPZ datasets containing encoded positions, legal masks, MCTS policy targets, outcome targets, metadata, and game records. Self-play can use neural or classical MCTS labels.
 - `tinychess.nn.pgn_dataset`: external PGN games converted into sharded supervised policy/value datasets with one-hot played-move policy targets.

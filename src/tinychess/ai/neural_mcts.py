@@ -5,11 +5,12 @@ from __future__ import annotations
 import math
 import random
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Protocol
 
 from tinychess.ai.player import NoLegalMoveError
-from tinychess.engine.game import Game
+from tinychess.engine.game import Game, determine_outcome
 from tinychess.engine.move import Move
 from tinychess.engine.outcome import Outcome
 from tinychess.engine.piece import Color
@@ -70,15 +71,44 @@ class NeuralMCTSNode:
     parent: NeuralMCTSNode | None = None
     move: Move | None = None
     prior: float = 0.0
+    legal_moves: tuple[Move, ...] = ()
+    outcome: Outcome | None = None
     children: dict[Move, NeuralMCTSNode] = field(default_factory=dict)
     visits: int = 0
     total_value: float = 0.0
     is_expanded: bool = False
 
+    def __post_init__(self) -> None:
+        if not self.legal_moves and self.outcome is None:
+            legal = self.game.legal_moves
+            self.legal_moves = legal
+            self.outcome = determine_outcome(self.game, legal_moves=legal)
+
+    @classmethod
+    def create(
+        cls,
+        game: Game,
+        *,
+        parent: NeuralMCTSNode | None = None,
+        move: Move | None = None,
+        prior: float = 0.0,
+    ) -> NeuralMCTSNode:
+        """Create a node with cached legal moves and outcome state."""
+        legal = game.legal_moves
+        outcome = determine_outcome(game, legal_moves=legal)
+        return cls(
+            game=game,
+            parent=parent,
+            move=move,
+            prior=prior,
+            legal_moves=legal,
+            outcome=outcome,
+        )
+
     @property
     def is_terminal(self) -> bool:
-        """Return whether this node's game is terminal."""
-        return self.game.outcome is not None or not self.game.legal_moves
+        """Return whether this node's cached game state is terminal."""
+        return self.outcome is not None or not self.legal_moves
 
     @property
     def mean_value(self) -> float:
@@ -134,9 +164,14 @@ class NeuralMCTSPlayer:
     rng: random.Random | None = None
     _rng: random.Random = field(init=False, repr=False)
     last_result: NeuralMCTSResult | None = field(init=False, default=None)
+    _tree_root: NeuralMCTSNode | None = field(init=False, default=None, repr=False)
 
     def __post_init__(self) -> None:
         self._rng = random.Random(self.config.seed) if self.rng is None else self.rng
+
+    def clear_tree(self) -> None:
+        """Discard reusable neural-MCTS search state."""
+        self._tree_root = None
 
     def select_move(self, game: Game) -> Move:
         """Return a neural-MCTS-selected legal move, or raise for terminal positions."""
@@ -144,21 +179,22 @@ class NeuralMCTSPlayer:
 
     def search(self, game: Game) -> NeuralMCTSResult:
         """Run PUCT search from ``game`` and return the selected move plus metadata."""
-        outcome = game.outcome
-        if outcome is not None:
-            msg = f"cannot select a move from a terminal game: {outcome.reason.value}"
+        start = time.perf_counter()
+        root, nodes_created, adopted_root = self._root_for_game(game)
+        if root.outcome is not None:
+            msg = f"cannot select a move from a terminal game: {root.outcome.reason.value}"
             raise NoLegalMoveError(msg)
-        legal = game.legal_moves
+        legal = root.legal_moves
         if not legal:
             msg = "cannot select a move from a position with no legal moves"
             raise NoLegalMoveError(msg)
+        if adopted_root:
+            self._detach_root(root)
+        self._tree_root = root
 
-        start = time.perf_counter()
         deadline = None
         if self.config.time_limit_seconds is not None:
             deadline = start + self.config.time_limit_seconds
-        root = NeuralMCTSNode(game=game)
-        nodes_created = 1
         simulations = 0
 
         while simulations < self.config.simulations:
@@ -172,7 +208,7 @@ class NeuralMCTSPlayer:
                 node = node.best_child(self.config.puct_exploration)
 
             if node.is_terminal:
-                value = _terminal_value(node.game.outcome, node.game.board.side_to_move)
+                value = _terminal_value(node.outcome, node.game.board.side_to_move)
             else:
                 remaining_nodes = None
                 if self.config.node_budget is not None:
@@ -197,7 +233,39 @@ class NeuralMCTSPlayer:
             visit_counts={move: child.visits for move, child in root.children.items()},
         )
         self.last_result = result
+        self._tree_root = root
         return result
+
+    def _root_for_game(self, game: Game) -> tuple[NeuralMCTSNode, int, bool]:
+        adopted = self._adopt_descendant_root(game)
+        if adopted is not None:
+            return adopted, 1, True
+        return NeuralMCTSNode.create(game), 1, False
+
+    def _adopt_descendant_root(self, game: Game) -> NeuralMCTSNode | None:
+        root = self._tree_root
+        if root is None:
+            return None
+        root_moves = root.game.moves
+        requested_moves = game.moves
+        if len(root_moves) > len(requested_moves):
+            return None
+        if requested_moves[: len(root_moves)] != root_moves:
+            return None
+
+        current = root
+        for move in requested_moves[len(root_moves) :]:
+            child = current.children.get(move)
+            if child is None:
+                return None
+            current = child
+        if current.game != game:
+            return None
+        return current
+
+    @staticmethod
+    def _detach_root(root: NeuralMCTSNode) -> None:
+        root.parent = None
 
     def _expand(
         self,
@@ -206,13 +274,13 @@ class NeuralMCTSPlayer:
         max_children: int | None = None,
     ) -> tuple[float, int]:
         prediction = self.inference.predict(node.game, mask_legal_moves=True)
-        priors = _legal_priors(node.game, prediction)
+        priors = _legal_priors(node, prediction)
         created = 0
         for move, prior in priors.items():
             if max_children is not None and created >= max_children:
                 break
-            child = NeuralMCTSNode(
-                game=node.game.play(move),
+            child = NeuralMCTSNode.create(
+                node.game.play_known_legal(move),
                 parent=node,
                 move=move,
                 prior=prior,
@@ -236,8 +304,24 @@ class NeuralMCTSPlayer:
             current = current.parent
 
 
-def _legal_priors(game: Game, prediction: InferenceResult) -> dict[Move, float]:
-    legal = game.legal_moves
+def _legal_priors(
+    position: NeuralMCTSNode | Game,
+    prediction: InferenceResult,
+    *,
+    legal_moves: Iterable[Move] | None = None,
+) -> dict[Move, float]:
+    if isinstance(position, NeuralMCTSNode):
+        game = position.game
+        legal = position.legal_moves if legal_moves is None else tuple(legal_moves)
+    else:
+        if legal_moves is None:
+            msg = "legal_moves must be provided when extracting priors from a Game"
+            raise ValueError(msg)
+        game = position
+        legal = tuple(legal_moves)
+    if not legal:
+        return {}
+
     raw_priors: dict[Move, float] = {}
     total = 0.0
     for move in legal:
