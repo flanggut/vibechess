@@ -14,6 +14,7 @@ from tinychess.nn import (
     DEFAULT_METADATA_FILENAME,
     DEFAULT_WEIGHTS_FILENAME,
     ENCODER_VERSION,
+    TENSOR_SHAPE,
     CheckpointMetadata,
     PolicyValueConfig,
     PolicyValueInference,
@@ -49,10 +50,15 @@ class FixedOutputModel:
         self.logits = mx.array(logits, dtype=mx.float32)
         self.value = value
 
-    def __call__(self, _inputs: object) -> PolicyValueOutput:
+    def __call__(self, inputs: object) -> PolicyValueOutput:
+        shape = tensor_shape(inputs)
+        batch_size = 1 if shape == TENSOR_SHAPE else shape[0]
         return PolicyValueOutput(
-            policy_logits=self.logits.reshape(1, ACTION_SPACE_SIZE),
-            value=mx.array([self.value], dtype=mx.float32),
+            policy_logits=mx.broadcast_to(
+                self.logits.reshape(1, ACTION_SPACE_SIZE),
+                (batch_size, ACTION_SPACE_SIZE),
+            ),
+            value=mx.full((batch_size,), self.value, dtype=mx.float32),
         )
 
 
@@ -202,6 +208,73 @@ def test_predict_with_legal_moves_returns_zero_policy_for_empty_legal_list() -> 
     assert tensor_shape(result.legal_policy) == (0,)
     assert scalar(mx.sum(result.legal_mask)) == 0.0
     assert scalar(mx.sum(result.policy)) == 0.0
+
+
+def test_predict_batch_matches_repeated_single_game_inference() -> None:
+    games = (
+        Game.new(),
+        Game.from_fen("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1"),
+        Game.from_fen("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1"),
+    )
+    logits = np.linspace(-1.0, 1.0, ACTION_SPACE_SIZE, dtype=np.float32)
+    inference = fixed_inference(logits, value=-0.25)
+
+    batch = inference.predict_batch(
+        games,
+        legal_moves=tuple(game.legal_moves for game in games),
+    )
+    mx.eval(batch.policy_logits, batch.policy, batch.legal_masks)
+
+    assert tensor_shape(batch.policy_logits) == (len(games), ACTION_SPACE_SIZE)
+    assert tensor_shape(batch.policy) == (len(games), ACTION_SPACE_SIZE)
+    assert batch.legal_masks is not None
+    assert tensor_shape(batch.legal_masks) == (len(games), ACTION_SPACE_SIZE)
+    assert batch.values == pytest.approx((-0.25, -0.25, -0.25))
+    assert batch.legal_moves == tuple(game.legal_moves for game in games)
+    for index, game in enumerate(games):
+        single = inference.predict(game, mask_legal_moves=True)
+        row = batch.result_at(index)
+        mx.eval(single.policy, row.policy, row.legal_mask, row.legal_policy)
+        np.testing.assert_allclose(
+            np.asarray(row.policy, dtype=np.float32),
+            np.asarray(single.policy, dtype=np.float32),
+            rtol=1e-6,
+            atol=1e-7,
+        )
+        assert row.value == pytest.approx(single.value)
+        assert row.legal_moves == game.legal_moves
+        assert row.legal_action_indices == legal_action_indices(game, game.legal_moves)
+        assert row.legal_policy is not None
+        assert tensor_shape(row.legal_policy) == (len(game.legal_moves),)
+
+
+def test_predict_batch_accepts_encoded_positions_with_legal_masks() -> None:
+    games = (Game.new(), Game.from_fen("4k3/P7/8/8/8/8/8/4K3 w - - 0 1"))
+    encoded = mx.stack([encode_game(game) for game in games])
+    masks = mx.stack([legal_move_mask(game) for game in games])
+    inference = fixed_inference(np.arange(ACTION_SPACE_SIZE, dtype=np.float32) / 1000.0)
+
+    batch = inference.predict_batch(encoded, legal_masks=masks)
+    mx.eval(batch.policy, batch.legal_masks)
+
+    assert tensor_shape(batch.policy_logits) == (2, ACTION_SPACE_SIZE)
+    assert tensor_shape(batch.policy) == (2, ACTION_SPACE_SIZE)
+    assert batch.legal_masks is not None
+    np.testing.assert_array_equal(
+        np.asarray(batch.legal_masks, dtype=np.float32),
+        np.asarray(masks, dtype=np.float32),
+    )
+    assert np.allclose(np.asarray(mx.sum(batch.policy, axis=1), dtype=np.float32), 1.0)
+    assert np.all(
+        np.asarray(mx.where(batch.legal_masks > 0, 0.0, batch.policy), dtype=np.float32) == 0.0
+    )
+
+
+def test_predict_batch_rejects_empty_game_batch() -> None:
+    inference = fixed_inference(np.ones((ACTION_SPACE_SIZE,), dtype=np.float32))
+
+    with pytest.raises(ValueError, match="at least one position"):
+        inference.predict_batch(())
 
 
 def test_checkpoint_save_load_round_trips_weights_and_metadata(tmp_path: Path) -> None:

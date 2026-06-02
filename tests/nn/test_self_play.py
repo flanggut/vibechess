@@ -5,6 +5,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 import mlx.core as mx
 import numpy as np
@@ -14,7 +15,12 @@ from tinychess.ai.search_config import MCTSConfig
 from tinychess.engine import Game, Move, OutcomeReason
 from tinychess.nn.checkpoint import save_checkpoint
 from tinychess.nn.encode import ACTION_SPACE_SIZE, TENSOR_SHAPE, move_to_action_index
-from tinychess.nn.model import InferenceResult, PolicyValueConfig, PolicyValueNet
+from tinychess.nn.model import (
+    InferenceResult,
+    PolicyValueConfig,
+    PolicyValueInference,
+    PolicyValueNet,
+)
 from tinychess.nn.self_play import (
     DEFAULT_DATASET_FILENAME,
     DEFAULT_GAMES_FILENAME,
@@ -45,6 +51,28 @@ class FakeInference:
         return InferenceResult(policy_logits=policy, policy=policy, value=0.0)
 
 
+class CountingPolicyValueInference(PolicyValueInference):
+    def __init__(self, model: PolicyValueNet) -> None:
+        super().__init__(model)
+        self.batch_calls = 0
+
+    def predict_batch(
+        self,
+        inputs: Any,
+        *,
+        legal_masks: Any | None = None,
+        legal_moves: Any | None = None,
+        mask_legal_moves: bool = True,
+    ) -> Any:
+        self.batch_calls += 1
+        return super().predict_batch(
+            inputs,
+            legal_masks=legal_masks,
+            legal_moves=legal_moves,
+            mask_legal_moves=mask_legal_moves,
+        )
+
+
 def test_generate_self_play_dataset_completes_smoke_game() -> None:
     dataset = generate_self_play_dataset(
         FakeInference(),
@@ -71,6 +99,103 @@ def test_generate_self_play_dataset_completes_smoke_game() -> None:
     assert dataset.games[0].plies == 4
     assert dataset.games[0].outcome_reason == OutcomeReason.MAX_PLIES.value
     assert len(dataset.games[0].moves_uci) == 4
+
+
+def test_batched_neural_self_play_preserves_schema_and_legal_targets() -> None:
+    inference = CountingPolicyValueInference(
+        PolicyValueNet(
+            PolicyValueConfig(
+                residual_channels=4,
+                residual_blocks=0,
+                policy_channels=1,
+                value_channels=1,
+                value_hidden_dim=4,
+            )
+        )
+    )
+
+    dataset = generate_self_play_dataset(
+        inference,
+        SelfPlayConfig(
+            games=2,
+            max_plies=2,
+            mcts=NeuralMCTSConfig(simulations=1, temperature=0.0, seed=17),
+            seed=17,
+            batch_size=2,
+        ),
+    )
+
+    assert inference.batch_calls >= 1
+    assert dataset.metadata.schema_version == SELF_PLAY_DATASET_SCHEMA_VERSION
+    assert dataset.metadata.generation_settings["batch_size"] == 2
+    assert dataset.positions.shape == (4, *TENSOR_SHAPE)
+    assert dataset.legal_masks.shape == (4, ACTION_SPACE_SIZE)
+    assert dataset.mcts_policies.shape == (4, ACTION_SPACE_SIZE)
+    assert dataset.outcomes.shape == (4,)
+    assert [record.game_index for record in dataset.games] == [0, 1]
+    assert [record.plies for record in dataset.games] == [2, 2]
+    assert np.all(dataset.legal_masks.sum(axis=1) > 0)
+    assert np.allclose(dataset.mcts_policies.sum(axis=1), 1.0)
+    assert np.all(dataset.mcts_policies >= 0.0)
+    assert np.all(dataset.mcts_policies <= dataset.legal_masks)
+
+
+def test_batched_neural_self_play_skips_prefetch_for_expanded_reused_roots() -> None:
+    inference = CountingPolicyValueInference(
+        PolicyValueNet(
+            PolicyValueConfig(
+                residual_channels=4,
+                residual_blocks=0,
+                policy_channels=1,
+                value_channels=1,
+                value_hidden_dim=4,
+            )
+        )
+    )
+
+    dataset = generate_self_play_dataset(
+        inference,
+        SelfPlayConfig(
+            games=1,
+            max_plies=2,
+            mcts=NeuralMCTSConfig(simulations=2, temperature=0.0, seed=19),
+            seed=19,
+            batch_size=2,
+        ),
+    )
+
+    assert dataset.metadata.sample_count == 2
+    assert inference.batch_calls == 1
+
+
+def test_batched_neural_self_play_is_reproducible_for_fixed_seed() -> None:
+    model = PolicyValueNet(
+        PolicyValueConfig(
+            residual_channels=4,
+            residual_blocks=0,
+            policy_channels=1,
+            value_channels=1,
+            value_hidden_dim=4,
+        )
+    )
+    config = SelfPlayConfig(
+        games=2,
+        max_plies=2,
+        mcts=NeuralMCTSConfig(simulations=1, temperature=0.0, seed=23),
+        seed=23,
+        batch_size=2,
+    )
+
+    first = generate_self_play_dataset(PolicyValueInference(model), config)
+    second = generate_self_play_dataset(PolicyValueInference(model), config)
+
+    np.testing.assert_array_equal(first.positions, second.positions)
+    np.testing.assert_array_equal(first.legal_masks, second.legal_masks)
+    np.testing.assert_array_equal(first.mcts_policies, second.mcts_policies)
+    np.testing.assert_array_equal(first.outcomes, second.outcomes)
+    assert [record.moves_uci for record in first.games] == [
+        record.moves_uci for record in second.games
+    ]
 
 
 def test_generate_self_play_dataset_can_use_classical_mcts_labels() -> None:
@@ -332,6 +457,38 @@ def test_self_play_script_creates_documented_files(tmp_path: Path) -> None:
     assert (output / DEFAULT_DATASET_FILENAME).is_file()
     assert (output / DEFAULT_METADATA_FILENAME).is_file()
     assert (output / DEFAULT_GAMES_FILENAME).is_file()
+
+
+def test_self_play_script_accepts_batch_size(tmp_path: Path) -> None:
+    output = tmp_path / "script-batch-output"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/self_play.py",
+            "--games",
+            "2",
+            "--max-plies",
+            "1",
+            "--simulations",
+            "1",
+            "--batch-size",
+            "2",
+            "--output",
+            str(output),
+        ],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    dataset = load_self_play_dataset(output)
+    assert dataset.metadata.generation_settings["batch_size"] == 2
+    assert dataset.metadata.game_count == 2
+    assert dataset.metadata.sample_count == 2
+    assert [record.game_index for record in dataset.games] == [0, 1]
 
 
 def test_self_play_script_rejects_invalid_worker_count(tmp_path: Path) -> None:

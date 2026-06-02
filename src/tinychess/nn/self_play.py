@@ -7,7 +7,7 @@ import subprocess
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -27,8 +27,10 @@ from tinychess.nn.encode import (
     TENSOR_SHAPE,
     encode_game,
     legal_move_mask,
+    legal_move_mask_from_legal_moves,
     move_to_action_index,
 )
+from tinychess.nn.model import InferenceResult, PolicyValueInference
 
 SELF_PLAY_DATASET_SCHEMA_VERSION = "tinychess-selfplay-v1"
 DEFAULT_DATASET_FILENAME = "samples.npz"
@@ -50,6 +52,7 @@ class SelfPlayConfig:
     label_source: str = LABEL_SOURCE_NEURAL
     model_checkpoint_id: str | None = None
     seed: int | None = None
+    batch_size: int = 1
 
     def __post_init__(self) -> None:
         if self.games < 1:
@@ -60,6 +63,8 @@ class SelfPlayConfig:
             raise ValueError(
                 f"label_source must be one of {LABEL_SOURCES}, got {self.label_source!r}"
             )
+        if self.batch_size < 1:
+            raise ValueError(f"batch_size must be at least 1, got {self.batch_size}")
 
     def to_dict(self) -> dict[str, object]:
         """Return JSON-serializable generation settings."""
@@ -71,6 +76,7 @@ class SelfPlayConfig:
             "classical_mcts": asdict(self.classical_mcts),
             "model_checkpoint_id": self.model_checkpoint_id,
             "seed": self.seed,
+            "batch_size": self.batch_size,
         }
 
 
@@ -220,17 +226,30 @@ def generate_self_play_dataset(
 ) -> SelfPlayDataset:
     """Generate a small self-play dataset using neural or classical MCTS labels."""
     resolved = SelfPlayConfig() if config is None else config
+    if (
+        resolved.batch_size > 1
+        and resolved.label_source == LABEL_SOURCE_NEURAL
+        and isinstance(inference, PolicyValueInference)
+    ):
+        return _generate_batched_neural_self_play_dataset(inference, resolved)
+    return _generate_serial_self_play_dataset(inference, resolved)
+
+
+def _generate_serial_self_play_dataset(
+    inference: NeuralInference | None,
+    config: SelfPlayConfig,
+) -> SelfPlayDataset:
     positions: list[npt.NDArray[np.float32]] = []
     legal_masks: list[npt.NDArray[np.float32]] = []
     policies: list[npt.NDArray[np.float32]] = []
     outcome_values: list[float] = []
     game_records: list[SelfPlayGameRecord] = []
 
-    for game_index in range(resolved.games):
+    for game_index in range(config.games):
         game = Game.new()
-        player = _player_for_game(inference, resolved, game_index)
+        player = _player_for_game(inference, config, game_index)
         game_sides: list[Color] = []
-        for _ply in range(resolved.max_plies):
+        for _ply in range(config.max_plies):
             if game.outcome is not None:
                 break
             if not game.legal_moves:
@@ -246,8 +265,171 @@ def generate_self_play_dataset(
         outcome_values.extend(_outcome_values(game, game_sides))
         game_records.append(_game_record(game_index, game))
 
+    return _self_play_dataset_from_samples(
+        config,
+        positions=positions,
+        legal_masks=legal_masks,
+        policies=policies,
+        outcome_values=outcome_values,
+        game_records=game_records,
+    )
+
+
+@dataclass(slots=True)
+class _BatchedGameState:
+    game_index: int
+    game: Game
+    player: NeuralMCTSPlayer
+    game_sides: list[Color] = field(default_factory=list)
+    positions: list[npt.NDArray[np.float32]] = field(default_factory=list)
+    legal_masks: list[npt.NDArray[np.float32]] = field(default_factory=list)
+    policies: list[npt.NDArray[np.float32]] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class _PrefetchedRootInference:
+    base: PolicyValueInference
+    root_game: Game
+    root_result: InferenceResult
+    consumed: bool = False
+
+    def predict(self, game: Game, *, mask_legal_moves: bool = True) -> InferenceResult:
+        if not self.consumed and mask_legal_moves and game == self.root_game:
+            self.consumed = True
+            return self.root_result
+        return self.base.predict(game, mask_legal_moves=mask_legal_moves)
+
+    def predict_with_legal_moves(
+        self,
+        game: Game,
+        legal_moves: tuple[Move, ...],
+    ) -> InferenceResult:
+        if not self.consumed and game == self.root_game:
+            self.consumed = True
+            return self.root_result
+        return self.base.predict_with_legal_moves(game, legal_moves)
+
+
+def _root_prefetch_would_be_consumed(player: NeuralMCTSPlayer, game: Game) -> bool:
+    reusable_root = player._adopt_descendant_root(game)
+    return reusable_root is None or not reusable_root.is_expanded
+
+
+def _record_batched_decision(
+    state: _BatchedGameState,
+    legal: tuple[Move, ...],
+    selected_move: Move,
+    visit_counts: dict[Any, int],
+) -> None:
+    state.positions.append(np.asarray(encode_game(state.game), dtype=np.float32))
+    state.legal_masks.append(
+        np.asarray(
+            legal_move_mask_from_legal_moves(state.game, legal),
+            dtype=np.float32,
+        )
+    )
+    state.policies.append(_policy_target(state.game, visit_counts, selected_move))
+    state.game_sides.append(state.game.board.side_to_move)
+    state.game = state.game.play(selected_move)
+
+
+def _generate_batched_neural_self_play_dataset(
+    inference: PolicyValueInference,
+    config: SelfPlayConfig,
+) -> SelfPlayDataset:
+    positions: list[npt.NDArray[np.float32]] = []
+    legal_masks: list[npt.NDArray[np.float32]] = []
+    policies: list[npt.NDArray[np.float32]] = []
+    outcome_values: list[float] = []
+    game_records: list[SelfPlayGameRecord] = []
+
+    for start_game in range(0, config.games, config.batch_size):
+        game_count = min(config.batch_size, config.games - start_game)
+        states = [
+            _BatchedGameState(
+                game_index=start_game + offset,
+                game=Game.new(),
+                player=cast(
+                    NeuralMCTSPlayer,
+                    _player_for_game(inference, config, start_game + offset),
+                ),
+            )
+            for offset in range(game_count)
+        ]
+        for _ply in range(config.max_plies):
+            decisions: list[tuple[_BatchedGameState, tuple[Move, ...]]] = []
+            for state in states:
+                if state.game.outcome is not None:
+                    continue
+                legal = state.game.legal_moves
+                if legal:
+                    decisions.append((state, legal))
+            if not decisions:
+                break
+
+            batched_decisions: list[tuple[_BatchedGameState, tuple[Move, ...]]] = []
+            serial_decisions: list[tuple[_BatchedGameState, tuple[Move, ...]]] = []
+            for state, legal in decisions:
+                if _root_prefetch_would_be_consumed(state.player, state.game):
+                    batched_decisions.append((state, legal))
+                else:
+                    serial_decisions.append((state, legal))
+
+            for state, legal in serial_decisions:
+                result = state.player.search(state.game)
+                _record_batched_decision(state, legal, result.move, result.visit_counts)
+
+            if batched_decisions:
+                games = tuple(state.game for state, _legal in batched_decisions)
+                legal_by_game = tuple(legal for _state, legal in batched_decisions)
+                batch = inference.predict_batch(
+                    games,
+                    legal_moves=legal_by_game,
+                    mask_legal_moves=True,
+                )
+                for batch_index, (state, legal) in enumerate(batched_decisions):
+                    old_inference = state.player.inference
+                    state.player.inference = _PrefetchedRootInference(
+                        inference,
+                        state.game,
+                        batch.result_at(batch_index),
+                    )
+                    try:
+                        result = state.player.search(state.game)
+                    finally:
+                        state.player.inference = old_inference
+                    _record_batched_decision(state, legal, result.move, result.visit_counts)
+
+        for state in states:
+            if state.game.outcome is None:
+                state.game = _with_max_plies_outcome(state.game)
+            positions.extend(state.positions)
+            legal_masks.extend(state.legal_masks)
+            policies.extend(state.policies)
+            outcome_values.extend(_outcome_values(state.game, state.game_sides))
+            game_records.append(_game_record(state.game_index, state.game))
+
+    return _self_play_dataset_from_samples(
+        config,
+        positions=positions,
+        legal_masks=legal_masks,
+        policies=policies,
+        outcome_values=outcome_values,
+        game_records=game_records,
+    )
+
+
+def _self_play_dataset_from_samples(
+    config: SelfPlayConfig,
+    *,
+    positions: list[npt.NDArray[np.float32]],
+    legal_masks: list[npt.NDArray[np.float32]],
+    policies: list[npt.NDArray[np.float32]],
+    outcome_values: list[float],
+    game_records: list[SelfPlayGameRecord],
+) -> SelfPlayDataset:
     outcomes = np.asarray(outcome_values, dtype=np.float32)
-    metadata = SelfPlayMetadata.create(resolved, sample_count=len(positions))
+    metadata = SelfPlayMetadata.create(config, sample_count=len(positions))
     return SelfPlayDataset(
         positions=_stack_or_empty(positions, TENSOR_SHAPE),
         legal_masks=_stack_or_empty(legal_masks, (ACTION_SPACE_SIZE,)),

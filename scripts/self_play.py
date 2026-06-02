@@ -38,6 +38,7 @@ class GenerationArgs:
     seed: int
     channels: int
     blocks: int
+    batch_size: int
 
 
 def _build_inference(args: GenerationArgs) -> PolicyValueInference:
@@ -73,6 +74,7 @@ def _self_play_config(args: GenerationArgs, *, games: int, seed: int) -> SelfPla
         label_source=args.label_source,
         model_checkpoint_id=args.checkpoint_id,
         seed=seed,
+        batch_size=args.batch_size,
     )
 
 
@@ -135,6 +137,12 @@ def main() -> int:
     parser.add_argument("--channels", type=int, default=4)
     parser.add_argument("--blocks", type=int, default=0)
     parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help="neural self-play root inference batch size; default 1 preserves serial behavior",
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=1,
@@ -144,6 +152,8 @@ def main() -> int:
 
     if args.workers < 1:
         parser.error("--workers must be at least 1")
+    if args.batch_size < 1:
+        parser.error("--batch-size must be at least 1")
 
     if args.label_source == LABEL_SOURCE_CLASSICAL:
         if args.checkpoint is not None:
@@ -166,6 +176,7 @@ def main() -> int:
         seed=args.seed,
         channels=args.channels,
         blocks=args.blocks,
+        batch_size=args.batch_size,
     )
     full_config = _self_play_config(generation_args, games=args.games, seed=args.seed)
 

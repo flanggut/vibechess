@@ -5,9 +5,9 @@ from __future__ import annotations
 import math
 import random
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Protocol, cast
 
 import numpy as np
 
@@ -340,8 +340,13 @@ class NeuralMCTSPlayer:
         return child
 
     def _predict(self, node: NeuralMCTSNode) -> InferenceResult:
-        if isinstance(self.inference, PolicyValueInference):
-            return self.inference.predict_with_legal_moves(node.game, node.legal_moves)
+        predict_with_legal_moves = getattr(self.inference, "predict_with_legal_moves", None)
+        if callable(predict_with_legal_moves):
+            typed_predict = cast(
+                Callable[[Game, tuple[Move, ...]], InferenceResult],
+                predict_with_legal_moves,
+            )
+            return typed_predict(node.game, node.legal_moves)
         return self.inference.predict(node.game, mask_legal_moves=True)
 
     def _evaluate(self, node: NeuralMCTSNode) -> float:
