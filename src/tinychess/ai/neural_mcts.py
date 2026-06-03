@@ -12,12 +12,17 @@ from typing import Protocol, cast
 import numpy as np
 
 from tinychess.ai.player import NoLegalMoveError
-from tinychess.engine.game import Game, determine_outcome
+from tinychess.ai.search_state import SearchState
+from tinychess.engine.game import Game
+from tinychess.engine.game import determine_outcome as _game_determine_outcome
 from tinychess.engine.move import Move
 from tinychess.engine.outcome import Outcome
 from tinychess.engine.piece import Color
 from tinychess.nn.encode import move_to_action_index
 from tinychess.nn.model import InferenceResult, PolicyValueInference
+
+# Kept as a module attribute for Work Item 5.1 self-play profiling monkeypatches.
+determine_outcome = _game_determine_outcome
 
 
 class NeuralInference(Protocol):
@@ -92,10 +97,10 @@ class NeuralMCTSNode:
     ``total_value`` stores values from this node's side-to-move perspective. During
     backup, signs are flipped at each ply because the side to move alternates.
     Legal move edges are materialized lazily: expansion creates edge priors/stats,
-    and a child ``Game``/node is created only when an edge is selected for descent.
+    and a child ``SearchState``/node is created only when an edge is selected for descent.
     """
 
-    game: Game
+    state: SearchState
     parent: NeuralMCTSNode | None = None
     move: Move | None = None
     prior: float = 0.0
@@ -109,30 +114,36 @@ class NeuralMCTSNode:
 
     def __post_init__(self) -> None:
         if not self.legal_moves and self.outcome is None:
-            legal = self.game.legal_moves
+            legal = self.state.legal_moves
             self.legal_moves = legal
-            self.outcome = determine_outcome(self.game, legal_moves=legal)
+            self.outcome = self.state.outcome_with_legal_moves(legal)
 
     @classmethod
     def create(
         cls,
-        game: Game,
+        game: Game | SearchState,
         *,
         parent: NeuralMCTSNode | None = None,
         move: Move | None = None,
         prior: float = 0.0,
     ) -> NeuralMCTSNode:
         """Create a node with cached legal moves and outcome state."""
-        legal = game.legal_moves
-        outcome = determine_outcome(game, legal_moves=legal)
+        state = SearchState.from_game(game) if isinstance(game, Game) else game
+        legal = state.legal_moves
+        outcome = state.outcome_with_legal_moves(legal)
         return cls(
-            game=game,
+            state=state,
             parent=parent,
             move=move,
             prior=prior,
             legal_moves=legal,
             outcome=outcome,
         )
+
+    @property
+    def game(self) -> Game:
+        """Return a reconstructed ``Game`` view for compatibility and boundaries."""
+        return self.state.to_game()
 
     @property
     def is_terminal(self) -> bool:
@@ -258,7 +269,7 @@ class NeuralMCTSPlayer:
                     node = edge.child
 
             if node.is_terminal:
-                value = _terminal_value(node.outcome, node.game.board.side_to_move)
+                value = _terminal_value(node.outcome, node.state.board.side_to_move)
             elif budget_blocked:
                 value = self._evaluate(node)
             else:
@@ -291,7 +302,7 @@ class NeuralMCTSPlayer:
         root = self._tree_root
         if root is None:
             return None
-        root_moves = root.game.moves
+        root_moves = root.state.moves
         requested_moves = game.moves
         if len(root_moves) > len(requested_moves):
             return None
@@ -304,7 +315,7 @@ class NeuralMCTSPlayer:
             if child is None:
                 return None
             current = child
-        if current.game != game:
+        if current.state.to_game() != game:
             return None
         return current
 
@@ -330,7 +341,7 @@ class NeuralMCTSPlayer:
     @staticmethod
     def _materialize_child(node: NeuralMCTSNode, edge: NeuralMCTSEdge) -> NeuralMCTSNode:
         child = NeuralMCTSNode.create(
-            node.game.play_known_legal(edge.move),
+            node.state.play_known_legal(edge.move),
             parent=node,
             move=edge.move,
             prior=edge.prior,
@@ -346,8 +357,11 @@ class NeuralMCTSPlayer:
                 Callable[[Game, tuple[Move, ...]], InferenceResult],
                 predict_with_legal_moves,
             )
-            return typed_predict(node.game, node.legal_moves)
-        return self.inference.predict(node.game, mask_legal_moves=True)
+            return typed_predict(node.state.to_game(include_positions=False), node.legal_moves)
+        return self.inference.predict(
+            node.state.to_game(include_positions=False),
+            mask_legal_moves=True,
+        )
 
     def _evaluate(self, node: NeuralMCTSNode) -> float:
         return self._predict(node).value
@@ -376,13 +390,13 @@ def _legal_priors(
     legal_moves: Iterable[Move] | None = None,
 ) -> dict[Move, float]:
     if isinstance(position, NeuralMCTSNode):
-        game = position.game
+        board = position.state.board
         legal = position.legal_moves if legal_moves is None else tuple(legal_moves)
     else:
         if legal_moves is None:
             msg = "legal_moves must be provided when extracting priors from a Game"
             raise ValueError(msg)
-        game = position
+        board = position.board
         legal = tuple(legal_moves)
     if not legal:
         return {}
@@ -398,7 +412,7 @@ def _legal_priors(
 
     full_raw_priors: dict[Move, float] = {}
     for move in legal:
-        index = move_to_action_index(move, game.board)
+        index = move_to_action_index(move, board)
         full_raw_priors[move] = max(0.0, float(prediction.policy[index].item()))
     return _normalize_priors(full_raw_priors)
 

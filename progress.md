@@ -90,3 +90,17 @@
   - `uv run ruff check scripts/self_play_benchmark.py scripts/self_play.py src/tinychess/nn/self_play.py tests/test_self_play_benchmark.py tests/nn/test_self_play.py` (passed)
   - `uv run mypy scripts/self_play_benchmark.py scripts/self_play.py src/tinychess/nn/self_play.py tests/test_self_play_benchmark.py tests/nn/test_self_play.py` (passed)
   - `TINYCHESS_SELF_PLAY_PROFILE=1 uv run python scripts/self_play_benchmark.py --games 1 --max-plies 1 --simulations 1 --workers 1 --repeat 1 --format json --output-root /tmp/tc-wi5-noprofile-smoke --keep-output --no-profile` plus sidecar assertion (exit 0; no profile sidecar)
+
+# Work Item 5.2 Self-Play SearchState Progress
+
+- Requested `context.md` and `plan.md` were not present in the checkout; read `selfplay-speedup-plan.md` Work Item 5.2 and current Work Item 5.1 profiling context in `progress.md`.
+- Implemented Work Item 5.2 only: added MCTS-only `SearchState` in `src/tinychess/ai/search_state.py` and integrated it into neural MCTS speculative nodes.
+- `SearchState` stores current `Board`, halfmove/fullmove clocks, repetition counts, forced outcome, and a compact speculative move suffix. It keeps shared references to the source game's base positions/moves only for boundary reconstruction and does not copy full `Game.positions`/`Game.moves` for speculative children.
+- Neural MCTS nodes now hold `SearchState`; child materialization uses `SearchState.play_known_legal()` instead of `Game.play_known_legal()`. Full `Game` conversion is retained for compatibility/tree-adoption checks and compact single-position `Game` conversion is used for inference calls until a search-state encoder exists.
+- Added SearchState equivalence tests for quiet moves, captures, castling, en passant, promotion, halfmove/fullmove clocks, and repetition-sensitive outcome. Updated neural MCTS tests to assert child materialization uses SearchState and compact inference-boundary Game conversion.
+- Validation passed:
+  - `uv run pytest tests/ai/test_search_state.py tests/ai/test_neural_mcts.py tests/nn/test_self_play.py` (65 passed)
+  - `uv run ruff check src/tinychess/ai/search_state.py src/tinychess/ai/neural_mcts.py src/tinychess/nn/self_play.py tests/ai/test_search_state.py tests/ai/test_neural_mcts.py tests/nn/test_self_play.py` (passed)
+  - `uv run mypy src/tinychess/ai/search_state.py src/tinychess/ai/neural_mcts.py src/tinychess/nn/self_play.py tests/ai/test_search_state.py tests/ai/test_neural_mcts.py tests/nn/test_self_play.py` (passed)
+- Review found no blocker/required concerns for Work Item 5.2; optional outcome-branch tests and compact inference-boundary documentation were deferred.
+- Residual risk: Work Item 5.1 profile counters still label Game-level calls; after SearchState integration, MCTS speculative legal/transition work occurs through SearchState and Board.apply_move, so future profiling interpretation may need a SearchState-specific counter update if precise attribution is required.

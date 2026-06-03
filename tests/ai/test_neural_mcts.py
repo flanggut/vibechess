@@ -8,6 +8,7 @@ from typing import cast
 import mlx.core as mx
 import pytest
 
+import tinychess.ai.search_state as search_state_module
 import tinychess.engine.game as game_module
 from tinychess.ai.mcts import MCTSPlayer
 from tinychess.ai.neural_mcts import (
@@ -20,6 +21,7 @@ from tinychess.ai.neural_mcts import (
 )
 from tinychess.ai.player import NoLegalMoveError, RandomPlayer, play_game
 from tinychess.ai.search_config import MCTSConfig
+from tinychess.ai.search_state import SearchState
 from tinychess.engine import Game, Move, OutcomeReason
 from tinychess.engine.board import Board, board_from_ascii
 from tinychess.engine.piece import Color
@@ -102,7 +104,7 @@ def test_neural_node_create_caches_legal_moves_and_is_terminal_uses_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     original_generate = cast(
-        Callable[[Board], tuple[Move, ...]], game_module.__dict__["generate_legal_moves"]
+        Callable[[Board], tuple[Move, ...]], search_state_module.__dict__["generate_legal_moves"]
     )
     calls = 0
 
@@ -111,7 +113,7 @@ def test_neural_node_create_caches_legal_moves_and_is_terminal_uses_cache(
         calls += 1
         return original_generate(board)
 
-    monkeypatch.setattr(game_module, "generate_legal_moves", counting_generate)
+    monkeypatch.setattr(search_state_module, "generate_legal_moves", counting_generate)
     node = NeuralMCTSNode.create(Game.new())
 
     assert calls == 1
@@ -326,7 +328,9 @@ def test_materialize_child_uses_known_legal_transition_equivalent_to_play(
 
     child = player._materialize_child(root, edge)
 
+    assert isinstance(child.state, SearchState)
     assert child.game == expected_game
+    assert child.state.to_game(include_positions=False).positions == (expected_game.board,)
     assert child.parent is root
     assert child.move == preferred
     assert edge.child is child
