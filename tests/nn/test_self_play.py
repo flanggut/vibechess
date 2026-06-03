@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from dataclasses import dataclass, replace
@@ -31,6 +32,7 @@ from tinychess.nn.self_play import (
     DEFAULT_DATASET_FILENAME,
     DEFAULT_GAMES_FILENAME,
     DEFAULT_METADATA_FILENAME,
+    DEFAULT_PROFILE_FILENAME,
     LABEL_SOURCE_CLASSICAL,
     LABEL_SOURCE_NEURAL,
     SELF_PLAY_DATASET_SCHEMA_VERSION,
@@ -39,6 +41,7 @@ from tinychess.nn.self_play import (
     load_self_play_dataset,
     merge_self_play_datasets,
     save_self_play_dataset,
+    self_play_profile,
 )
 
 
@@ -202,6 +205,44 @@ def test_batched_neural_self_play_is_reproducible_for_fixed_seed() -> None:
     assert [record.moves_uci for record in first.games] == [
         record.moves_uci for record in second.games
     ]
+
+
+def test_self_play_profile_counts_serial_neural_search_categories() -> None:
+    inference = PolicyValueInference(
+        PolicyValueNet(
+            PolicyValueConfig(
+                residual_channels=4,
+                residual_blocks=0,
+                policy_channels=1,
+                value_channels=1,
+                value_hidden_dim=4,
+            )
+        )
+    )
+    with self_play_profile() as profile:
+        dataset = generate_self_play_dataset(
+            inference,
+            SelfPlayConfig(
+                games=1,
+                max_plies=2,
+                mcts=NeuralMCTSConfig(simulations=2, temperature=0.0, seed=31),
+                seed=31,
+            ),
+        )
+
+    assert dataset.metadata.sample_count == 2
+    report = profile.to_dict()
+    timers = report["timers"]
+    assert isinstance(timers, dict)
+    assert timers["game_legal_moves"]["calls"] > 0
+    assert timers["determine_outcome"]["calls"] > 0
+    assert timers["game_play_known_legal"]["calls"] >= 2
+    assert timers["board_apply_move"]["calls"] >= timers["game_play_known_legal"]["calls"]
+    assert timers["model_single"]["calls"] > 0
+    assert timers["model_batch"]["calls"] == 0
+    assert timers["search"]["calls"] == 2
+    assert timers["search"]["completed_simulations"] == 4
+    assert timers["search"]["materialized_nodes"] >= 2
 
 
 def test_serial_recording_reuses_precomputed_legal_masks(monkeypatch: Any) -> None:
@@ -641,6 +682,45 @@ def test_self_play_script_can_generate_in_parallel(tmp_path: Path) -> None:
     parallel_settings = dataset.metadata.generation_settings["parallel"]
     assert isinstance(parallel_settings, dict)
     assert parallel_settings["workers"] == 2
+
+
+def test_self_play_script_writes_profile_for_parallel_workers(tmp_path: Path) -> None:
+    output = tmp_path / "profiled-parallel-output"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/self_play.py",
+            "--games",
+            "2",
+            "--max-plies",
+            "1",
+            "--simulations",
+            "1",
+            "--workers",
+            "2",
+            "--output",
+            str(output),
+        ],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={**os.environ, "TINYCHESS_SELF_PLAY_PROFILE": "1"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    profile_path = output / DEFAULT_PROFILE_FILENAME
+    assert profile_path.is_file()
+    profile = json.loads(profile_path.read_text())
+    assert profile["scope"] == "self_play_generation"
+    assert len(profile["worker_profiles"]) == 2
+    timers = profile["stats"]["timers"]
+    assert timers["search"]["completed_simulations"] == 2
+    assert timers["model_single"]["calls"] == 2
+    assert timers["game_legal_moves"]["calls"] > 0
+    dataset = load_self_play_dataset(output)
+    assert dataset.metadata.sample_count == 2
 
 
 def test_self_play_script_parallel_workers_share_checkpoint(tmp_path: Path) -> None:

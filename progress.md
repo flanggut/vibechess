@@ -61,3 +61,32 @@
   - 100-game full-write: 7.2827s, 1,330.96 samples/s, ~2.42x faster than prior 17.63s baseline.
   - 1000-game dry-run: 59.5137s, 1,570.72 samples/s; `parse_sanitize` remains dominant at ~92.44%.
 - Parser single-legal-generation handoff written to `plans/pgn-parser-single-legal-gen-worker.md`.
+
+# Work Item 5.1 Self-Play Profiling Progress
+
+- Requested `context.md` and `plan.md` were not present in the checkout; read `selfplay-speedup-plan.md` Work Item 5 and existing AGENTS guidance.
+- Implemented Work Item 5.1 only: benchmark-only legal/search/model profiling counters for self-play generation.
+- Added in-process `self_play_profile()` counters in `src/tinychess/nn/self_play.py` for:
+  - `Game.legal_moves`
+  - `determine_outcome`
+  - `Game.play_known_legal`
+  - `Board.apply_move`
+  - `PolicyValueInference` single calls (`predict`, `predict_with_legal_moves`)
+  - `PolicyValueInference.predict_batch` calls, elapsed time, total positions, and min/max/mean batch size
+  - `NeuralMCTSPlayer.search` calls/time, completed simulations, and newly materialized nodes
+- Added `profile.json` sidecar writing in `scripts/self_play.py` when `TINYCHESS_SELF_PLAY_PROFILE=1`; worker subprocess runs aggregate per-worker profile reports into the sidecar while preserving dense v1 dataset files and metadata behavior.
+- Updated `scripts/self_play_benchmark.py` to enable profiling by default for benchmark subprocesses, add `--no-profile`, read sidecar profiles, and include aggregate profile counters/elapsed percentages in JSON and Markdown reports.
+- Added focused tests for in-process profiling, worker sidecar aggregation, and benchmark profile reporting.
+- Validation passed:
+  - `uv run pytest tests/test_self_play_benchmark.py tests/nn/test_self_play.py` (27 passed)
+  - `uv run ruff check scripts/self_play_benchmark.py scripts/self_play.py src/tinychess/nn/self_play.py tests/test_self_play_benchmark.py tests/nn/test_self_play.py` (passed)
+  - `uv run mypy scripts/self_play_benchmark.py scripts/self_play.py src/tinychess/nn/self_play.py tests/test_self_play_benchmark.py tests/nn/test_self_play.py` (passed)
+  - Smoke: `uv run python scripts/self_play_benchmark.py --games 1 --max-plies 1 --simulations 1 --workers 1 --repeat 1 --format json --output-root /tmp/tc-wi5-profile-smoke` (exit 0; profile counters present)
+- Review fix before commit:
+  - Fixed `--no-profile` so benchmark subprocesses remove any inherited `TINYCHESS_SELF_PLAY_PROFILE` environment variable instead of accidentally profiling and writing a sidecar.
+  - Added focused regression coverage for inherited profile env plus `--no-profile --keep-output`, asserting no report profile and no `profile.json` sidecar.
+- Review-fix validation passed:
+  - `uv run pytest tests/test_self_play_benchmark.py tests/nn/test_self_play.py` (28 passed)
+  - `uv run ruff check scripts/self_play_benchmark.py scripts/self_play.py src/tinychess/nn/self_play.py tests/test_self_play_benchmark.py tests/nn/test_self_play.py` (passed)
+  - `uv run mypy scripts/self_play_benchmark.py scripts/self_play.py src/tinychess/nn/self_play.py tests/test_self_play_benchmark.py tests/nn/test_self_play.py` (passed)
+  - `TINYCHESS_SELF_PLAY_PROFILE=1 uv run python scripts/self_play_benchmark.py --games 1 --max-plies 1 --simulations 1 --workers 1 --repeat 1 --format json --output-root /tmp/tc-wi5-noprofile-smoke --keep-output --no-profile` plus sidecar assertion (exit 0; no profile sidecar)

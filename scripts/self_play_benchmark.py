@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,8 @@ from typing import Literal
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_ROOT = Path("/tmp/tinychess-self-play-benchmark")
+SELF_PLAY_PROFILE_ENV = "TINYCHESS_SELF_PLAY_PROFILE"
+SELF_PLAY_PROFILE_FILENAME = "profile.json"
 ReportFormat = Literal["json", "markdown"]
 
 
@@ -49,6 +52,7 @@ class BenchmarkConfig:
     repeat: int
     output_root: str
     keep_output: bool
+    profile: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +70,7 @@ class RepeatResult:
     output_directory: str
     command: list[str]
     stdout: str
+    profile: dict[str, object] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +103,7 @@ class BenchmarkReport:
     effective_workers: int
     chunks: list[ChunkConfig]
     model_config: dict[str, int]
+    profile: dict[str, object] | None
     repeat_results: list[RepeatResult]
 
 
@@ -136,6 +142,7 @@ def run_benchmark(config: BenchmarkConfig) -> BenchmarkReport:
     game_counts = [result.game_count for result in results]
     ply_counts = [result.ply_count for result in results]
     output_sizes = [result.output_bytes for result in results]
+    profile = _aggregate_profiles(results)
     return BenchmarkReport(
         benchmark="self_play_generation",
         format_version=1,
@@ -163,6 +170,7 @@ def run_benchmark(config: BenchmarkConfig) -> BenchmarkReport:
         effective_workers=_effective_workers(config.games, config.workers),
         chunks=_chunks(config.games, config.workers, config.seed),
         model_config={"channels": config.channels, "blocks": config.blocks},
+        profile=profile,
         repeat_results=results,
     )
 
@@ -179,12 +187,18 @@ def format_report(report: BenchmarkReport, *, output_format: ReportFormat) -> st
 def _run_repeat(config: BenchmarkConfig, repeat_index: int, output_dir: Path) -> RepeatResult:
     command = _self_play_command(config, output_dir)
     start = time.perf_counter()
+    env = os.environ.copy()
+    if config.profile:
+        env[SELF_PLAY_PROFILE_ENV] = "1"
+    else:
+        env.pop(SELF_PLAY_PROFILE_ENV, None)
     completed = subprocess.run(
         command,
         cwd=PROJECT_ROOT,
         check=False,
         capture_output=True,
         text=True,
+        env=env,
     )
     elapsed = time.perf_counter() - start
     if completed.returncode != 0:
@@ -200,6 +214,7 @@ def _run_repeat(config: BenchmarkConfig, repeat_index: int, output_dir: Path) ->
     sample_count = _expect_int(metadata, "sample_count")
     game_count = _expect_int(metadata, "game_count")
     ply_count = _read_ply_count(output_dir)
+    profile = _read_profile(output_dir) if config.profile else None
     output_bytes = _directory_size(output_dir)
     return RepeatResult(
         repeat_index=repeat_index,
@@ -213,6 +228,7 @@ def _run_repeat(config: BenchmarkConfig, repeat_index: int, output_dir: Path) ->
         output_directory=str(output_dir),
         command=command,
         stdout=completed.stdout.strip(),
+        profile=profile,
     )
 
 
@@ -286,6 +302,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--keep-output", action="store_true")
     parser.add_argument(
+        "--no-profile",
+        dest="profile",
+        action="store_false",
+        help="disable benchmark profile counters in the self-play subprocess",
+    )
+    parser.set_defaults(profile=True)
+    parser.add_argument(
         "--format",
         choices=("json", "markdown"),
         default="markdown",
@@ -332,6 +355,7 @@ def _benchmark_config(args: argparse.Namespace) -> BenchmarkConfig:
         repeat=args.repeat,
         output_root=str(args.output_root),
         keep_output=args.keep_output,
+        profile=args.profile,
     )
 
 
@@ -372,6 +396,7 @@ def _report_to_dict(report: BenchmarkReport) -> dict[str, object]:
         "effective_workers": report.effective_workers,
         "chunks": [asdict(chunk) for chunk in report.chunks],
         "model_config": report.model_config,
+        "profile": report.profile,
         "repeat_results": [asdict(result) for result in report.repeat_results],
     }
 
@@ -406,6 +431,10 @@ def _format_markdown(report: BenchmarkReport) -> str:
         json.dumps(asdict(report.config), indent=2, sort_keys=True),
         "```",
         "",
+        "## Profile",
+        "",
+        *_format_profile_lines(report.profile),
+        "",
         "## Chunks",
         "",
     ]
@@ -432,6 +461,171 @@ def _format_markdown(report: BenchmarkReport) -> str:
             ]
         )
     return "\n".join(lines)
+
+
+def _format_profile_lines(profile: dict[str, object] | None) -> list[str]:
+    if profile is None:
+        return ["- profile: disabled or unavailable"]
+    percentages = _expect_mapping(profile, "percent_of_elapsed")
+    stats = _expect_mapping(profile, "stats")
+    timers = _expect_mapping(stats, "timers")
+    lines = [
+        f"- repeat_count: {_expect_int(profile, 'repeat_count')}",
+        "- timer percentages are diagnostic and may overlap",
+    ]
+    for name in (
+        "game_legal_moves",
+        "determine_outcome",
+        "game_play_known_legal",
+        "board_apply_move",
+        "model_single",
+        "model_batch",
+        "search",
+    ):
+        timer = _expect_mapping(timers, name)
+        percent = _expect_number(percentages, name)
+        seconds = _expect_number(timer, "seconds")
+        calls = _expect_int(timer, "calls")
+        lines.append(
+            f"- {name}: calls={calls} seconds={seconds:.6f} "
+            f"elapsed_pct={percent:.2f}"
+        )
+    search = _expect_mapping(timers, "search")
+    model_batch = _expect_mapping(timers, "model_batch")
+    lines.extend(
+        [
+            f"- completed_simulations: {_expect_int(search, 'completed_simulations')}",
+            f"- materialized_nodes: {_expect_int(search, 'materialized_nodes')}",
+            f"- model_batch_positions: {_expect_int(model_batch, 'positions')}",
+            f"- model_batch_size_mean: {_expect_number(model_batch, 'batch_size_mean'):.2f}",
+        ]
+    )
+    return lines
+
+
+def _read_profile(output_dir: Path) -> dict[str, object]:
+    profile_path = output_dir / SELF_PLAY_PROFILE_FILENAME
+    data = json.loads(profile_path.read_text())
+    if not isinstance(data, dict):
+        raise TypeError("self-play profile must be a JSON object")
+    return data
+
+
+def _aggregate_profiles(results: list[RepeatResult]) -> dict[str, object] | None:
+    profiled_results = [result for result in results if result.profile is not None]
+    if not profiled_results:
+        return None
+    stats = _sum_profile_stats([result.profile for result in profiled_results])
+    elapsed = sum(result.elapsed_seconds for result in profiled_results)
+    percentages = _profile_percentages(stats, elapsed)
+    return {
+        "format_version": 1,
+        "repeat_count": len(profiled_results),
+        "elapsed_seconds": elapsed,
+        "stats": stats,
+        "percent_of_elapsed": percentages,
+        "limitations": [
+            "Timer categories are diagnostic and can overlap; do not sum percentages.",
+            "Worker runs aggregate child-process profile reports written by self_play.py.",
+        ],
+    }
+
+
+def _sum_profile_stats(profiles: list[dict[str, object] | None]) -> dict[str, object]:
+    timer_names = (
+        "game_legal_moves",
+        "determine_outcome",
+        "game_play_known_legal",
+        "board_apply_move",
+        "model_single",
+        "model_batch",
+        "search",
+    )
+    totals: dict[str, dict[str, object]] = {
+        name: {"calls": 0, "seconds": 0.0} for name in timer_names
+    }
+    totals["model_batch"].update(
+        {
+            "positions": 0,
+            "batch_size_min": None,
+            "batch_size_max": None,
+            "batch_size_mean": 0.0,
+        }
+    )
+    totals["search"].update({"materialized_nodes": 0, "completed_simulations": 0})
+
+    for profile in profiles:
+        if profile is None:
+            continue
+        stats = _profile_stats(profile)
+        timers = _expect_mapping(stats, "timers")
+        for name in timer_names:
+            source = _expect_mapping(timers, name)
+            target = totals[name]
+            target["calls"] = _expect_int(target, "calls") + _expect_int(source, "calls")
+            target["seconds"] = _expect_number(target, "seconds") + _expect_number(
+                source, "seconds"
+            )
+        source_batch = _expect_mapping(timers, "model_batch")
+        target_batch = totals["model_batch"]
+        target_batch["positions"] = _expect_int(target_batch, "positions") + _expect_int(
+            source_batch, "positions"
+        )
+        _merge_optional_min(target_batch, source_batch, "batch_size_min")
+        _merge_optional_max(target_batch, source_batch, "batch_size_max")
+        source_search = _expect_mapping(timers, "search")
+        target_search = totals["search"]
+        target_search["materialized_nodes"] = _expect_int(
+            target_search, "materialized_nodes"
+        ) + _expect_int(source_search, "materialized_nodes")
+        target_search["completed_simulations"] = _expect_int(
+            target_search, "completed_simulations"
+        ) + _expect_int(source_search, "completed_simulations")
+
+    batch = totals["model_batch"]
+    batch_calls = _expect_int(batch, "calls")
+    if batch_calls > 0:
+        batch["batch_size_mean"] = _expect_int(batch, "positions") / batch_calls
+    return {"format_version": 1, "timers": totals}
+
+
+def _profile_stats(profile: dict[str, object]) -> dict[str, object]:
+    stats = profile.get("stats")
+    if isinstance(stats, dict):
+        return dict(stats)
+    return profile
+
+
+def _profile_percentages(stats: dict[str, object], elapsed_seconds: float) -> dict[str, float]:
+    timers = _expect_mapping(stats, "timers")
+    percentages: dict[str, float] = {}
+    for name, value in timers.items():
+        if isinstance(name, str) and isinstance(value, dict):
+            seconds = _expect_number(value, "seconds")
+            percentages[name] = 0.0 if elapsed_seconds == 0.0 else seconds / elapsed_seconds * 100.0
+    return percentages
+
+
+def _merge_optional_min(
+    target: dict[str, object], source: dict[str, object], key: str
+) -> None:
+    source_value = _optional_int(source, key)
+    if source_value is None:
+        return
+    target_value = _optional_int(target, key)
+    if target_value is None or source_value < target_value:
+        target[key] = source_value
+
+
+def _merge_optional_max(
+    target: dict[str, object], source: dict[str, object], key: str
+) -> None:
+    source_value = _optional_int(source, key)
+    if source_value is None:
+        return
+    target_value = _optional_int(target, key)
+    if target_value is None or source_value > target_value:
+        target[key] = source_value
 
 
 def _chunks(games: int, workers: int, seed: int) -> list[ChunkConfig]:
@@ -493,6 +687,29 @@ def _expect_int(data: dict[str, object], key: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(f"metadata field {key!r} must be an integer")
     return value
+
+
+def _optional_int(data: dict[str, object], key: str) -> int | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"profile field {key!r} must be an integer or null")
+    return value
+
+
+def _expect_number(data: dict[str, object], key: str) -> float:
+    value = data.get(key)
+    if isinstance(value, bool) or not isinstance(value, (float, int)):
+        raise TypeError(f"profile field {key!r} must be a number")
+    return float(value)
+
+
+def _expect_mapping(data: dict[str, object], key: str) -> dict[str, object]:
+    value = data.get(key)
+    if not isinstance(value, dict):
+        raise TypeError(f"profile field {key!r} must be an object")
+    return dict(value)
 
 
 def _remove_empty_directory(directory: Path) -> None:

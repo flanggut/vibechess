@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -14,15 +16,20 @@ from tinychess.ai.search_config import MCTSConfig
 from tinychess.nn.checkpoint import load_checkpoint, save_checkpoint
 from tinychess.nn.model import PolicyValueConfig, PolicyValueInference, PolicyValueNet
 from tinychess.nn.self_play import (
+    DEFAULT_PROFILE_FILENAME,
     LABEL_SOURCE_CLASSICAL,
     LABEL_SOURCE_NEURAL,
     LABEL_SOURCES,
     SelfPlayConfig,
     SelfPlayDataset,
+    SelfPlayProfileStats,
     generate_self_play_dataset,
     merge_self_play_datasets,
     save_self_play_dataset,
+    self_play_profile,
 )
+
+PROFILE_ENV_VAR = "TINYCHESS_SELF_PLAY_PROFILE"
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +46,12 @@ class GenerationArgs:
     channels: int
     blocks: int
     batch_size: int
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkGenerationResult:
+    dataset: SelfPlayDataset
+    profile: dict[str, object] | None = None
 
 
 def _build_inference(args: GenerationArgs) -> PolicyValueInference:
@@ -78,13 +91,62 @@ def _self_play_config(args: GenerationArgs, *, games: int, seed: int) -> SelfPla
     )
 
 
-def _generate_chunk(args: tuple[GenerationArgs, int, int]) -> SelfPlayDataset:
+def _generate_chunk(args: tuple[GenerationArgs, int, int]) -> ChunkGenerationResult:
     generation_args, start_game, games = args
     inference = None
     if generation_args.label_source == LABEL_SOURCE_NEURAL:
         inference = _build_inference(generation_args)
     config = _self_play_config(generation_args, games=games, seed=generation_args.seed + start_game)
-    return generate_self_play_dataset(inference, config=config)
+    return _generate_dataset_with_optional_profile(inference, config)
+
+
+def _generate_dataset_with_optional_profile(
+    inference: PolicyValueInference | None,
+    config: SelfPlayConfig,
+) -> ChunkGenerationResult:
+    if not _profiling_enabled():
+        return ChunkGenerationResult(generate_self_play_dataset(inference, config=config))
+    with self_play_profile() as profile:
+        dataset = generate_self_play_dataset(inference, config=config)
+    return ChunkGenerationResult(dataset, profile.to_dict())
+
+
+def _profiling_enabled() -> bool:
+    return os.environ.get(PROFILE_ENV_VAR) == "1"
+
+
+def _profile_from_report(report: dict[str, object]) -> SelfPlayProfileStats:
+    return SelfPlayProfileStats.from_dict(report)
+
+
+def _profile_report(
+    profile: SelfPlayProfileStats,
+    *,
+    worker_profiles: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    return {
+        "format_version": 1,
+        "scope": "self_play_generation",
+        "limitations": [
+            "Counters are collected by benchmark-only in-process monkeypatching.",
+            "Timer categories are diagnostic and can overlap; percentages in the benchmark "
+            "report should not be summed as exclusive CPU time.",
+        ],
+        "stats": profile.to_dict(),
+        "worker_profiles": worker_profiles or [],
+    }
+
+
+def _write_profile(
+    output: Path,
+    profile: SelfPlayProfileStats,
+    *,
+    worker_profiles: list[dict[str, object]] | None = None,
+) -> None:
+    report = _profile_report(profile, worker_profiles=worker_profiles)
+    (output / DEFAULT_PROFILE_FILENAME).write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n"
+    )
 
 
 def _temporary_checkpoint(args: GenerationArgs) -> TemporaryDirectory[str]:
@@ -180,11 +242,15 @@ def main() -> int:
     )
     full_config = _self_play_config(generation_args, games=args.games, seed=args.seed)
 
+    profile_report: dict[str, object] | None = None
+    chunk_results: list[ChunkGenerationResult] = []
     if args.workers == 1 or args.games == 1:
         inference = None
         if generation_args.label_source == LABEL_SOURCE_NEURAL:
             inference = _build_inference(generation_args)
-        dataset = generate_self_play_dataset(inference, config=full_config)
+        result = _generate_dataset_with_optional_profile(inference, full_config)
+        dataset = result.dataset
+        profile_report = result.profile
     else:
         workers = min(args.workers, args.games)
         chunks = _split_games(args.games, workers)
@@ -197,7 +263,7 @@ def main() -> int:
             generation_args = replace(generation_args, checkpoint=Path(temp_checkpoint.name))
         try:
             with ProcessPoolExecutor(max_workers=workers) as executor:
-                shards = list(
+                chunk_results = list(
                     executor.map(
                         _generate_chunk,
                         ((generation_args, start_game, games) for start_game, games in chunks),
@@ -206,6 +272,13 @@ def main() -> int:
         finally:
             if temp_checkpoint is not None:
                 temp_checkpoint.cleanup()
+        worker_profiles = [
+            result.profile for result in chunk_results if result.profile is not None
+        ]
+        if worker_profiles:
+            profile_report = SelfPlayProfileStats.merge(
+                [_profile_from_report(profile) for profile in worker_profiles]
+            ).to_dict()
         parallel_settings: dict[str, object] = {
             "parallel": {
                 "workers": workers,
@@ -216,11 +289,19 @@ def main() -> int:
             }
         }
         dataset = merge_self_play_datasets(
-            shards,
+            [result.dataset for result in chunk_results],
             config=full_config,
             generation_settings_extra=parallel_settings,
         )
     save_self_play_dataset(dataset, args.output)
+    if profile_report is not None:
+        profile = _profile_from_report(profile_report)
+        worker_reports = None
+        if chunk_results:
+            worker_reports = [
+                result.profile for result in chunk_results if result.profile is not None
+            ]
+        _write_profile(args.output, profile, worker_profiles=worker_reports)
     print(
         " ".join(
             [
