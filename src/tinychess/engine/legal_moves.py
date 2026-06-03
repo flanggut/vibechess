@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from tinychess.engine.board import Board
 from tinychess.engine.move import Move
 from tinychess.engine.piece import Color, Piece, PieceType
-from tinychess.engine.square import Square, file_index, make_square, rank_index
+from tinychess.engine.square import Square, file_index, make_square, rank_index, validate_square
 
 PROMOTION_PIECES = (PieceType.QUEEN, PieceType.ROOK, PieceType.BISHOP, PieceType.KNIGHT)
 
@@ -16,6 +16,8 @@ _KING_DELTAS = ((1, 1), (1, 0), (1, -1), (0, 1), (0, -1), (-1, 1), (-1, 0), (-1,
 _BISHOP_DIRECTIONS = ((1, 1), (1, -1), (-1, 1), (-1, -1))
 _ROOK_DIRECTIONS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 _QUEEN_DIRECTIONS = _BISHOP_DIRECTIONS + _ROOK_DIRECTIONS
+_BISHOP_ATTACKERS = frozenset({PieceType.BISHOP, PieceType.QUEEN})
+_ROOK_ATTACKERS = frozenset({PieceType.ROOK, PieceType.QUEEN})
 
 
 def pseudo_legal_moves(board: Board) -> tuple[Move, ...]:
@@ -25,9 +27,11 @@ def pseudo_legal_moves(board: Board) -> tuple[Move, ...]:
     but may leave the moving side's king in check.
     """
     moves: list[Move] = []
-    for square, piece in board.occupied_squares():
-        if piece.color is not board.side_to_move:
+    side_to_move = board.side_to_move
+    for square_index, piece in enumerate(board.squares):
+        if piece is None or piece.color is not side_to_move:
             continue
+        square = Square(square_index)
         if piece.kind is PieceType.PAWN:
             moves.extend(_pawn_moves(board, square, piece.color))
         elif piece.kind is PieceType.KNIGHT:
@@ -45,21 +49,37 @@ def pseudo_legal_moves(board: Board) -> tuple[Move, ...]:
 
 def legal_moves(board: Board) -> tuple[Move, ...]:
     """Return legal moves for the side to move."""
+    pseudo_moves = pseudo_legal_moves(board)
+    if not pseudo_moves:
+        return ()
+
     legal: list[Move] = []
     moving_color = board.side_to_move
-    for move in pseudo_legal_moves(board):
+    opponent = moving_color.opposite
+    king_square = _king_square(board, moving_color)
+    for move in pseudo_moves:
+        moving_piece = board.squares[int(move.from_square)]
+        next_king_square = move.to_square if _is_king(moving_piece, moving_color) else king_square
         next_board = board.apply_move(move)
-        if not is_in_check(next_board, moving_color):
+        if not is_square_attacked(next_board, next_king_square, opponent):
             legal.append(move)
     return tuple(legal)
 
 
 def has_legal_move(board: Board) -> bool:
     """Return whether the side to move has at least one legal move."""
+    pseudo_moves = pseudo_legal_moves(board)
+    if not pseudo_moves:
+        return False
+
     moving_color = board.side_to_move
-    for move in pseudo_legal_moves(board):
+    opponent = moving_color.opposite
+    king_square = _king_square(board, moving_color)
+    for move in pseudo_moves:
+        moving_piece = board.squares[int(move.from_square)]
+        next_king_square = move.to_square if _is_king(moving_piece, moving_color) else king_square
         next_board = board.apply_move(move)
-        if not is_in_check(next_board, moving_color):
+        if not is_square_attacked(next_board, next_king_square, opponent):
             return True
     return False
 
@@ -82,37 +102,58 @@ def is_in_check(board: Board, color: Color) -> bool:
 
 def is_square_attacked(board: Board, square: Square, by_color: Color) -> bool:
     """Return whether ``square`` is attacked by ``by_color``."""
-    target_file = file_index(square)
-    target_rank = rank_index(square)
+    target_index = int(validate_square(square))
+    target_file = target_index % 8
+    target_rank = target_index // 8
+    squares = board.squares
 
     pawn_rank_delta = -1 if by_color is Color.WHITE else 1
     for file_delta in (-1, 1):
-        attacker = _offset_square(target_file, target_rank, file_delta, pawn_rank_delta)
-        if _has_piece(board, attacker, by_color, PieceType.PAWN):
-            return True
-
-    for file_delta, rank_delta in _KNIGHT_DELTAS:
-        attacker = _offset_square(target_file, target_rank, file_delta, rank_delta)
-        if _has_piece(board, attacker, by_color, PieceType.KNIGHT):
-            return True
-
-    bishop_attackers = {PieceType.BISHOP, PieceType.QUEEN}
-    for file_delta, rank_delta in _BISHOP_DIRECTIONS:
-        if _ray_attacked(
-            board, target_file, target_rank, file_delta, rank_delta, by_color, bishop_attackers
+        attacker_file = target_file + file_delta
+        attacker_rank = target_rank + pawn_rank_delta
+        if _is_on_board(attacker_file, attacker_rank) and _has_piece_at_index(
+            squares, attacker_rank * 8 + attacker_file, by_color, PieceType.PAWN
         ):
             return True
 
-    rook_attackers = {PieceType.ROOK, PieceType.QUEEN}
+    for file_delta, rank_delta in _KNIGHT_DELTAS:
+        attacker_file = target_file + file_delta
+        attacker_rank = target_rank + rank_delta
+        if _is_on_board(attacker_file, attacker_rank) and _has_piece_at_index(
+            squares, attacker_rank * 8 + attacker_file, by_color, PieceType.KNIGHT
+        ):
+            return True
+
+    for file_delta, rank_delta in _BISHOP_DIRECTIONS:
+        if _ray_attacked(
+            squares,
+            target_file,
+            target_rank,
+            file_delta,
+            rank_delta,
+            by_color,
+            _BISHOP_ATTACKERS,
+        ):
+            return True
+
     for file_delta, rank_delta in _ROOK_DIRECTIONS:
         if _ray_attacked(
-            board, target_file, target_rank, file_delta, rank_delta, by_color, rook_attackers
+            squares,
+            target_file,
+            target_rank,
+            file_delta,
+            rank_delta,
+            by_color,
+            _ROOK_ATTACKERS,
         ):
             return True
 
     for file_delta, rank_delta in _KING_DELTAS:
-        attacker = _offset_square(target_file, target_rank, file_delta, rank_delta)
-        if _has_piece(board, attacker, by_color, PieceType.KING):
+        attacker_file = target_file + file_delta
+        attacker_rank = target_rank + rank_delta
+        if _is_on_board(attacker_file, attacker_rank) and _has_piece_at_index(
+            squares, attacker_rank * 8 + attacker_file, by_color, PieceType.KING
+        ):
             return True
 
     return False
@@ -193,15 +234,16 @@ def _king_moves(board: Board, square: Square, color: Color) -> Iterable[Move]:
 
 
 def _castling_moves(board: Board, square: Square, color: Color) -> Iterable[Move]:
-    if is_in_check(board, color):
-        return ()
     rank = 0 if color is Color.WHITE else 7
     expected_king_square = make_square(4, rank)
     if square != expected_king_square:
         return ()
 
-    moves: list[Move] = []
     opponent = color.opposite
+    if is_square_attacked(board, square, opponent):
+        return ()
+
+    moves: list[Move] = []
     king_side = "K" if color is Color.WHITE else "k"
     queen_side = "Q" if color is Color.WHITE else "q"
 
@@ -251,8 +293,18 @@ def _is_on_board(file_idx: int, rank_idx: int) -> bool:
 def _has_piece(board: Board, square: Square | None, color: Color, kind: PieceType) -> bool:
     if square is None:
         return False
-    piece = board.piece_at(square)
-    return piece == Piece(color, kind)
+    return _has_piece_at_index(board.squares, int(square), color, kind)
+
+
+def _has_piece_at_index(
+    squares: tuple[Piece | None, ...], square_index: int, color: Color, kind: PieceType
+) -> bool:
+    piece = squares[square_index]
+    return piece is not None and piece.color is color and piece.kind is kind
+
+
+def _is_king(piece: Piece | None, color: Color) -> bool:
+    return piece is not None and piece.color is color and piece.kind is PieceType.KING
 
 
 def _en_passant_capture_square(target: Square, capturing_color: Color) -> Square | None:
@@ -264,19 +316,18 @@ def _en_passant_capture_square(target: Square, capturing_color: Color) -> Square
 
 
 def _ray_attacked(
-    board: Board,
+    squares: tuple[Piece | None, ...],
     target_file: int,
     target_rank: int,
     file_delta: int,
     rank_delta: int,
     by_color: Color,
-    attacking_kinds: set[PieceType],
+    attacking_kinds: frozenset[PieceType],
 ) -> bool:
     current_file = target_file + file_delta
     current_rank = target_rank + rank_delta
     while _is_on_board(current_file, current_rank):
-        square = make_square(current_file, current_rank)
-        piece = board.piece_at(square)
+        piece = squares[current_rank * 8 + current_file]
         if piece is None:
             current_file += file_delta
             current_rank += rank_delta
@@ -286,8 +337,8 @@ def _ray_attacked(
 
 
 def _king_square(board: Board, color: Color) -> Square:
-    for square, piece in board.occupied_squares():
-        if piece == Piece(color, PieceType.KING):
-            return square
+    for square_index, piece in enumerate(board.squares):
+        if piece is not None and piece.color is color and piece.kind is PieceType.KING:
+            return Square(square_index)
     msg = f"board has no {color.value} king"
     raise ValueError(msg)

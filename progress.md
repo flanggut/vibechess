@@ -104,3 +104,32 @@
   - `uv run mypy src/tinychess/ai/search_state.py src/tinychess/ai/neural_mcts.py src/tinychess/nn/self_play.py tests/ai/test_search_state.py tests/ai/test_neural_mcts.py tests/nn/test_self_play.py` (passed)
 - Review found no blocker/required concerns for Work Item 5.2; optional outcome-branch tests and compact inference-boundary documentation were deferred.
 - Residual risk: Work Item 5.1 profile counters still label Game-level calls; after SearchState integration, MCTS speculative legal/transition work occurs through SearchState and Board.apply_move, so future profiling interpretation may need a SearchState-specific counter update if precise attribution is required.
+
+# Work Item 5.3 Legal Move Generation Optimization Progress
+
+- Requested `context.md` and `plan.md` were not present in the checkout; read `selfplay-speedup-plan.md` Work Item 5.3 and current Work Item 5.1/5.2 context in `progress.md`.
+- Implemented Work Item 5.3 only with narrow Python legal generator optimizations in `src/tinychess/engine/legal_moves.py`.
+- Avoided repeated `occupied_squares()` tuple allocation in pseudo-legal iteration and king lookup by scanning immutable `Board.squares` directly.
+- Cached the moving side's king square once per `legal_moves()` / `has_legal_move()` call and updated it only for king pseudo-moves, avoiding one king scan per pseudo-move while preserving full apply-and-attack legality filtering.
+- Reduced `Square`/tuple/Piece churn in `is_square_attacked()` by validating once, using direct board-square indexes for pawn/knight/king/ray attack checks, reusing attacker-kind constants, and comparing existing `Piece` fields instead of constructing temporary `Piece` objects.
+- Added parity tests comparing optimized `legal_moves()` against the prior full `pseudo_legal_moves()` + `is_in_check(board.apply_move(...))` shape over tactical fixtures and deterministic random legal game states.
+- Deferred bitboard backend work; targeted Python changes produced meaningful focused microbenchmark/perft improvement without adding a new backend or feature flag.
+- Work Item 5.3 validation passed:
+  - `uv run pytest tests/test_legal_moves.py` (29 passed)
+  - `uv run python scripts/perft.py 3` (nodes=8902, exit 0)
+  - `uv run ruff check src/tinychess/engine/legal_moves.py tests/test_legal_moves.py` (passed)
+  - `uv run mypy src/tinychess/engine/legal_moves.py tests/test_legal_moves.py` (passed)
+  - `uv run pytest tests/ai/test_search_state.py tests/ai/test_neural_mcts.py tests/nn/test_self_play.py` (65 passed)
+- Full-suite note: `uv run pytest` was also attempted and failed during collection in `tests/test_pgn_ingest_benchmark.py` because `scripts/pgn_ingest_benchmark.py` imports `_legal_move_mask_np` from `tinychess.nn.pgn_dataset`, which is absent in this checkout; this is outside Work Item 5.3 touched files.
+- Work Item 5.3 speed/counter observations:
+  - Focused three-position `legal_moves()` loop improved from 3.149s / ~1,905 calls/s to 1.309s / ~4,585 calls/s on this run.
+  - Startpos perft depth 3 improved from 0.170s / ~52k nps to about 0.080s / ~110k nps on repeated smoke runs.
+  - Tiny self-play profile (`games=1 max_plies=8 simulations=8 workers=1 repeat=1`) was noisy overall; measured `game_legal_moves` timer fell from ~0.00345s to ~0.00133s, while wall time was dominated by startup/model/search noise.
+- Work Item 5.3 review found no blocker or required concern; no code changes were needed before commit. Optional direct `is_square_attacked()` micro-fixtures were deferred because existing perft/parity checks passed and the review marked them non-blocking.
+- Work Item 5.3 final validation passed:
+  - `uv run pytest tests/test_legal_moves.py` (29 passed)
+  - `uv run python scripts/perft.py 3` (nodes=8902, exit 0)
+  - `uv run ruff check src/tinychess/engine/legal_moves.py tests/test_legal_moves.py` (passed)
+  - `uv run mypy src/tinychess/engine/legal_moves.py tests/test_legal_moves.py` (passed)
+  - `uv run pytest tests/ai/test_search_state.py tests/ai/test_neural_mcts.py tests/nn/test_self_play.py` (65 passed)
+- Final full-suite attempt still failed during collection in `tests/test_pgn_ingest_benchmark.py` because `scripts/pgn_ingest_benchmark.py` imports missing `_legal_move_mask_np` from `tinychess.nn.pgn_dataset`; this remains outside Work Item 5.3.

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import random
+
 import pytest
 
 from tinychess.engine import (
@@ -14,12 +16,21 @@ from tinychess.engine import (
 )
 from tinychess.engine.board import board_from_ascii
 from tinychess.engine.fen import parse_fen
-from tinychess.engine.legal_moves import has_legal_move
+from tinychess.engine.legal_moves import has_legal_move, is_in_check
 from tinychess.engine.square import parse_square
 
 
 def move_set(moves: tuple[Move, ...]) -> set[str]:
     return {move.to_uci() for move in moves}
+
+
+def reference_legal_moves_by_full_check(board: Board) -> tuple[Move, ...]:
+    moving_color = board.side_to_move
+    return tuple(
+        move
+        for move in pseudo_legal_moves(board)
+        if not is_in_check(board.apply_move(move), moving_color)
+    )
 
 
 def test_start_position_legal_move_count() -> None:
@@ -45,6 +56,36 @@ def test_has_legal_move_matches_legal_moves_bool(fen: str) -> None:
     board = Board.starting_position() if fen == "startpos" else parse_fen(fen).board
 
     assert has_legal_move(board) is bool(legal_moves(board))
+
+
+@pytest.mark.parametrize(
+    "fen",
+    [
+        "startpos",
+        "r3k2r/p1ppqpb1/bn2pnp1/2pPN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "4k3/8/8/r2pP2K/8/8/8/8 w - d6 0 1",
+        "4k3/P7/8/8/8/8/8/4K3 w - - 0 1",
+        "rnbq1rk1/ppp2ppp/3bpn2/3p4/3P4/2PBPN2/PP3PPP/RNBQ1RK1 w - - 0 7",
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+    ],
+)
+def test_legal_moves_matches_full_check_reference_on_fixtures(fen: str) -> None:
+    board = Board.starting_position() if fen == "startpos" else parse_fen(fen).board
+
+    assert move_set(legal_moves(board)) == move_set(reference_legal_moves_by_full_check(board))
+
+
+def test_legal_moves_matches_full_check_reference_on_random_legal_game_states() -> None:
+    rng = random.Random(20260603)
+    board = Board.starting_position()
+
+    for _ in range(80):
+        moves = legal_moves(board)
+
+        assert move_set(moves) == move_set(reference_legal_moves_by_full_check(board))
+        if not moves:
+            break
+        board = board.apply_move(rng.choice(moves))
 
 
 @pytest.mark.parametrize(("depth", "nodes"), [(1, 20), (2, 400), (3, 8902)])
