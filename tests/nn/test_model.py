@@ -62,6 +62,21 @@ class FixedOutputModel:
         )
 
 
+class RowVaryingOutputModel:
+    def __init__(self, logits: Any, values: tuple[float, ...]) -> None:
+        self.logits = mx.array(logits, dtype=mx.float32)
+        self.values = mx.array(values, dtype=mx.float32)
+
+    def __call__(self, inputs: object) -> PolicyValueOutput:
+        shape = tensor_shape(inputs)
+        batch_size = 1 if shape == TENSOR_SHAPE else shape[0]
+        if tensor_shape(self.logits) != (batch_size, ACTION_SPACE_SIZE):
+            raise ValueError("row-varying logits must match the requested batch size")
+        if tensor_shape(self.values) != (batch_size,):
+            raise ValueError("row-varying values must match the requested batch size")
+        return PolicyValueOutput(policy_logits=self.logits, value=self.values)
+
+
 def fixed_inference(logits: Any, *, value: float = 0.125) -> PolicyValueInference:
     return PolicyValueInference(cast(PolicyValueNet, FixedOutputModel(logits, value=value)))
 
@@ -246,6 +261,122 @@ def test_predict_batch_matches_repeated_single_game_inference() -> None:
         assert row.legal_action_indices == legal_action_indices(game, game.legal_moves)
         assert row.legal_policy is not None
         assert tensor_shape(row.legal_policy) == (len(game.legal_moves),)
+
+
+def test_predict_legal_batch_matches_dense_masked_legal_policy() -> None:
+    games = (
+        Game.new(),
+        Game.from_fen("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1"),
+        Game.from_fen("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1"),
+    )
+    legal_moves = tuple(game.legal_moves for game in games)
+    logits = np.linspace(-1.0, 1.0, ACTION_SPACE_SIZE, dtype=np.float32)
+    inference = fixed_inference(logits, value=0.5)
+
+    compact = inference.predict_legal_batch(games, legal_moves)
+    dense = inference.predict_batch(
+        games,
+        legal_moves=legal_moves,
+        mask_legal_moves=True,
+    )
+
+    assert compact.values == pytest.approx((0.5, 0.5, 0.5))
+    assert compact.legal_moves == legal_moves
+    assert compact.legal_action_indices == tuple(
+        legal_action_indices(game, legal) for game, legal in zip(games, legal_moves, strict=True)
+    )
+    for index, game in enumerate(games):
+        compact_row = compact.result_at(index)
+        dense_row = dense.result_at(index)
+        assert dense_row.legal_policy is not None
+        mx.eval(compact_row.legal_policy, dense_row.legal_policy)
+
+        assert compact_row.value == pytest.approx(dense_row.value)
+        assert compact_row.legal_moves == game.legal_moves
+        assert compact_row.legal_action_indices == dense_row.legal_action_indices
+        assert tensor_shape(compact_row.legal_policy) == (len(game.legal_moves),)
+        np.testing.assert_allclose(
+            np.asarray(compact_row.legal_policy, dtype=np.float32),
+            np.asarray(dense_row.legal_policy, dtype=np.float32),
+            rtol=1e-6,
+            atol=1e-7,
+        )
+
+
+def test_predict_legal_batch_returns_empty_policy_for_empty_legal_list() -> None:
+    game = Game.new()
+    inference = fixed_inference(np.ones((ACTION_SPACE_SIZE,), dtype=np.float32), value=-0.75)
+
+    compact = inference.predict_legal_batch((game,), ((),))
+    dense = inference.predict_batch((game,), legal_moves=((),), mask_legal_moves=True)
+    compact_row = compact.result_at(0)
+    dense_row = dense.result_at(0)
+    assert dense_row.legal_policy is not None
+    mx.eval(compact_row.legal_policy, dense_row.legal_policy)
+
+    assert compact.values == pytest.approx((-0.75,))
+    assert compact_row.value == pytest.approx(dense_row.value)
+    assert compact_row.legal_moves == ()
+    assert compact_row.legal_action_indices == ()
+    assert tensor_shape(compact_row.legal_policy) == (0,)
+    np.testing.assert_array_equal(
+        np.asarray(compact_row.legal_policy, dtype=np.float32),
+        np.asarray(dense_row.legal_policy, dtype=np.float32),
+    )
+
+
+def test_predict_legal_batch_uses_matching_logit_row() -> None:
+    games = (
+        Game.new(),
+        Game.from_fen("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1"),
+        Game.from_fen("4k3/P7/8/8/8/8/8/4K3 w - - 0 1"),
+    )
+    legal_moves = tuple(game.legal_moves for game in games)
+    base_logits = np.linspace(-1.0, 1.0, ACTION_SPACE_SIZE, dtype=np.float32)
+    logits = np.stack((base_logits, -base_logits, base_logits * 0.5 + 0.25))
+    values = (0.125, -0.25, 0.5)
+    inference = PolicyValueInference(cast(PolicyValueNet, RowVaryingOutputModel(logits, values)))
+
+    compact = inference.predict_legal_batch(games, legal_moves)
+    dense = inference.predict_batch(games, legal_moves=legal_moves, mask_legal_moves=True)
+
+    assert compact.values == pytest.approx(values)
+    for index in range(len(games)):
+        compact_row = compact.result_at(index)
+        dense_row = dense.result_at(index)
+        assert dense_row.legal_policy is not None
+        mx.eval(compact_row.legal_policy, dense_row.legal_policy)
+
+        assert compact_row.value == pytest.approx(dense_row.value)
+        assert compact_row.legal_action_indices == dense_row.legal_action_indices
+        np.testing.assert_allclose(
+            np.asarray(compact_row.legal_policy, dtype=np.float32),
+            np.asarray(dense_row.legal_policy, dtype=np.float32),
+            rtol=1e-6,
+            atol=1e-7,
+        )
+
+
+def test_predict_legal_matches_predict_with_legal_moves() -> None:
+    game = Game.from_fen("4k3/P7/8/8/8/8/8/4K3 w - - 0 1")
+    legal_moves = game.legal_moves
+    logits = np.arange(ACTION_SPACE_SIZE, dtype=np.float32) / 1000.0
+    inference = fixed_inference(logits, value=0.25)
+
+    compact = inference.predict_legal(game, legal_moves)
+    dense = inference.predict_with_legal_moves(game, legal_moves)
+    assert dense.legal_policy is not None
+    mx.eval(compact.legal_policy, dense.legal_policy)
+
+    assert compact.value == pytest.approx(dense.value)
+    assert compact.legal_moves == dense.legal_moves
+    assert compact.legal_action_indices == dense.legal_action_indices
+    np.testing.assert_allclose(
+        np.asarray(compact.legal_policy, dtype=np.float32),
+        np.asarray(dense.legal_policy, dtype=np.float32),
+        rtol=1e-6,
+        atol=1e-7,
+    )
 
 
 def test_predict_batch_accepts_encoded_positions_with_legal_masks() -> None:

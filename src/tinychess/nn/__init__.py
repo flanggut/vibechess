@@ -34,6 +34,8 @@ from tinychess.nn.encode import (
 from tinychess.nn.model import (
     BatchInferenceResult,
     InferenceResult,
+    LegalPolicyBatchResult,
+    LegalPolicyResult,
     PolicyValueConfig,
     PolicyValueInference,
     PolicyValueNet,
@@ -67,6 +69,8 @@ __all__ = [
     "CheckpointMetadata",
     "BatchInferenceResult",
     "InferenceResult",
+    "LegalPolicyBatchResult",
+    "LegalPolicyResult",
     "LoadedCheckpoint",
     "LossBreakdown",
     "PolicyValueConfig",
