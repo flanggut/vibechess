@@ -232,6 +232,8 @@ def test_self_play_profile_counts_serial_neural_search_categories() -> None:
 
     assert dataset.metadata.sample_count == 2
     report = profile.to_dict()
+    assert report["format_version"] == 2
+    assert "zones" in report
     timers = report["timers"]
     assert isinstance(timers, dict)
     assert timers["game_legal_moves"]["calls"] > 0
@@ -243,6 +245,10 @@ def test_self_play_profile_counts_serial_neural_search_categories() -> None:
     assert timers["search"]["calls"] == 2
     assert timers["search"]["completed_simulations"] == 4
     assert timers["search"]["materialized_nodes"] >= 2
+    zones = report["zones"]
+    assert zones["mcts.search"]["inclusive_seconds"] >= zones["mcts.search"]["exclusive_seconds"]
+    assert "search_state.legal_moves" in zones
+    assert "board.apply_move" in zones
 
 
 def test_serial_recording_reuses_precomputed_legal_masks(monkeypatch: Any) -> None:
@@ -714,7 +720,15 @@ def test_self_play_script_writes_profile_for_parallel_workers(tmp_path: Path) ->
     assert profile_path.is_file()
     profile = json.loads(profile_path.read_text())
     assert profile["scope"] == "self_play_generation"
+    assert profile["format_version"] == 2
+    assert profile["profile_level"] == "detailed"
     assert len(profile["worker_profiles"]) == 2
+    for worker_profile in profile["worker_profiles"]:
+        assert worker_profile["metadata"]["worker_id"] in {0, 1}
+        assert worker_profile["metadata"]["games"] == 1
+        assert "pid" in worker_profile["metadata"]
+    assert "worker.pool_elapsed" in profile["stats"]["zones"]
+    assert "dataset.merge" in profile["stats"]["zones"]
     timers = profile["stats"]["timers"]
     assert timers["search"]["completed_simulations"] == 2
     assert timers["model_single"]["calls"] == 2

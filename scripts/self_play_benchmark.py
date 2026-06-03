@@ -10,16 +10,28 @@ import shutil
 import subprocess
 import sys
 import time
-from dataclasses import asdict, dataclass
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from statistics import median
-from typing import Literal
+from tempfile import TemporaryDirectory
+from typing import Any, Literal
+
+from tinychess.nn.checkpoint import save_checkpoint
+from tinychess.nn.model import PolicyValueConfig, PolicyValueNet
+from tinychess.nn.self_play_profile import (
+    ProfileStats,
+    profile_limitations,
+    stats_from_profile_report,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_ROOT = Path("/tmp/tinychess-self-play-benchmark")
 SELF_PLAY_PROFILE_ENV = "TINYCHESS_SELF_PLAY_PROFILE"
 SELF_PLAY_PROFILE_FILENAME = "profile.json"
 ReportFormat = Literal["json", "markdown"]
+ProfileLevel = Literal["none", "summary", "detailed"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +65,8 @@ class BenchmarkConfig:
     output_root: str
     keep_output: bool
     profile: bool
+    profile_level: ProfileLevel
+    profile_overhead_check: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +118,7 @@ class BenchmarkReport:
     chunks: list[ChunkConfig]
     model_config: dict[str, int]
     profile: dict[str, object] | None
+    profile_overhead: dict[str, object]
     repeat_results: list[RepeatResult]
 
 
@@ -122,15 +137,41 @@ def run_benchmark(config: BenchmarkConfig) -> BenchmarkReport:
     output_root = Path(config.output_root)
     output_root.mkdir(parents=True, exist_ok=True)
     results: list[RepeatResult] = []
+    overhead_pairs: list[dict[str, object]] = []
+    no_profile_config = replace(config, profile=False, profile_level="none")
     try:
         for repeat_index in range(1, config.repeat + 1):
             output_dir = output_root / f"repeat-{repeat_index:03d}"
             if output_dir.exists():
                 shutil.rmtree(output_dir)
-            result = _run_repeat(config, repeat_index, output_dir)
+            no_profile_result: RepeatResult | None = None
+            no_profile_dir = output_root / f"repeat-{repeat_index:03d}-noprofile"
+            repeat_config = config
+            repeat_no_profile_config = no_profile_config
+            with _shared_overhead_checkpoint(config) as checkpoint_path:
+                if checkpoint_path is not None:
+                    repeat_config = _config_with_checkpoint(config, checkpoint_path)
+                    repeat_no_profile_config = _config_with_checkpoint(
+                        no_profile_config,
+                        checkpoint_path,
+                    )
+                if config.profile_overhead_check and config.profile:
+                    if no_profile_dir.exists():
+                        shutil.rmtree(no_profile_dir)
+                    no_profile_result = _run_repeat(
+                        repeat_no_profile_config,
+                        repeat_index,
+                        no_profile_dir,
+                    )
+                result = _run_repeat(repeat_config, repeat_index, output_dir)
             results.append(result)
+            if no_profile_result is not None:
+                overhead_pairs.append(
+                    _profile_overhead_pair(no_profile_result, result)
+                )
             if not config.keep_output:
                 shutil.rmtree(output_dir, ignore_errors=True)
+                shutil.rmtree(no_profile_dir, ignore_errors=True)
     finally:
         if not config.keep_output:
             _remove_empty_directory(output_root)
@@ -143,9 +184,10 @@ def run_benchmark(config: BenchmarkConfig) -> BenchmarkReport:
     ply_counts = [result.ply_count for result in results]
     output_sizes = [result.output_bytes for result in results]
     profile = _aggregate_profiles(results)
+    profile_overhead = _aggregate_profile_overhead(overhead_pairs, config)
     return BenchmarkReport(
         benchmark="self_play_generation",
-        format_version=1,
+        format_version=2,
         config=config,
         elapsed_seconds=float(median(elapsed_values)),
         elapsed_seconds_min=min(elapsed_values),
@@ -171,6 +213,7 @@ def run_benchmark(config: BenchmarkConfig) -> BenchmarkReport:
         chunks=_chunks(config.games, config.workers, config.seed),
         model_config={"channels": config.channels, "blocks": config.blocks},
         profile=profile,
+        profile_overhead=profile_overhead,
         repeat_results=results,
     )
 
@@ -188,8 +231,8 @@ def _run_repeat(config: BenchmarkConfig, repeat_index: int, output_dir: Path) ->
     command = _self_play_command(config, output_dir)
     start = time.perf_counter()
     env = os.environ.copy()
-    if config.profile:
-        env[SELF_PLAY_PROFILE_ENV] = "1"
+    if config.profile and config.profile_level != "none":
+        env[SELF_PLAY_PROFILE_ENV] = config.profile_level
     else:
         env.pop(SELF_PLAY_PROFILE_ENV, None)
     completed = subprocess.run(
@@ -214,7 +257,11 @@ def _run_repeat(config: BenchmarkConfig, repeat_index: int, output_dir: Path) ->
     sample_count = _expect_int(metadata, "sample_count")
     game_count = _expect_int(metadata, "game_count")
     ply_count = _read_ply_count(output_dir)
-    profile = _read_profile(output_dir) if config.profile else None
+    profile = (
+        _read_profile(output_dir)
+        if config.profile and config.profile_level != "none"
+        else None
+    )
     output_bytes = _directory_size(output_dir)
     return RepeatResult(
         repeat_index=repeat_index,
@@ -230,6 +277,105 @@ def _run_repeat(config: BenchmarkConfig, repeat_index: int, output_dir: Path) ->
         stdout=completed.stdout.strip(),
         profile=profile,
     )
+
+
+@contextmanager
+def _shared_overhead_checkpoint(config: BenchmarkConfig) -> Iterator[Path | None]:
+    """Create a shared temporary model for paired no-profile/profile comparisons.
+
+    Without an explicit checkpoint, each self-play subprocess initializes a fresh random
+    neural model.  The overhead check compares two subprocesses, so using one temporary
+    checkpoint isolates profiling effects from unrelated model-initialization randomness.
+    Normal benchmark runs keep their existing no-checkpoint behavior.
+    """
+    if (
+        not config.profile_overhead_check
+        or not config.profile
+        or config.checkpoint is not None
+        or config.label_source != "neural"
+    ):
+        yield None
+        return
+    with TemporaryDirectory(prefix="tinychess-profile-overhead-") as temp_dir:
+        checkpoint_path = Path(temp_dir)
+        save_checkpoint(PolicyValueNet(_policy_value_config(config)), checkpoint_path)
+        yield checkpoint_path
+
+
+def _config_with_checkpoint(config: BenchmarkConfig, checkpoint: Path) -> BenchmarkConfig:
+    return replace(
+        config,
+        checkpoint=str(checkpoint),
+        checkpoint_id=config.checkpoint_id or "profile-overhead-check-shared-model",
+    )
+
+
+def _policy_value_config(config: BenchmarkConfig) -> PolicyValueConfig:
+    return PolicyValueConfig(
+        residual_channels=config.channels,
+        residual_blocks=config.blocks,
+        policy_channels=1,
+        value_channels=1,
+        value_hidden_dim=4,
+    )
+
+
+def _profile_overhead_pair(
+    no_profile: RepeatResult,
+    profiled: RepeatResult,
+) -> dict[str, object]:
+    deterministic_games_match = _games_text(no_profile.output_directory) == _games_text(
+        profiled.output_directory
+    )
+    elapsed_delta = profiled.elapsed_seconds - no_profile.elapsed_seconds
+    overhead_percent = _pct(elapsed_delta, no_profile.elapsed_seconds)
+    counts_match = (
+        no_profile.sample_count == profiled.sample_count
+        and no_profile.game_count == profiled.game_count
+        and no_profile.ply_count == profiled.ply_count
+    )
+    return {
+        "repeat_index": profiled.repeat_index,
+        "no_profile_elapsed_seconds": no_profile.elapsed_seconds,
+        "profiled_elapsed_seconds": profiled.elapsed_seconds,
+        "overhead_seconds": elapsed_delta,
+        "overhead_percent": overhead_percent,
+        "counts_match": counts_match,
+        "deterministic_games_match": deterministic_games_match,
+    }
+
+
+def _aggregate_profile_overhead(
+    pairs: list[dict[str, object]],
+    config: BenchmarkConfig,
+) -> dict[str, object]:
+    if not config.profile_overhead_check:
+        return {"enabled": False}
+    if not pairs:
+        return {"enabled": True, "pairs": []}
+    no_profile_elapsed = [
+        _expect_number(pair, "no_profile_elapsed_seconds") for pair in pairs
+    ]
+    profiled_elapsed = [_expect_number(pair, "profiled_elapsed_seconds") for pair in pairs]
+    no_profile_median = float(median(no_profile_elapsed))
+    profiled_median = float(median(profiled_elapsed))
+    return {
+        "enabled": True,
+        "pairs": pairs,
+        "no_profile_elapsed_seconds": no_profile_median,
+        "profiled_elapsed_seconds": profiled_median,
+        "overhead_seconds": profiled_median - no_profile_median,
+        "overhead_percent": _pct(profiled_median - no_profile_median, no_profile_median),
+        "counts_match": all(bool(pair.get("counts_match")) for pair in pairs),
+        "deterministic_games_match": all(
+            bool(pair.get("deterministic_games_match")) for pair in pairs
+        ),
+    }
+
+
+def _games_text(output_directory: str) -> str:
+    path = Path(output_directory) / "games.jsonl"
+    return path.read_text() if path.exists() else ""
 
 
 def _self_play_command(config: BenchmarkConfig, output_dir: Path) -> list[str]:
@@ -302,6 +448,17 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--keep-output", action="store_true")
     parser.add_argument(
+        "--profile-level",
+        choices=("none", "summary", "detailed"),
+        default="detailed",
+        help="self-play profiling detail level for benchmark subprocesses",
+    )
+    parser.add_argument(
+        "--profile-overhead-check",
+        action="store_true",
+        help="include paired no-profile/profile overhead metadata in the report",
+    )
+    parser.add_argument(
         "--no-profile",
         dest="profile",
         action="store_false",
@@ -314,7 +471,10 @@ def _parse_args() -> argparse.Namespace:
         default="markdown",
         help="benchmark report output format",
     )
-    return parser.parse_args()
+    parsed = parser.parse_args()
+    if not parsed.profile:
+        parsed.profile_level = "none"
+    return parsed
 
 
 def _validate_args(args: argparse.Namespace) -> None:
@@ -355,7 +515,9 @@ def _benchmark_config(args: argparse.Namespace) -> BenchmarkConfig:
         repeat=args.repeat,
         output_root=str(args.output_root),
         keep_output=args.keep_output,
-        profile=args.profile,
+        profile=args.profile and args.profile_level != "none",
+        profile_level=args.profile_level,
+        profile_overhead_check=args.profile_overhead_check,
     )
 
 
@@ -397,6 +559,7 @@ def _report_to_dict(report: BenchmarkReport) -> dict[str, object]:
         "chunks": [asdict(chunk) for chunk in report.chunks],
         "model_config": report.model_config,
         "profile": report.profile,
+        "profile_overhead": report.profile_overhead,
         "repeat_results": [asdict(result) for result in report.repeat_results],
     }
 
@@ -435,6 +598,10 @@ def _format_markdown(report: BenchmarkReport) -> str:
         "",
         *_format_profile_lines(report.profile),
         "",
+        "## Profiling Overhead",
+        "",
+        *_format_profile_overhead_lines(report.profile_overhead),
+        "",
         "## Chunks",
         "",
     ]
@@ -466,13 +633,109 @@ def _format_markdown(report: BenchmarkReport) -> str:
 def _format_profile_lines(profile: dict[str, object] | None) -> list[str]:
     if profile is None:
         return ["- profile: disabled or unavailable"]
-    percentages = _expect_mapping(profile, "percent_of_elapsed")
     stats = _expect_mapping(profile, "stats")
     timers = _expect_mapping(stats, "timers")
     lines = [
         f"- repeat_count: {_expect_int(profile, 'repeat_count')}",
-        "- timer percentages are diagnostic and may overlap",
+        f"- profile_level: {profile.get('profile_level', 'unknown')}",
+        "- bottleneck rankings use exclusive stack-attributed time",
+        "",
+        "## Bottleneck Summary",
+        "",
+        "| rank | zone | exclusive s | inclusive s | % generation | calls | interpretation |",
+        "|---:|---|---:|---:|---:|---:|---|",
     ]
+    bottlenecks = profile.get("bottleneck_summary", [])
+    if isinstance(bottlenecks, list):
+        for row in bottlenecks:
+            if isinstance(row, dict):
+                lines.append(
+                    "| {rank} | {zone} | {exclusive:.6f} | {inclusive:.6f} | "
+                    "{pct:.2f} | {calls} | {reason} |".format(
+                        rank=row.get("rank", ""),
+                        zone=row.get("zone", ""),
+                        exclusive=float(row.get("exclusive_seconds", 0.0)),
+                        inclusive=float(row.get("inclusive_seconds", 0.0)),
+                        pct=float(row.get("percent_of_generation", 0.0)),
+                        calls=row.get("calls", ""),
+                        reason=row.get("reason", ""),
+                    )
+                )
+    lines.extend(["", "## MCTS Breakdown", ""])
+    lines.extend(
+        _zone_table(
+            stats,
+            (
+                "mcts.search",
+                "mcts.simulation",
+                "mcts.selection",
+                "mcts.materialize_child",
+                "mcts.expand",
+                "mcts.predict",
+                "mcts.backup",
+                "mcts.select_temperature",
+            ),
+        )
+    )
+    lines.extend(["", "## Inference / MLX Breakdown", ""])
+    lines.extend(
+        _zone_table(
+            stats,
+            (
+                "inference.predict",
+                "inference.predict_with_legal_moves",
+                "inference.predict_batch",
+                "encode.game_mlx",
+                "encode.batch_stack",
+                "model.forward",
+                "mlx.sync.value_item",
+                "mlx.sync.policy_eval",
+                "policy.legal_indices",
+                "policy.legal_mask_mlx",
+            ),
+        )
+    )
+    lines.extend(["", "## Legal and Transition Breakdown", ""])
+    lines.extend(
+        _zone_table(
+            stats,
+            (
+                "game.legal_moves",
+                "search_state.legal_moves",
+                "legal.legal_moves",
+                "legal.pseudo",
+                "legal.filter",
+                "legal.is_square_attacked",
+                "board.apply_move",
+                "game.play_known_legal",
+                "search_state.play_known_legal",
+            ),
+        )
+    )
+    lines.extend(["", "## Dataset and Serialization Breakdown", ""])
+    lines.extend(
+        _zone_table(
+            stats,
+            (
+                "record.position_encode_np",
+                "record.legal_mask_np",
+                "record.policy_target",
+                "dataset.stack_positions",
+                "dataset.save",
+                "dataset.save_npz_compressed",
+                "dataset.write_metadata",
+                "dataset.write_games_jsonl",
+            ),
+        )
+    )
+    lines.extend(["", "## Worker Breakdown", ""])
+    workers = profile.get("workers", [])
+    if isinstance(workers, list) and workers:
+        lines.append(f"- worker_profiles: {len(workers)}")
+    else:
+        lines.append("- worker_profiles: none")
+    lines.extend(["", "### Compatibility Timers", ""])
+    percentages = _expect_mapping(profile, "percent_of_elapsed")
     for name in (
         "game_legal_moves",
         "determine_outcome",
@@ -487,8 +750,7 @@ def _format_profile_lines(profile: dict[str, object] | None) -> list[str]:
         seconds = _expect_number(timer, "seconds")
         calls = _expect_int(timer, "calls")
         lines.append(
-            f"- {name}: calls={calls} seconds={seconds:.6f} "
-            f"elapsed_pct={percent:.2f}"
+            f"- {name}: calls={calls} seconds={seconds:.6f} elapsed_pct={percent:.2f}"
         )
     search = _expect_mapping(timers, "search")
     model_batch = _expect_mapping(timers, "model_batch")
@@ -503,6 +765,29 @@ def _format_profile_lines(profile: dict[str, object] | None) -> list[str]:
     return lines
 
 
+def _zone_table(stats: dict[str, object], names: tuple[str, ...]) -> list[str]:
+    zones = _expect_mapping(stats, "zones")
+    lines = ["| zone | inclusive s | exclusive s | calls |", "|---|---:|---:|---:|"]
+    for name in names:
+        raw = zones.get(name)
+        if not isinstance(raw, dict):
+            continue
+        lines.append(
+            f"| {name} | {_expect_number(raw, 'inclusive_seconds'):.6f} | "
+            f"{_expect_number(raw, 'exclusive_seconds'):.6f} | {_expect_int(raw, 'calls')} |"
+        )
+    if len(lines) == 2:
+        lines.append("| _none recorded_ | 0 | 0 | 0 |")
+    return lines
+
+
+
+def _format_profile_overhead_lines(profile_overhead: dict[str, object]) -> list[str]:
+    if not profile_overhead.get("enabled", False):
+        return ["- enabled: false"]
+    return [f"- {key}: {value}" for key, value in sorted(profile_overhead.items())]
+
+
 def _read_profile(output_dir: Path) -> dict[str, object]:
     profile_path = output_dir / SELF_PLAY_PROFILE_FILENAME
     data = json.loads(profile_path.read_text())
@@ -515,85 +800,218 @@ def _aggregate_profiles(results: list[RepeatResult]) -> dict[str, object] | None
     profiled_results = [result for result in results if result.profile is not None]
     if not profiled_results:
         return None
-    stats = _sum_profile_stats([result.profile for result in profiled_results])
+    merged = ProfileStats.merged(
+        [stats_from_profile_report(result.profile or {}) for result in profiled_results]
+    )
+    stats = merged.to_dict()
     elapsed = sum(result.elapsed_seconds for result in profiled_results)
     percentages = _profile_percentages(stats, elapsed)
+    zones = _expect_mapping(stats, "zones")
+    workers = _profile_workers(profiled_results)
+    derived = _profile_derived(merged, elapsed, workers=workers)
     return {
-        "format_version": 1,
+        "format_version": 2,
+        "profile_level": _profile_level_from_results(profiled_results),
         "repeat_count": len(profiled_results),
         "elapsed_seconds": elapsed,
         "stats": stats,
         "percent_of_elapsed": percentages,
-        "limitations": [
-            "Timer categories are diagnostic and can overlap; do not sum percentages.",
-            "Worker runs aggregate child-process profile reports written by self_play.py.",
-        ],
+        "bottleneck_summary": _bottleneck_summary(merged),
+        "derived": derived,
+        "workers": workers,
+        "slowest_plies": merged.slowest_plies,
+        "slowest_searches": merged.slowest_searches,
+        "top_exclusive_zones": _top_exclusive_zones(zones),
+        "limitations": profile_limitations(),
     }
 
 
-def _sum_profile_stats(profiles: list[dict[str, object] | None]) -> dict[str, object]:
-    timer_names = (
-        "game_legal_moves",
-        "determine_outcome",
-        "game_play_known_legal",
-        "board_apply_move",
-        "model_single",
-        "model_batch",
-        "search",
-    )
-    totals: dict[str, dict[str, object]] = {
-        name: {"calls": 0, "seconds": 0.0} for name in timer_names
-    }
-    totals["model_batch"].update(
-        {
-            "positions": 0,
-            "batch_size_min": None,
-            "batch_size_max": None,
-            "batch_size_mean": 0.0,
-        }
-    )
-    totals["search"].update({"materialized_nodes": 0, "completed_simulations": 0})
+def _profile_level_from_results(results: list[RepeatResult]) -> str:
+    for result in results:
+        profile = result.profile or {}
+        level = profile.get("profile_level")
+        if isinstance(level, str):
+            return level
+    return "detailed"
 
-    for profile in profiles:
-        if profile is None:
-            continue
-        stats = _profile_stats(profile)
-        timers = _expect_mapping(stats, "timers")
-        for name in timer_names:
-            source = _expect_mapping(timers, name)
-            target = totals[name]
-            target["calls"] = _expect_int(target, "calls") + _expect_int(source, "calls")
-            target["seconds"] = _expect_number(target, "seconds") + _expect_number(
-                source, "seconds"
-            )
-        source_batch = _expect_mapping(timers, "model_batch")
-        target_batch = totals["model_batch"]
-        target_batch["positions"] = _expect_int(target_batch, "positions") + _expect_int(
-            source_batch, "positions"
+
+def _profile_workers(results: list[RepeatResult]) -> list[dict[str, object]]:
+    workers: list[dict[str, object]] = []
+    for result in results:
+        profile = result.profile or {}
+        raw_workers = profile.get("workers", profile.get("worker_profiles", []))
+        if isinstance(raw_workers, list):
+            for worker in raw_workers:
+                if isinstance(worker, dict):
+                    worker_copy = dict(worker)
+                    worker_copy.setdefault("repeat_index", result.repeat_index)
+                    workers.append(worker_copy)
+    return workers
+
+
+def _profile_derived(
+    stats: ProfileStats,
+    elapsed_seconds: float,
+    *,
+    workers: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    zones = stats.zones
+    generation = _zone_seconds(zones, "self_play.generate_dataset")
+    main = _zone_seconds(zones, "self_play.main")
+    mcts = _zone_seconds(zones, "mcts.search")
+    inference = sum(
+        _zone_seconds(zones, name)
+        for name in (
+            "inference.predict",
+            "inference.predict_with_legal_moves",
+            "inference.predict_batch",
         )
-        _merge_optional_min(target_batch, source_batch, "batch_size_min")
-        _merge_optional_max(target_batch, source_batch, "batch_size_max")
-        source_search = _expect_mapping(timers, "search")
-        target_search = totals["search"]
-        target_search["materialized_nodes"] = _expect_int(
-            target_search, "materialized_nodes"
-        ) + _expect_int(source_search, "materialized_nodes")
-        target_search["completed_simulations"] = _expect_int(
-            target_search, "completed_simulations"
-        ) + _expect_int(source_search, "completed_simulations")
+    )
+    legal_transition = sum(
+        _zone_seconds(zones, name)
+        for name in (
+            "game.legal_moves",
+            "search_state.legal_moves",
+            "legal.legal_moves",
+            "board.apply_move",
+            "game.play_known_legal",
+            "search_state.play_known_legal",
+        )
+    )
+    save = _zone_seconds(zones, "dataset.save")
+    derived: dict[str, object] = {
+        "self_play_main_seconds": main,
+        "generation_seconds": generation,
+        "mcts_search_seconds": mcts,
+        "mcts_search_percent_of_generation": _pct(mcts, generation),
+        "inference_percent_of_mcts_search": _pct(inference, mcts),
+        "legal_transition_percent_of_mcts_search": _pct(legal_transition, mcts),
+        "dataset_save_percent_of_self_play_main": _pct(save, main),
+        "repeat_wall_seconds": elapsed_seconds,
+    }
+    pool = _zone_seconds(zones, "worker.pool_elapsed")
+    worker = _zone_seconds(zones, "worker.chunk_elapsed")
+    if pool > 0:
+        derived["worker_pool_elapsed_seconds"] = pool
+        derived["worker_time_sum_seconds"] = worker
+    if workers:
+        worker_elapsed_by_repeat: dict[int, list[float]] = {}
+        for worker_profile in workers:
+            elapsed = _worker_elapsed_seconds(worker_profile)
+            if elapsed is None:
+                continue
+            repeat_index = _object_int(worker_profile.get("repeat_index")) or 0
+            worker_elapsed_by_repeat.setdefault(repeat_index, []).append(elapsed)
+        worker_elapsed = [
+            elapsed
+            for repeat_workers in worker_elapsed_by_repeat.values()
+            for elapsed in repeat_workers
+        ]
+        if worker_elapsed:
+            worker_sum = sum(worker_elapsed)
+            repeat_max_sum = sum(
+                max(repeat_workers) for repeat_workers in worker_elapsed_by_repeat.values()
+            )
+            average_workers = len(worker_elapsed) / max(1, len(worker_elapsed_by_repeat))
+            derived.update(
+                {
+                    "worker_count": len(worker_elapsed),
+                    "worker_time_max_seconds": max(worker_elapsed),
+                    "worker_time_sum_seconds": worker_sum,
+                    "worker_ipc_merge_gap_seconds": max(0.0, pool - repeat_max_sum)
+                    if pool > 0
+                    else 0.0,
+                    "worker_parallel_efficiency": worker_sum / (pool * average_workers)
+                    if pool > 0 and average_workers > 0
+                    else 0.0,
+                }
+            )
+    return derived
 
-    batch = totals["model_batch"]
-    batch_calls = _expect_int(batch, "calls")
-    if batch_calls > 0:
-        batch["batch_size_mean"] = _expect_int(batch, "positions") / batch_calls
-    return {"format_version": 1, "timers": totals}
+
+def _worker_elapsed_seconds(worker_profile: dict[str, object]) -> float | None:
+    try:
+        stats = stats_from_profile_report(worker_profile)
+    except (TypeError, ValueError):
+        return None
+    timer = stats.zones.get("worker.chunk_elapsed")
+    if timer is None:
+        return None
+    return timer.inclusive_ns / 1_000_000_000.0
 
 
-def _profile_stats(profile: dict[str, object]) -> dict[str, object]:
-    stats = profile.get("stats")
-    if isinstance(stats, dict):
-        return dict(stats)
-    return profile
+def _object_int(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _zone_seconds(zones: dict[str, object] | dict[str, Any], name: str) -> float:
+    raw = zones.get(name)
+    if isinstance(raw, dict):
+        return _expect_number(raw, "inclusive_seconds")
+    if hasattr(raw, "inclusive_ns"):
+        return float(raw.inclusive_ns) / 1_000_000_000.0
+    return 0.0
+
+
+def _pct(value: float, denominator: float) -> float:
+    return 0.0 if denominator == 0.0 else value / denominator * 100.0
+
+
+def _top_exclusive_zones(zones: dict[str, object], limit: int = 12) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for name, raw in zones.items():
+        if not isinstance(raw, dict):
+            continue
+        rows.append(
+            {
+                "zone": name,
+                "calls": _expect_int(raw, "calls"),
+                "inclusive_seconds": _expect_number(raw, "inclusive_seconds"),
+                "exclusive_seconds": _expect_number(raw, "exclusive_seconds"),
+            }
+        )
+    rows.sort(key=lambda row: _object_number(row["exclusive_seconds"]), reverse=True)
+    return rows[:limit]
+
+
+def _bottleneck_summary(stats: ProfileStats, limit: int = 8) -> list[dict[str, object]]:
+    generation = _zone_seconds(stats.zones, "self_play.generate_dataset")
+    summary: list[dict[str, object]] = []
+    rows = sorted(
+        stats.zones.items(),
+        key=lambda item: item[1].exclusive_ns,
+        reverse=True,
+    )
+    for rank, (zone, aggregate) in enumerate(rows[:limit], start=1):
+        summary.append(
+            {
+                "rank": rank,
+                "zone": zone,
+                "calls": aggregate.calls,
+                "inclusive_seconds": aggregate.inclusive_ns / 1_000_000_000.0,
+                "exclusive_seconds": aggregate.exclusive_ns / 1_000_000_000.0,
+                "percent_of_generation": _pct(aggregate.exclusive_ns / 1_000_000_000.0, generation),
+                "reason": _zone_reason(zone),
+            }
+        )
+    return summary
+
+
+def _zone_reason(zone: str) -> str:
+    if zone.startswith("legal") or zone in {"board.apply_move", "search_state.legal_moves"}:
+        return "legal move generation or transition cost"
+    if zone.startswith("inference") or zone.startswith("mlx") or zone == "model.forward":
+        return "model inference / MLX synchronization cost"
+    if zone.startswith("mcts"):
+        return "MCTS search phase cost"
+    if zone.startswith("dataset") or zone.startswith("record"):
+        return "dataset recording or serialization cost"
+    if zone.startswith("worker"):
+        return "worker/process overhead"
+    return "profiled exclusive time"
+
 
 
 def _profile_percentages(stats: dict[str, object], elapsed_seconds: float) -> dict[str, float]:
@@ -602,7 +1020,7 @@ def _profile_percentages(stats: dict[str, object], elapsed_seconds: float) -> di
     for name, value in timers.items():
         if isinstance(name, str) and isinstance(value, dict):
             seconds = _expect_number(value, "seconds")
-            percentages[name] = 0.0 if elapsed_seconds == 0.0 else seconds / elapsed_seconds * 100.0
+            percentages[name] = _pct(seconds, elapsed_seconds)
     return percentages
 
 
@@ -680,6 +1098,12 @@ def _rate(count: int, elapsed_seconds: float) -> float:
     if elapsed_seconds == 0.0:
         return float("inf")
     return count / elapsed_seconds
+
+
+def _object_number(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (float, int)):
+        return 0.0
+    return float(value)
 
 
 def _expect_int(data: dict[str, object], key: str) -> int:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 
 from tinychess.engine.board import Board
@@ -15,6 +16,18 @@ from tinychess.engine.piece import Color, Piece, PieceType
 from tinychess.engine.square import Square, file_index, rank_index
 
 MoveSelector = Callable[[Board, tuple[Move, ...]], Move]
+
+
+def _profile_scope(name: str, **tags: object) -> AbstractContextManager[None]:
+    from tinychess.nn.self_play_profile import profile_scope
+
+    return profile_scope(name, **tags)
+
+
+def _record_counter(name: str, amount: int | float = 1, **tags: object) -> None:
+    from tinychess.nn.self_play_profile import record_counter
+
+    record_counter(name, amount, **tags)
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,12 +104,14 @@ class Game:
     @property
     def legal_moves(self) -> tuple[Move, ...]:
         """Return legal moves in the current position."""
-        return generate_legal_moves(self.board)
+        with _profile_scope("game.legal_moves"):
+            return generate_legal_moves(self.board)
 
     @property
     def outcome(self) -> Outcome | None:
         """Return the current outcome, or ``None`` if the game is ongoing."""
-        return determine_outcome(self)
+        with _profile_scope("game.outcome"):
+            return determine_outcome(self)
 
     def play(self, move: Move) -> Game:
         """Return the game after applying a legal move."""
@@ -121,54 +136,58 @@ class Game:
         Normal callers should use :meth:`play`, which preserves terminal and legal-move
         validation before delegating here.
         """
-        board = self.board
-        moving_piece = board.piece_at(move.from_square)
-        if moving_piece is None:  # defensive; legal membership should prevent this
-            msg = f"cannot move from empty square {move.from_square}"
-            raise ValueError(msg)
-        is_capture = _is_capture(board, move, moving_piece)
-        next_board = board.apply_move(move)
-        next_key = _position_key(next_board)
-        next_repetitions = dict(self.repetition_counts)
-        next_repetitions[next_key] = next_repetitions.get(next_key, 0) + 1
+        with _profile_scope("game.play_known_legal"):
+            _record_counter("game.play_known_legal.calls")
+            board = self.board
+            moving_piece = board.piece_at(move.from_square)
+            if moving_piece is None:  # defensive; legal membership should prevent this
+                msg = f"cannot move from empty square {move.from_square}"
+                raise ValueError(msg)
+            is_capture = _is_capture(board, move, moving_piece)
+            next_board = board.apply_move(move)
+            next_key = _position_key(next_board)
+            next_repetitions = dict(self.repetition_counts)
+            next_repetitions[next_key] = next_repetitions.get(next_key, 0) + 1
 
-        next_halfmove_clock = (
-            0 if moving_piece.kind is PieceType.PAWN or is_capture else self.halfmove_clock + 1
-        )
-        next_fullmove_number = self.fullmove_number + (
-            1 if board.side_to_move is Color.BLACK else 0
-        )
+            next_halfmove_clock = (
+                0 if moving_piece.kind is PieceType.PAWN or is_capture else self.halfmove_clock + 1
+            )
+            next_fullmove_number = self.fullmove_number + (
+                1 if board.side_to_move is Color.BLACK else 0
+            )
 
-        return Game(
-            positions=(*self.positions, next_board),
-            moves=(*self.moves, move),
-            halfmove_clock=next_halfmove_clock,
-            fullmove_number=next_fullmove_number,
-            repetition_counts=dict(next_repetitions),
-            forced_outcome=None,
-        )
+            return Game(
+                positions=(*self.positions, next_board),
+                moves=(*self.moves, move),
+                halfmove_clock=next_halfmove_clock,
+                fullmove_number=next_fullmove_number,
+                repetition_counts=dict(next_repetitions),
+                forced_outcome=None,
+            )
 
 
 def determine_outcome(
     game: Game, *, legal_moves: tuple[Move, ...] | None = None
 ) -> Outcome | None:
     """Return the pragmatic game outcome, or ``None`` if the game is ongoing."""
-    if game.forced_outcome is not None:
-        return game.forced_outcome
-    board = game.board
-    moves = legal_moves if legal_moves is not None else generate_legal_moves(board)
-    if not moves:
-        if is_in_check(board, board.side_to_move):
-            return Outcome(reason=OutcomeReason.CHECKMATE, winner=board.side_to_move.opposite)
-        return Outcome(reason=OutcomeReason.STALEMATE)
+    with _profile_scope("game.determine_outcome"):
+        _record_counter("game.determine_outcome.calls")
+        if game.forced_outcome is not None:
+            return game.forced_outcome
+        board = game.board
+        moves = legal_moves if legal_moves is not None else generate_legal_moves(board)
+        if not moves:
+            if is_in_check(board, board.side_to_move):
+                return Outcome(reason=OutcomeReason.CHECKMATE, winner=board.side_to_move.opposite)
+            return Outcome(reason=OutcomeReason.STALEMATE)
 
-    if game.halfmove_clock >= 100:
-        return Outcome(reason=OutcomeReason.FIFTY_MOVE)
-    if game.repetition_counts.get(_position_key(board), 0) >= 3:
-        return Outcome(reason=OutcomeReason.REPETITION)
-    if has_insufficient_material(board):
-        return Outcome(reason=OutcomeReason.INSUFFICIENT_MATERIAL)
-    return None
+        if game.halfmove_clock >= 100:
+            return Outcome(reason=OutcomeReason.FIFTY_MOVE)
+        if game.repetition_counts.get(_position_key(board), 0) >= 3:
+            return Outcome(reason=OutcomeReason.REPETITION)
+        if has_insufficient_material(board):
+            return Outcome(reason=OutcomeReason.INSUFFICIENT_MATERIAL)
+        return None
 
 
 def simulate_game(

@@ -3,11 +3,31 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from contextlib import AbstractContextManager
 
 from tinychess.engine.board import Board
 from tinychess.engine.move import Move
 from tinychess.engine.piece import Color, Piece, PieceType
 from tinychess.engine.square import Square, file_index, make_square, rank_index, validate_square
+
+
+def _profile_scope(name: str, **tags: object) -> AbstractContextManager[None]:
+    from tinychess.nn.self_play_profile import profile_scope
+
+    return profile_scope(name, **tags)
+
+
+def _record_counter(name: str, amount: int | float = 1, **tags: object) -> None:
+    from tinychess.nn.self_play_profile import record_counter
+
+    record_counter(name, amount, **tags)
+
+
+def _record_distribution(name: str, value: int | float, *, unit: str, **tags: object) -> None:
+    from tinychess.nn.self_play_profile import record_distribution
+
+    record_distribution(name, value, unit=unit, **tags)
+
 
 PROMOTION_PIECES = (PieceType.QUEEN, PieceType.ROOK, PieceType.BISHOP, PieceType.KNIGHT)
 
@@ -26,62 +46,79 @@ def pseudo_legal_moves(board: Board) -> tuple[Move, ...]:
     Pseudo-legal moves follow piece movement rules, including castling and en passant,
     but may leave the moving side's king in check.
     """
-    moves: list[Move] = []
-    side_to_move = board.side_to_move
-    for square_index, piece in enumerate(board.squares):
-        if piece is None or piece.color is not side_to_move:
-            continue
-        square = Square(square_index)
-        if piece.kind is PieceType.PAWN:
-            moves.extend(_pawn_moves(board, square, piece.color))
-        elif piece.kind is PieceType.KNIGHT:
-            moves.extend(_leaper_moves(board, square, piece.color, _KNIGHT_DELTAS))
-        elif piece.kind is PieceType.BISHOP:
-            moves.extend(_slider_moves(board, square, piece.color, _BISHOP_DIRECTIONS))
-        elif piece.kind is PieceType.ROOK:
-            moves.extend(_slider_moves(board, square, piece.color, _ROOK_DIRECTIONS))
-        elif piece.kind is PieceType.QUEEN:
-            moves.extend(_slider_moves(board, square, piece.color, _QUEEN_DIRECTIONS))
-        elif piece.kind is PieceType.KING:
-            moves.extend(_king_moves(board, square, piece.color))
-    return tuple(moves)
+    with _profile_scope("legal.pseudo"):
+        moves: list[Move] = []
+        side_to_move = board.side_to_move
+        for square_index, piece in enumerate(board.squares):
+            if piece is None or piece.color is not side_to_move:
+                continue
+            square = Square(square_index)
+            if piece.kind is PieceType.PAWN:
+                moves.extend(_pawn_moves(board, square, piece.color))
+            elif piece.kind is PieceType.KNIGHT:
+                moves.extend(_leaper_moves(board, square, piece.color, _KNIGHT_DELTAS))
+            elif piece.kind is PieceType.BISHOP:
+                moves.extend(_slider_moves(board, square, piece.color, _BISHOP_DIRECTIONS))
+            elif piece.kind is PieceType.ROOK:
+                moves.extend(_slider_moves(board, square, piece.color, _ROOK_DIRECTIONS))
+            elif piece.kind is PieceType.QUEEN:
+                moves.extend(_slider_moves(board, square, piece.color, _QUEEN_DIRECTIONS))
+            elif piece.kind is PieceType.KING:
+                moves.extend(_king_moves(board, square, piece.color))
+        result = tuple(moves)
+        _record_distribution("legal.pseudo_moves", len(result), unit="moves")
+        return result
 
 
 def legal_moves(board: Board) -> tuple[Move, ...]:
     """Return legal moves for the side to move."""
-    pseudo_moves = pseudo_legal_moves(board)
-    if not pseudo_moves:
-        return ()
+    with _profile_scope("legal.legal_moves"):
+        pseudo_moves = pseudo_legal_moves(board)
+        if not pseudo_moves:
+            _record_distribution("legal.legal_moves", 0, unit="moves")
+            return ()
 
-    legal: list[Move] = []
-    moving_color = board.side_to_move
-    opponent = moving_color.opposite
-    king_square = _king_square(board, moving_color)
-    for move in pseudo_moves:
-        moving_piece = board.squares[int(move.from_square)]
-        next_king_square = move.to_square if _is_king(moving_piece, moving_color) else king_square
-        next_board = board.apply_move(move)
-        if not is_square_attacked(next_board, next_king_square, opponent):
-            legal.append(move)
-    return tuple(legal)
+        legal: list[Move] = []
+        moving_color = board.side_to_move
+        opponent = moving_color.opposite
+        king_square = _king_square(board, moving_color)
+        with _profile_scope("legal.filter"):
+            _record_counter("legal.filter_candidates", len(pseudo_moves))
+            _record_distribution("legal.filter_candidates", len(pseudo_moves), unit="moves")
+            for move in pseudo_moves:
+                moving_piece = board.squares[int(move.from_square)]
+                next_king_square = (
+                    move.to_square if _is_king(moving_piece, moving_color) else king_square
+                )
+                next_board = board.apply_move(move)
+                if not is_square_attacked(next_board, next_king_square, opponent):
+                    legal.append(move)
+        result = tuple(legal)
+        _record_distribution("legal.legal_moves", len(result), unit="moves")
+        return result
 
 
 def has_legal_move(board: Board) -> bool:
     """Return whether the side to move has at least one legal move."""
-    pseudo_moves = pseudo_legal_moves(board)
-    if not pseudo_moves:
-        return False
+    with _profile_scope("legal.has_legal_move"):
+        pseudo_moves = pseudo_legal_moves(board)
+        if not pseudo_moves:
+            return False
 
-    moving_color = board.side_to_move
-    opponent = moving_color.opposite
-    king_square = _king_square(board, moving_color)
-    for move in pseudo_moves:
-        moving_piece = board.squares[int(move.from_square)]
-        next_king_square = move.to_square if _is_king(moving_piece, moving_color) else king_square
-        next_board = board.apply_move(move)
-        if not is_square_attacked(next_board, next_king_square, opponent):
-            return True
-    return False
+        moving_color = board.side_to_move
+        opponent = moving_color.opposite
+        king_square = _king_square(board, moving_color)
+        with _profile_scope("legal.filter"):
+            _record_counter("legal.filter_candidates", len(pseudo_moves))
+            for move in pseudo_moves:
+                moving_piece = board.squares[int(move.from_square)]
+                next_king_square = (
+                    move.to_square if _is_king(moving_piece, moving_color) else king_square
+                )
+                next_board = board.apply_move(move)
+                if not is_square_attacked(next_board, next_king_square, opponent):
+                    return True
+        return False
 
 
 def perft(board: Board, depth: int) -> int:
@@ -96,12 +133,20 @@ def perft(board: Board, depth: int) -> int:
 
 def is_in_check(board: Board, color: Color) -> bool:
     """Return whether ``color``'s king is attacked."""
-    king_square = _king_square(board, color)
-    return is_square_attacked(board, king_square, color.opposite)
+    with _profile_scope("legal.is_in_check"):
+        _record_counter("legal.in_check_calls")
+        king_square = _king_square(board, color)
+        return is_square_attacked(board, king_square, color.opposite)
 
 
 def is_square_attacked(board: Board, square: Square, by_color: Color) -> bool:
     """Return whether ``square`` is attacked by ``by_color``."""
+    with _profile_scope("legal.is_square_attacked"):
+        _record_counter("legal.is_square_attacked.calls")
+        return _is_square_attacked_impl(board, square, by_color)
+
+
+def _is_square_attacked_impl(board: Board, square: Square, by_color: Color) -> bool:
     target_index = int(validate_square(square))
     target_file = target_index % 8
     target_rank = target_index // 8
@@ -337,8 +382,9 @@ def _ray_attacked(
 
 
 def _king_square(board: Board, color: Color) -> Square:
-    for square_index, piece in enumerate(board.squares):
-        if piece is not None and piece.color is color and piece.kind is PieceType.KING:
-            return Square(square_index)
+    with _profile_scope("legal.king_square"):
+        for square_index, piece in enumerate(board.squares):
+            if piece is not None and piece.color is color and piece.kind is PieceType.KING:
+                return Square(square_index)
     msg = f"board has no {color.value} king"
     raise ValueError(msg)

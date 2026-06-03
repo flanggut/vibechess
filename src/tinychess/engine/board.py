@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 
 from tinychess.engine.move import Move
@@ -10,6 +11,18 @@ from tinychess.engine.piece import Color, Piece, PieceType
 from tinychess.engine.square import BOARD_SIZE, Square, parse_square, square_name, validate_square
 
 STARTING_POSITION = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
+
+
+def _profile_scope(name: str, **tags: object) -> AbstractContextManager[None]:
+    from tinychess.nn.self_play_profile import profile_scope
+
+    return profile_scope(name, **tags)
+
+
+def _record_counter(name: str, amount: int | float = 1, **tags: object) -> None:
+    from tinychess.nn.self_play_profile import record_counter
+
+    record_counter(name, amount, **tags)
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,49 +145,51 @@ class Board:
         This method is intentionally small and rule-focused for WP03 legal move
         generation and perft. It does not track game history, clocks, or outcomes.
         """
-        moving_piece = self.piece_at(move.from_square)
-        if moving_piece is None:
-            msg = f"cannot move from empty square {move.from_square}"
-            raise ValueError(msg)
-        if moving_piece.color is not self.side_to_move:
-            msg = "cannot move a piece that is not side_to_move"
-            raise ValueError(msg)
+        with _profile_scope("board.apply_move"):
+            _record_counter("board.apply_move.calls")
+            moving_piece = self.piece_at(move.from_square)
+            if moving_piece is None:
+                msg = f"cannot move from empty square {move.from_square}"
+                raise ValueError(msg)
+            if moving_piece.color is not self.side_to_move:
+                msg = "cannot move a piece that is not side_to_move"
+                raise ValueError(msg)
 
-        captured_piece = self.piece_at(move.to_square)
-        squares = list(self.squares)
-        squares[int(move.from_square)] = None
+            captured_piece = self.piece_at(move.to_square)
+            squares = list(self.squares)
+            squares[int(move.from_square)] = None
 
-        if _is_en_passant_capture(self, move, moving_piece):
-            capture_square = Square(
-                int(move.to_square) + (-8 if moving_piece.color is Color.WHITE else 8)
+            if _is_en_passant_capture(self, move, moving_piece):
+                capture_square = Square(
+                    int(move.to_square) + (-8 if moving_piece.color is Color.WHITE else 8)
+                )
+                captured_piece = self.piece_at(capture_square)
+                squares[int(capture_square)] = None
+
+            placed_piece = moving_piece
+            if move.promotion is not None:
+                if moving_piece.kind is not PieceType.PAWN:
+                    msg = "only pawns can promote"
+                    raise ValueError(msg)
+                if move.promotion not in _PROMOTION_PIECES:
+                    msg = "promotion piece must be queen, rook, bishop, or knight"
+                    raise ValueError(msg)
+                placed_piece = Piece(moving_piece.color, move.promotion)
+            squares[int(move.to_square)] = placed_piece
+
+            is_castling = (
+                moving_piece.kind is PieceType.KING
+                and abs(int(move.to_square) - int(move.from_square)) == 2
             )
-            captured_piece = self.piece_at(capture_square)
-            squares[int(capture_square)] = None
+            if is_castling:
+                _move_castling_rook(squares, moving_piece.color, move.to_square)
 
-        placed_piece = moving_piece
-        if move.promotion is not None:
-            if moving_piece.kind is not PieceType.PAWN:
-                msg = "only pawns can promote"
-                raise ValueError(msg)
-            if move.promotion not in _PROMOTION_PIECES:
-                msg = "promotion piece must be queen, rook, bishop, or knight"
-                raise ValueError(msg)
-            placed_piece = Piece(moving_piece.color, move.promotion)
-        squares[int(move.to_square)] = placed_piece
-
-        is_castling = (
-            moving_piece.kind is PieceType.KING
-            and abs(int(move.to_square) - int(move.from_square)) == 2
-        )
-        if is_castling:
-            _move_castling_rook(squares, moving_piece.color, move.to_square)
-
-        return Board(
-            squares=tuple(squares),
-            side_to_move=self.side_to_move.opposite,
-            castling_rights=_updated_castling_rights(self, move, moving_piece, captured_piece),
-            en_passant_target=_next_en_passant_target(move, moving_piece),
-        )
+            return Board(
+                squares=tuple(squares),
+                side_to_move=self.side_to_move.opposite,
+                castling_rights=_updated_castling_rights(self, move, moving_piece, captured_piece),
+                en_passant_target=_next_en_passant_target(move, moving_piece),
+            )
 
     def render(self, *, unicode: bool = False, coordinates: bool = True) -> str:
         """Render the board as text for a simple terminal UI."""

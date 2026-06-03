@@ -19,6 +19,7 @@ from tinychess.engine.game import Game
 from tinychess.engine.move import Move
 from tinychess.engine.piece import Color, PieceType
 from tinychess.engine.square import BOARD_SIZE, Square, file_index, rank_index, validate_square
+from tinychess.nn.self_play_profile import profile_scope, record_counter
 
 ACTION_SPACE_VERSION = "az-8x8x73-v1"
 ENCODER_VERSION = "tinychess-board-v1"
@@ -266,7 +267,9 @@ def legal_action_indices(game: Game, legal: tuple[Move, ...]) -> tuple[int, ...]
     Precondition: ``legal`` must be the legal move tuple for exactly ``game.board``.
     This helper intentionally does not validate, filter, or recompute legal moves.
     """
-    return tuple(move_to_action_index(move, game.board) for move in legal)
+    with profile_scope("policy.legal_indices"):
+        record_counter("policy.legal_indices.moves", len(legal))
+        return tuple(move_to_action_index(move, game.board) for move in legal)
 
 
 def legal_move_mask_from_legal_moves(game: Game, legal: tuple[Move, ...]) -> MLXArray:
@@ -275,11 +278,12 @@ def legal_move_mask_from_legal_moves(game: Game, legal: tuple[Move, ...]) -> MLX
     Precondition: ``legal`` must be the legal move tuple for exactly ``game.board``.
     This helper intentionally does not validate, filter, or recompute legal moves.
     """
-    legal_indices = legal_action_indices(game, legal)
-    if not legal_indices:
-        return mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32)
-    indices = mx.array(legal_indices)
-    return mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32).at[indices].add(1.0)
+    with profile_scope("policy.legal_mask_mlx"):
+        legal_indices = legal_action_indices(game, legal)
+        if not legal_indices:
+            return mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32)
+        indices = mx.array(legal_indices)
+        return mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32).at[indices].add(1.0)
 
 
 def legal_move_mask_from_legal_moves_np(
@@ -291,7 +295,8 @@ def legal_move_mask_from_legal_moves_np(
     The returned vector matches
     ``np.asarray(legal_move_mask_from_legal_moves(game, legal), dtype=np.float32)``.
     """
-    return legal_move_mask_from_board_moves_np(game.board, legal)
+    with profile_scope("record.legal_mask_np"):
+        return legal_move_mask_from_board_moves_np(game.board, legal)
 
 
 def legal_move_mask_from_board_moves_np(

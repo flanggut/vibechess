@@ -23,6 +23,7 @@ from tinychess.nn.encode import (
     tensor_shape,
     to_mlx,
 )
+from tinychess.nn.self_play_profile import profile_scope, record_counter, record_distribution
 
 MLXArray: TypeAlias = Any
 nn: Any = _nn
@@ -210,23 +211,39 @@ class PolicyValueInference:
         ``mask_legal_moves`` is true, illegal actions receive zero probability.
         Terminal/no-legal-move positions return an all-zero policy.
         """
-        output = self.model(encode_game(game))
-        logits = cast(MLXArray, output.policy_logits[0])
-        value = float(output.value[0].item())
-        if not mask_legal_moves:
-            policy = mx.softmax(logits)
-            mx.eval(policy)
-            return InferenceResult(policy_logits=logits, policy=policy, value=value)
+        with profile_scope("inference.predict", mask_legal_moves=mask_legal_moves):
+            record_counter("inference.predict.calls")
+            with profile_scope("encode.game_mlx"):
+                encoded = encode_game(game)
+            with profile_scope("model.forward"):
+                output = self.model(encoded)
+            logits = cast(MLXArray, output.policy_logits[0])
+            with profile_scope("mlx.sync.value_item"):
+                value = float(output.value[0].item())
+            if not mask_legal_moves:
+                with profile_scope("inference.policy_softmax"):
+                    policy = mx.softmax(logits)
+                with profile_scope("mlx.sync.policy_eval"):
+                    mx.eval(policy)
+                return InferenceResult(policy_logits=logits, policy=policy, value=value)
 
-        mask = legal_move_mask(game)
-        if float(mx.sum(mask).item()) == 0.0:
-            policy = mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32)
-        else:
-            masked_logits = mx.where(mask > 0, logits, mx.full(logits.shape, -1.0e9))
-            policy = mx.softmax(masked_logits) * mask
-            policy = policy / mx.sum(policy)
-        mx.eval(policy)
-        return InferenceResult(policy_logits=logits, policy=policy, value=value, legal_mask=mask)
+            with profile_scope("policy.legal_mask_mlx"):
+                mask = legal_move_mask(game)
+            if float(mx.sum(mask).item()) == 0.0:
+                policy = mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32)
+            else:
+                masked_logits = mx.where(mask > 0, logits, mx.full(logits.shape, -1.0e9))
+                with profile_scope("inference.policy_softmax"):
+                    policy = mx.softmax(masked_logits) * mask
+                    policy = policy / mx.sum(policy)
+            with profile_scope("mlx.sync.policy_eval"):
+                mx.eval(policy)
+            return InferenceResult(
+                policy_logits=logits,
+                policy=policy,
+                value=value,
+                legal_mask=mask,
+            )
 
     def predict_with_legal_moves(
         self,
@@ -240,33 +257,43 @@ class PolicyValueInference:
         recomputing legal moves and avoids synchronizing a full policy vector in
         search code that only needs priors for cached legal moves.
         """
-        legal = tuple(legal_moves)
-        output = self.model(encode_game(game))
-        logits = cast(MLXArray, output.policy_logits[0])
-        value = float(output.value[0].item())
-        indices = legal_action_indices(game, legal)
-        if not indices:
-            legal_policy = mx.zeros((0,), dtype=mx.float32)
-            policy = mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32)
-            mask = mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32)
-        else:
-            index_array = mx.array(indices)
-            legal_logits = logits[index_array]
-            legal_policy = mx.softmax(legal_logits)
-            policy = mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32).at[index_array].add(
-                legal_policy
+        with profile_scope("inference.predict_with_legal_moves"):
+            record_counter("inference.predict_with_legal_moves.calls")
+            legal = tuple(legal_moves)
+            record_distribution("inference.legal_moves", len(legal), unit="moves")
+            with profile_scope("encode.game_mlx"):
+                encoded = encode_game(game)
+            with profile_scope("model.forward"):
+                output = self.model(encoded)
+            logits = cast(MLXArray, output.policy_logits[0])
+            with profile_scope("mlx.sync.value_item"):
+                value = float(output.value[0].item())
+            with profile_scope("policy.legal_indices"):
+                indices = legal_action_indices(game, legal)
+            if not indices:
+                legal_policy = mx.zeros((0,), dtype=mx.float32)
+                policy = mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32)
+                mask = mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32)
+            else:
+                index_array = mx.array(indices)
+                legal_logits = logits[index_array]
+                with profile_scope("inference.policy_softmax"):
+                    legal_policy = mx.softmax(legal_logits)
+                policy = mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32).at[index_array].add(
+                    legal_policy
+                )
+                mask = mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32).at[index_array].add(1.0)
+            with profile_scope("mlx.sync.policy_eval"):
+                mx.eval(legal_policy)
+            return InferenceResult(
+                policy_logits=logits,
+                policy=policy,
+                value=value,
+                legal_mask=mask,
+                legal_moves=legal,
+                legal_action_indices=indices,
+                legal_policy=legal_policy,
             )
-            mask = mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32).at[index_array].add(1.0)
-        mx.eval(legal_policy)
-        return InferenceResult(
-            policy_logits=logits,
-            policy=policy,
-            value=value,
-            legal_mask=mask,
-            legal_moves=legal,
-            legal_action_indices=indices,
-            legal_policy=legal_policy,
-        )
 
     def predict_batch(
         self,
@@ -284,83 +311,97 @@ class PolicyValueInference:
         batches can pass a batched legal mask. In all modes logits and policies
         keep the fixed 4672-action dimension.
         """
-        games = _game_sequence(inputs)
-        if games is not None:
-            if not games:
-                raise ValueError("predict_batch requires at least one position")
-            encoded = mx.stack([encode_game(game) for game in games])
-        else:
-            encoded = _prepare_encoded_batch(inputs)
-        batch_size = tensor_shape(encoded)[0]
-        if batch_size < 1:
-            raise ValueError("predict_batch requires at least one position")
-
-        if legal_moves is not None and games is None:
-            raise ValueError("legal_moves require Game inputs")
-        if legal_masks is not None and legal_moves is not None:
-            raise ValueError("pass legal_masks or legal_moves, not both")
-
-        output = self.model(encoded)
-        logits = output.policy_logits
-        values = tuple(float(value) for value in np.asarray(output.value, dtype=np.float32))
-        if len(values) != batch_size:
-            raise ValueError(f"model returned {len(values)} values for batch size {batch_size}")
-
-        legal_masks_batch: MLXArray | None = None
-        legal_by_row: tuple[tuple[Move, ...], ...] | None = None
-        legal_indices_by_row: tuple[tuple[int, ...], ...] = ()
-        if mask_legal_moves:
-            if legal_moves is not None:
-                assert games is not None
-                legal_by_row = tuple(tuple(row) for row in legal_moves)
-                if len(legal_by_row) != batch_size:
-                    raise ValueError("legal_moves length must match batch size")
-                legal_indices_by_row = tuple(
-                    legal_action_indices(game, legal)
-                    for game, legal in zip(games, legal_by_row, strict=True)
-                )
-                legal_masks_batch = mx.stack(
-                    [
-                        legal_move_mask_from_legal_moves(game, legal)
-                        for game, legal in zip(games, legal_by_row, strict=True)
-                    ]
-                )
-            elif legal_masks is not None:
-                legal_masks_batch = _prepare_legal_mask_batch(legal_masks, batch_size)
-            elif games is not None:
-                legal_by_row = tuple(game.legal_moves for game in games)
-                legal_indices_by_row = tuple(
-                    legal_action_indices(game, legal)
-                    for game, legal in zip(games, legal_by_row, strict=True)
-                )
-                legal_masks_batch = mx.stack([legal_move_mask(game) for game in games])
+        with profile_scope("inference.predict_batch", mask_legal_moves=mask_legal_moves):
+            games = _game_sequence(inputs)
+            if games is not None:
+                if not games:
+                    raise ValueError("predict_batch requires at least one position")
+                with profile_scope("encode.batch_stack"):
+                    encoded = mx.stack([encode_game(game) for game in games])
             else:
-                raise ValueError("masked encoded batch inference requires legal_masks")
+                encoded = _prepare_encoded_batch(inputs)
+            batch_size = tensor_shape(encoded)[0]
+            record_counter("inference.predict_batch.calls")
+            record_counter("inference.batch_positions", batch_size)
+            record_distribution("inference.batch_size", batch_size, unit="positions")
+            if batch_size < 1:
+                raise ValueError("predict_batch requires at least one position")
 
-        if not mask_legal_moves:
-            policy = mx.softmax(logits, axis=1)
-        else:
-            assert legal_masks_batch is not None
-            masked_logits = mx.where(
-                legal_masks_batch > 0,
-                logits,
-                mx.full(logits.shape, -1.0e9),
+            if legal_moves is not None and games is None:
+                raise ValueError("legal_moves require Game inputs")
+            if legal_masks is not None and legal_moves is not None:
+                raise ValueError("pass legal_masks or legal_moves, not both")
+
+            with profile_scope("model.forward"):
+                output = self.model(encoded)
+            logits = output.policy_logits
+            with profile_scope("mlx.sync.value_item"):
+                values = tuple(float(value) for value in np.asarray(output.value, dtype=np.float32))
+            if len(values) != batch_size:
+                raise ValueError(f"model returned {len(values)} values for batch size {batch_size}")
+
+            legal_masks_batch: MLXArray | None = None
+            legal_by_row: tuple[tuple[Move, ...], ...] | None = None
+            legal_indices_by_row: tuple[tuple[int, ...], ...] = ()
+            if mask_legal_moves:
+                if legal_moves is not None:
+                    assert games is not None
+                    legal_by_row = tuple(tuple(row) for row in legal_moves)
+                    if len(legal_by_row) != batch_size:
+                        raise ValueError("legal_moves length must match batch size")
+                    with profile_scope("policy.legal_indices"):
+                        legal_indices_by_row = tuple(
+                            legal_action_indices(game, legal)
+                            for game, legal in zip(games, legal_by_row, strict=True)
+                        )
+                    with profile_scope("policy.legal_mask_mlx"):
+                        legal_masks_batch = mx.stack(
+                            [
+                                legal_move_mask_from_legal_moves(game, legal)
+                                for game, legal in zip(games, legal_by_row, strict=True)
+                            ]
+                        )
+                elif legal_masks is not None:
+                    with profile_scope("policy.legal_mask_mlx"):
+                        legal_masks_batch = _prepare_legal_mask_batch(legal_masks, batch_size)
+                elif games is not None:
+                    legal_by_row = tuple(game.legal_moves for game in games)
+                    with profile_scope("policy.legal_indices"):
+                        legal_indices_by_row = tuple(
+                            legal_action_indices(game, legal)
+                            for game, legal in zip(games, legal_by_row, strict=True)
+                        )
+                    with profile_scope("policy.legal_mask_mlx"):
+                        legal_masks_batch = mx.stack([legal_move_mask(game) for game in games])
+                else:
+                    raise ValueError("masked encoded batch inference requires legal_masks")
+
+            with profile_scope("inference.policy_softmax"):
+                if not mask_legal_moves:
+                    policy = mx.softmax(logits, axis=1)
+                else:
+                    assert legal_masks_batch is not None
+                    masked_logits = mx.where(
+                        legal_masks_batch > 0,
+                        logits,
+                        mx.full(logits.shape, -1.0e9),
+                    )
+                    policy = mx.softmax(masked_logits, axis=1) * legal_masks_batch
+                    row_sums = mx.sum(policy, axis=1, keepdims=True)
+                    policy = policy / mx.where(row_sums > 0, row_sums, 1.0)
+            with profile_scope("mlx.sync.policy_eval"):
+                if legal_masks_batch is None:
+                    mx.eval(logits, policy)
+                else:
+                    mx.eval(logits, policy, legal_masks_batch)
+            return BatchInferenceResult(
+                policy_logits=logits,
+                policy=policy,
+                values=values,
+                legal_masks=legal_masks_batch,
+                legal_moves=legal_by_row,
+                legal_action_indices=legal_indices_by_row,
             )
-            policy = mx.softmax(masked_logits, axis=1) * legal_masks_batch
-            row_sums = mx.sum(policy, axis=1, keepdims=True)
-            policy = policy / mx.where(row_sums > 0, row_sums, 1.0)
-        if legal_masks_batch is None:
-            mx.eval(logits, policy)
-        else:
-            mx.eval(logits, policy, legal_masks_batch)
-        return BatchInferenceResult(
-            policy_logits=logits,
-            policy=policy,
-            values=values,
-            legal_masks=legal_masks_batch,
-            legal_moves=legal_by_row,
-            legal_action_indices=legal_indices_by_row,
-        )
 
 
 def _game_sequence(inputs: Sequence[Game] | MLXArray) -> tuple[Game, ...] | None:

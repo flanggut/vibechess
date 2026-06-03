@@ -20,6 +20,7 @@ from tinychess.engine.outcome import Outcome
 from tinychess.engine.piece import Color
 from tinychess.nn.encode import move_to_action_index
 from tinychess.nn.model import InferenceResult, PolicyValueInference
+from tinychess.nn.self_play_profile import profile_scope, record_counter, record_distribution
 
 # Kept as a module attribute for Work Item 5.1 self-play profiling monkeypatches.
 determine_outcome = _game_determine_outcome
@@ -128,17 +129,20 @@ class NeuralMCTSNode:
         prior: float = 0.0,
     ) -> NeuralMCTSNode:
         """Create a node with cached legal moves and outcome state."""
-        state = SearchState.from_game(game) if isinstance(game, Game) else game
-        legal = state.legal_moves
-        outcome = state.outcome_with_legal_moves(legal)
-        return cls(
-            state=state,
-            parent=parent,
-            move=move,
-            prior=prior,
-            legal_moves=legal,
-            outcome=outcome,
-        )
+        with profile_scope("mcts.node_create"):
+            record_counter("mcts.node_create.calls")
+            state = SearchState.from_game(game) if isinstance(game, Game) else game
+            legal = state.legal_moves
+            outcome = state.outcome_with_legal_moves(legal)
+            record_distribution("mcts.node_legal_count", len(legal), unit="moves")
+            return cls(
+                state=state,
+                parent=parent,
+                move=move,
+                prior=prior,
+                legal_moves=legal,
+                outcome=outcome,
+            )
 
     @property
     def game(self) -> Game:
@@ -159,22 +163,24 @@ class NeuralMCTSNode:
 
     def best_edge(self, exploration: float) -> NeuralMCTSEdge:
         """Return the legal edge with the highest PUCT score for this node's mover."""
-        if not self.edges:
-            msg = "cannot select best edge from an unexpanded leaf"
-            raise ValueError(msg)
-        parent_visits = max(1, self.visits)
+        with profile_scope("mcts.best_edge"):
+            record_counter("mcts.best_edge.calls")
+            if not self.edges:
+                msg = "cannot select best edge from an unexpanded leaf"
+                raise ValueError(msg)
+            parent_visits = max(1, self.visits)
 
-        def score(edge: NeuralMCTSEdge) -> float:
-            # Edge values are from the child/opponent perspective, so negate for
-            # the current node's side to move.
-            q_value = -edge.mean_value
-            u_value = exploration * edge.prior * math.sqrt(parent_visits) / (1 + edge.visits)
-            return q_value + u_value
+            def score(edge: NeuralMCTSEdge) -> float:
+                # Edge values are from the child/opponent perspective, so negate for
+                # the current node's side to move.
+                q_value = -edge.mean_value
+                u_value = exploration * edge.prior * math.sqrt(parent_visits) / (1 + edge.visits)
+                return q_value + u_value
 
-        return max(
-            self.edges.values(),
-            key=lambda edge: (score(edge), edge.move.to_uci()),
-        )
+            return max(
+                self.edges.values(),
+                key=lambda edge: (score(edge), edge.move.to_uci()),
+            )
 
     def best_child(self, exploration: float) -> NeuralMCTSNode:
         """Return the materialized child behind the highest-scoring legal edge."""
@@ -227,12 +233,22 @@ class NeuralMCTSPlayer:
 
     def search(self, game: Game) -> NeuralMCTSResult:
         """Run PUCT search from ``game`` and return the selected move plus metadata."""
+        with profile_scope(
+            "mcts.search",
+            simulations_requested=self.config.simulations,
+            moves_played=len(game.moves),
+        ):
+            return self._search_profiled(game)
+
+    def _search_profiled(self, game: Game) -> NeuralMCTSResult:
         start = time.perf_counter()
         root, nodes_created, adopted_root = self._root_for_game(game)
         if root.outcome is not None:
             msg = f"cannot select a move from a terminal game: {root.outcome.reason.value}"
             raise NoLegalMoveError(msg)
         legal = root.legal_moves
+        record_distribution("mcts.root_legal_count", len(legal), unit="moves")
+        record_counter("mcts.root_adoption_hits" if adopted_root else "mcts.root_adoption_misses")
         if not legal:
             msg = "cannot select a move from a position with no legal moves"
             raise NoLegalMoveError(msg)
@@ -248,35 +264,48 @@ class NeuralMCTSPlayer:
         while simulations < self.config.simulations:
             if deadline is not None and simulations > 0 and time.perf_counter() >= deadline:
                 break
-            node = root
-            if deadline is not None and time.perf_counter() >= deadline:
-                break
+            with profile_scope("mcts.simulation", simulation_index=simulations):
+                node = root
+                if deadline is not None and time.perf_counter() >= deadline:
+                    break
 
-            budget_blocked = False
-            while node.is_expanded and node.edges and not node.is_terminal:
-                edge = node.best_edge(self.config.puct_exploration)
-                if edge.child is None:
-                    budget_reached = (
-                        self.config.node_budget is not None
-                        and nodes_created >= self.config.node_budget
-                    )
-                    if budget_reached:
-                        budget_blocked = True
-                        break
-                    node = self._materialize_child(node, edge)
-                    nodes_created += 1
+                budget_blocked = False
+                selection_depth = 0
+                with profile_scope("mcts.selection"):
+                    while node.is_expanded and node.edges and not node.is_terminal:
+                        edge = node.best_edge(self.config.puct_exploration)
+                        if edge.child is None:
+                            budget_reached = (
+                                self.config.node_budget is not None
+                                and nodes_created >= self.config.node_budget
+                            )
+                            if budget_reached:
+                                budget_blocked = True
+                                record_counter("mcts.node_budget_blocked")
+                                break
+                            node = self._materialize_child(node, edge)
+                            nodes_created += 1
+                            record_counter("mcts.materialized_nodes")
+                        else:
+                            node = edge.child
+                        selection_depth += 1
+                record_distribution("mcts.selection_depth", selection_depth, unit="edges")
+
+                if node.is_terminal:
+                    with profile_scope("mcts.terminal_value"):
+                        record_counter("mcts.terminal_simulations")
+                        value = _terminal_value(node.outcome, node.state.board.side_to_move)
+                elif budget_blocked:
+                    value = self._evaluate(node)
                 else:
-                    node = edge.child
+                    value = self._expand(node)
+                    record_counter("mcts.expanded_simulations")
+                self._backup(node, value)
+                simulations += 1
 
-            if node.is_terminal:
-                value = _terminal_value(node.outcome, node.state.board.side_to_move)
-            elif budget_blocked:
-                value = self._evaluate(node)
-            else:
-                value = self._expand(node)
-            self._backup(node, value)
-            simulations += 1
-
+        record_counter("mcts.completed_simulations", simulations)
+        record_distribution("mcts.simulations_per_search", simulations, unit="simulations")
+        record_distribution("mcts.nodes_per_search", nodes_created, unit="nodes")
         selected_move = _select_by_temperature(root, self.config.temperature, self._rng)
         if selected_move is None:
             selected_move = self._rng.choice(legal)
@@ -293,12 +322,18 @@ class NeuralMCTSPlayer:
         return result
 
     def _root_for_game(self, game: Game) -> tuple[NeuralMCTSNode, int, bool]:
-        adopted = self._adopt_descendant_root(game)
-        if adopted is not None:
-            return adopted, 1, True
-        return NeuralMCTSNode.create(game), 1, False
+        with profile_scope("mcts.root_for_game"):
+            adopted = self._adopt_descendant_root(game)
+            if adopted is not None:
+                return adopted, 1, True
+            record_counter("mcts.materialized_nodes")
+            return NeuralMCTSNode.create(game), 1, False
 
     def _adopt_descendant_root(self, game: Game) -> NeuralMCTSNode | None:
+        with profile_scope("mcts.adopt_descendant_root"):
+            return self._adopt_descendant_root_impl(game)
+
+    def _adopt_descendant_root_impl(self, game: Game) -> NeuralMCTSNode | None:
         root = self._tree_root
         if root is None:
             return None
@@ -324,33 +359,43 @@ class NeuralMCTSPlayer:
         root.parent = None
 
     def _expand(self, node: NeuralMCTSNode) -> float:
-        prediction = self._predict(node)
-        priors = _legal_priors(node, prediction)
-        node.edges = {
-            move: NeuralMCTSEdge(move=move, prior=prior, child=node.children.get(move))
-            for move, prior in priors.items()
-        }
-        for move, child in node.children.items():
-            edge = node.edges.get(move)
-            if edge is not None:
-                edge.visits = child.visits
-                edge.total_value = child.total_value
-        node.is_expanded = True
-        return prediction.value
+        with profile_scope("mcts.expand"):
+            record_counter("mcts.expand.calls")
+            prediction = self._predict(node)
+            priors = _legal_priors(node, prediction)
+            record_distribution("mcts.edge_count", len(priors), unit="edges")
+            with profile_scope("mcts.edge_create"):
+                record_counter("mcts.edge_create.edges", len(priors))
+                node.edges = {
+                    move: NeuralMCTSEdge(move=move, prior=prior, child=node.children.get(move))
+                    for move, prior in priors.items()
+                }
+            for move, child in node.children.items():
+                edge = node.edges.get(move)
+                if edge is not None:
+                    edge.visits = child.visits
+                    edge.total_value = child.total_value
+            node.is_expanded = True
+            return prediction.value
 
     @staticmethod
     def _materialize_child(node: NeuralMCTSNode, edge: NeuralMCTSEdge) -> NeuralMCTSNode:
-        child = NeuralMCTSNode.create(
-            node.state.play_known_legal(edge.move),
-            parent=node,
-            move=edge.move,
-            prior=edge.prior,
-        )
-        edge.child = child
-        node.children[edge.move] = child
-        return child
+        with profile_scope("mcts.materialize_child"):
+            child = NeuralMCTSNode.create(
+                node.state.play_known_legal(edge.move),
+                parent=node,
+                move=edge.move,
+                prior=edge.prior,
+            )
+            edge.child = child
+            node.children[edge.move] = child
+            return child
 
     def _predict(self, node: NeuralMCTSNode) -> InferenceResult:
+        with profile_scope("mcts.predict"):
+            return self._predict_profiled(node)
+
+    def _predict_profiled(self, node: NeuralMCTSNode) -> InferenceResult:
         predict_with_legal_moves = getattr(self.inference, "predict_with_legal_moves", None)
         if callable(predict_with_legal_moves):
             typed_predict = cast(
@@ -364,26 +409,42 @@ class NeuralMCTSPlayer:
         )
 
     def _evaluate(self, node: NeuralMCTSNode) -> float:
-        return self._predict(node).value
+        with profile_scope("mcts.evaluate"):
+            record_counter("mcts.evaluate.calls")
+            return self._predict(node).value
 
     @staticmethod
     def _backup(node: NeuralMCTSNode, value: float) -> None:
-        current: NeuralMCTSNode | None = node
-        current_value = value
-        while current is not None:
-            current.visits += 1
-            current.total_value += current_value
-            parent = current.parent
-            if parent is not None and current.move is not None:
-                edge = parent.edges.get(current.move)
-                if edge is not None:
-                    edge.visits += 1
-                    edge.total_value += current_value
-            current_value = -current_value
-            current = parent
+        with profile_scope("mcts.backup"):
+            current: NeuralMCTSNode | None = node
+            current_value = value
+            depth = 0
+            while current is not None:
+                current.visits += 1
+                current.total_value += current_value
+                parent = current.parent
+                if parent is not None and current.move is not None:
+                    edge = parent.edges.get(current.move)
+                    if edge is not None:
+                        edge.visits += 1
+                        edge.total_value += current_value
+                depth += 1
+                current_value = -current_value
+                current = parent
+            record_distribution("mcts.backup_depth", depth, unit="nodes")
 
 
 def _legal_priors(
+    position: NeuralMCTSNode | Game,
+    prediction: InferenceResult,
+    *,
+    legal_moves: Iterable[Move] | None = None,
+) -> dict[Move, float]:
+    with profile_scope("mcts.legal_priors"):
+        return _legal_priors_impl(position, prediction, legal_moves=legal_moves)
+
+
+def _legal_priors_impl(
     position: NeuralMCTSNode | Game,
     prediction: InferenceResult,
     *,
@@ -402,6 +463,7 @@ def _legal_priors(
         return {}
 
     if prediction.legal_policy is not None and prediction.legal_moves == legal:
+        record_counter("mcts.legal_priors.compact")
         compact_priors = np.asarray(prediction.legal_policy, dtype=np.float32).reshape(-1)
         if compact_priors.shape == (len(legal),):
             compact_raw_priors = {
@@ -410,6 +472,7 @@ def _legal_priors(
             }
             return _normalize_priors(compact_raw_priors)
 
+    record_counter("mcts.legal_priors.dense_fallback")
     full_raw_priors: dict[Move, float] = {}
     for move in legal:
         index = move_to_action_index(move, board)
@@ -436,21 +499,23 @@ def _select_by_temperature(
     temperature: float,
     rng: random.Random,
 ) -> Move | None:
-    if not root.edges:
-        return None
-    edges = list(root.edges.values())
-    if temperature == 0.0:
-        return max(
-            edges,
-            key=lambda edge: (
-                edge.visits,
-                -edge.mean_value,
-                edge.move.to_uci(),
-            ),
-        ).move
-    weights = [float(edge.visits) ** (1.0 / temperature) for edge in edges]
-    if sum(weights) <= 0.0:
-        weights = [edge.prior for edge in edges]
-    if sum(weights) <= 0.0:
-        weights = [1.0 for _edge in edges]
-    return rng.choices([edge.move for edge in edges], weights=weights, k=1)[0]
+    with profile_scope("mcts.select_temperature"):
+        record_counter("mcts.select_temperature.calls")
+        if not root.edges:
+            return None
+        edges = list(root.edges.values())
+        if temperature == 0.0:
+            return max(
+                edges,
+                key=lambda edge: (
+                    edge.visits,
+                    -edge.mean_value,
+                    edge.move.to_uci(),
+                ),
+            ).move
+        weights = [float(edge.visits) ** (1.0 / temperature) for edge in edges]
+        if sum(weights) <= 0.0:
+            weights = [edge.prior for edge in edges]
+        if sum(weights) <= 0.0:
+            weights = [1.0 for _edge in edges]
+        return rng.choices([edge.move for edge in edges], weights=weights, k=1)[0]

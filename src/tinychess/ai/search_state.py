@@ -10,6 +10,7 @@ API.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 
 from tinychess.engine.board import Board
@@ -25,6 +26,24 @@ from tinychess.engine.legal_moves import legal_moves as generate_legal_moves
 from tinychess.engine.move import Move
 from tinychess.engine.outcome import Outcome, OutcomeReason
 from tinychess.engine.piece import Color, PieceType
+
+
+def _profile_scope(name: str, **tags: object) -> AbstractContextManager[None]:
+    from tinychess.nn.self_play_profile import profile_scope
+
+    return profile_scope(name, **tags)
+
+
+def _record_counter(name: str, amount: int | float = 1, **tags: object) -> None:
+    from tinychess.nn.self_play_profile import record_counter
+
+    record_counter(name, amount, **tags)
+
+
+def _record_distribution(name: str, value: int | float, *, unit: str, **tags: object) -> None:
+    from tinychess.nn.self_play_profile import record_distribution
+
+    record_distribution(name, value, unit=unit, **tags)
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,16 +74,17 @@ class SearchState:
     @classmethod
     def from_game(cls, game: Game) -> SearchState:
         """Create a search state from ``game`` without copying its position history."""
-        return cls(
-            board=game.board,
-            halfmove_clock=game.halfmove_clock,
-            fullmove_number=game.fullmove_number,
-            repetition_counts=dict(game.repetition_counts),
-            move_path=(),
-            forced_outcome=game.forced_outcome,
-            _base_positions=game.positions,
-            _base_moves=game.moves,
-        )
+        with _profile_scope("search_state.from_game"):
+            return cls(
+                board=game.board,
+                halfmove_clock=game.halfmove_clock,
+                fullmove_number=game.fullmove_number,
+                repetition_counts=dict(game.repetition_counts),
+                move_path=(),
+                forced_outcome=game.forced_outcome,
+                _base_positions=game.positions,
+                _base_moves=game.moves,
+            )
 
     def to_game(self, *, include_positions: bool = True) -> Game:
         """Return a ``Game`` view of this search state.
@@ -75,15 +95,18 @@ class SearchState:
         compact single-position ``Game`` for inference encoding, where only the current
         board, clocks, repetition counts, outcome, and move path are needed.
         """
-        positions = self._positions() if include_positions else (self.board,)
-        return Game(
-            positions=positions,
-            moves=self.moves,
-            halfmove_clock=self.halfmove_clock,
-            fullmove_number=self.fullmove_number,
-            repetition_counts=dict(self.repetition_counts),
-            forced_outcome=self.forced_outcome,
-        )
+        with _profile_scope("search_state.to_game", include_positions=include_positions):
+            _record_counter("search_state.to_game.calls")
+            _record_distribution("search_state.move_path_length", len(self.move_path), unit="moves")
+            positions = self._positions() if include_positions else (self.board,)
+            return Game(
+                positions=positions,
+                moves=self.moves,
+                halfmove_clock=self.halfmove_clock,
+                fullmove_number=self.fullmove_number,
+                repetition_counts=dict(self.repetition_counts),
+                forced_outcome=self.forced_outcome,
+            )
 
     @property
     def moves(self) -> tuple[Move, ...]:
@@ -93,18 +116,26 @@ class SearchState:
     @property
     def legal_moves(self) -> tuple[Move, ...]:
         """Return legal moves in the current search position."""
-        return generate_legal_moves(self.board)
+        with _profile_scope("search_state.legal_moves"):
+            legal = generate_legal_moves(self.board)
+            _record_distribution("search_state.legal_moves", len(legal), unit="moves")
+            return legal
 
     @property
     def outcome(self) -> Outcome | None:
         """Return the current outcome using the same pragmatic rules as ``Game``."""
-        if self.forced_outcome is not None:
-            return self.forced_outcome
-        legal = self.legal_moves
-        return self.outcome_with_legal_moves(legal)
+        with _profile_scope("search_state.outcome"):
+            if self.forced_outcome is not None:
+                return self.forced_outcome
+            legal = self.legal_moves
+            return self.outcome_with_legal_moves(legal)
 
     def outcome_with_legal_moves(self, legal_moves: tuple[Move, ...]) -> Outcome | None:
         """Return the current outcome using a caller-supplied legal-move cache."""
+        with _profile_scope("search_state.outcome_with_legal_moves"):
+            return self._outcome_with_legal_moves_impl(legal_moves)
+
+    def _outcome_with_legal_moves_impl(self, legal_moves: tuple[Move, ...]) -> Outcome | None:
         if self.forced_outcome is not None:
             return self.forced_outcome
         if not legal_moves:
@@ -125,6 +156,11 @@ class SearchState:
 
     def play_known_legal(self, move: Move) -> SearchState:
         """Return the state after applying a move already known to be legal."""
+        with _profile_scope("search_state.play_known_legal"):
+            _record_counter("search_state.play_known_legal.calls")
+            return self._play_known_legal_impl(move)
+
+    def _play_known_legal_impl(self, move: Move) -> SearchState:
         moving_piece = self.board.piece_at(move.from_square)
         if moving_piece is None:  # defensive; legal membership should prevent this
             msg = f"cannot move from empty square {move.from_square}"
@@ -154,18 +190,19 @@ class SearchState:
         )
 
     def _positions(self) -> tuple[Board, ...]:
-        if self._base_positions:
-            positions = list(self._base_positions)
-            board = positions[-1]
-            suffix = self.move_path
-        else:
-            positions = [self.board]
-            board = self.board
-            suffix = ()
+        with _profile_scope("search_state.positions_reconstruct"):
+            if self._base_positions:
+                positions = list(self._base_positions)
+                board = positions[-1]
+                suffix = self.move_path
+            else:
+                positions = [self.board]
+                board = self.board
+                suffix = ()
 
-        for move in suffix:
-            board = board.apply_move(move)
-            positions.append(board)
-        if positions[-1] != self.board:
-            positions[-1] = self.board
-        return tuple(positions)
+            for move in suffix:
+                board = board.apply_move(move)
+                positions.append(board)
+            if positions[-1] != self.board:
+                positions[-1] = self.board
+            return tuple(positions)

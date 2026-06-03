@@ -4,9 +4,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-import time
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,7 +16,6 @@ import tinychess
 from tinychess.ai.mcts import MCTSPlayer
 from tinychess.ai.neural_mcts import NeuralInference, NeuralMCTSConfig, NeuralMCTSPlayer
 from tinychess.ai.search_config import MCTSConfig
-from tinychess.engine.board import Board
 from tinychess.engine.game import Game, determine_outcome
 from tinychess.engine.move import Move
 from tinychess.engine.outcome import Outcome, OutcomeReason
@@ -34,6 +30,15 @@ from tinychess.nn.encode import (
     move_to_action_index,
 )
 from tinychess.nn.model import InferenceResult, PolicyValueInference
+from tinychess.nn.self_play_profile import (
+    ProfileStats as SelfPlayProfileStats,
+)
+from tinychess.nn.self_play_profile import (
+    activate_self_play_profile,
+    profile_scope,
+    record_counter,
+    record_distribution,
+)
 
 SELF_PLAY_DATASET_SCHEMA_VERSION = "tinychess-selfplay-v1"
 DEFAULT_DATASET_FILENAME = "samples.npz"
@@ -224,348 +229,17 @@ class SelfPlayDataset:
     games: list[SelfPlayGameRecord]
 
 
-@dataclass(slots=True)
-class SelfPlayProfileStats:
-    """In-process timing and count counters for self-play benchmark diagnostics."""
+# Compatibility wrapper for older callers that imported the benchmark profile API
+# from this module. The implementation lives in tinychess.nn.self_play_profile and
+# no longer monkeypatches engine/model classes.
+def self_play_profile(
+    level: str | None = "detailed",
+) -> Any:
+    """Activate direct self-play profiling for the current context.
 
-    game_legal_moves_calls: int = 0
-    game_legal_moves_seconds: float = 0.0
-    determine_outcome_calls: int = 0
-    determine_outcome_seconds: float = 0.0
-    game_play_known_legal_calls: int = 0
-    game_play_known_legal_seconds: float = 0.0
-    board_apply_move_calls: int = 0
-    board_apply_move_seconds: float = 0.0
-    model_single_calls: int = 0
-    model_single_seconds: float = 0.0
-    model_batch_calls: int = 0
-    model_batch_seconds: float = 0.0
-    model_batch_positions: int = 0
-    model_batch_size_min: int | None = None
-    model_batch_size_max: int | None = None
-    search_calls: int = 0
-    search_seconds: float = 0.0
-    materialized_nodes: int = 0
-    completed_simulations: int = 0
-
-    def record_batch_size(self, batch_size: int) -> None:
-        """Record one model batch size."""
-        self.model_batch_positions += batch_size
-        if self.model_batch_size_min is None or batch_size < self.model_batch_size_min:
-            self.model_batch_size_min = batch_size
-        if self.model_batch_size_max is None or batch_size > self.model_batch_size_max:
-            self.model_batch_size_max = batch_size
-
-    def to_dict(self) -> dict[str, object]:
-        """Return a JSON-serializable profile report."""
-        mean_batch_size = 0.0
-        if self.model_batch_calls > 0:
-            mean_batch_size = self.model_batch_positions / self.model_batch_calls
-        return {
-            "format_version": 1,
-            "timers": {
-                "game_legal_moves": {
-                    "calls": self.game_legal_moves_calls,
-                    "seconds": self.game_legal_moves_seconds,
-                },
-                "determine_outcome": {
-                    "calls": self.determine_outcome_calls,
-                    "seconds": self.determine_outcome_seconds,
-                },
-                "game_play_known_legal": {
-                    "calls": self.game_play_known_legal_calls,
-                    "seconds": self.game_play_known_legal_seconds,
-                },
-                "board_apply_move": {
-                    "calls": self.board_apply_move_calls,
-                    "seconds": self.board_apply_move_seconds,
-                },
-                "model_single": {
-                    "calls": self.model_single_calls,
-                    "seconds": self.model_single_seconds,
-                },
-                "model_batch": {
-                    "calls": self.model_batch_calls,
-                    "seconds": self.model_batch_seconds,
-                    "positions": self.model_batch_positions,
-                    "batch_size_min": self.model_batch_size_min,
-                    "batch_size_max": self.model_batch_size_max,
-                    "batch_size_mean": mean_batch_size,
-                },
-                "search": {
-                    "calls": self.search_calls,
-                    "seconds": self.search_seconds,
-                    "materialized_nodes": self.materialized_nodes,
-                    "completed_simulations": self.completed_simulations,
-                },
-            },
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, object]) -> SelfPlayProfileStats:
-        """Parse a profile report produced by :meth:`to_dict`."""
-        timers = data.get("timers")
-        if not isinstance(timers, dict):
-            raise TypeError("profile field 'timers' must be an object")
-        stats = cls()
-        legal = _expect_mapping(timers, "game_legal_moves")
-        stats.game_legal_moves_calls = _expect_int(legal, "calls")
-        stats.game_legal_moves_seconds = _expect_float(legal, "seconds")
-        outcome = _expect_mapping(timers, "determine_outcome")
-        stats.determine_outcome_calls = _expect_int(outcome, "calls")
-        stats.determine_outcome_seconds = _expect_float(outcome, "seconds")
-        play = _expect_mapping(timers, "game_play_known_legal")
-        stats.game_play_known_legal_calls = _expect_int(play, "calls")
-        stats.game_play_known_legal_seconds = _expect_float(play, "seconds")
-        apply = _expect_mapping(timers, "board_apply_move")
-        stats.board_apply_move_calls = _expect_int(apply, "calls")
-        stats.board_apply_move_seconds = _expect_float(apply, "seconds")
-        single = _expect_mapping(timers, "model_single")
-        stats.model_single_calls = _expect_int(single, "calls")
-        stats.model_single_seconds = _expect_float(single, "seconds")
-        batch = _expect_mapping(timers, "model_batch")
-        stats.model_batch_calls = _expect_int(batch, "calls")
-        stats.model_batch_seconds = _expect_float(batch, "seconds")
-        stats.model_batch_positions = _expect_int(batch, "positions")
-        stats.model_batch_size_min = _optional_int(batch, "batch_size_min")
-        stats.model_batch_size_max = _optional_int(batch, "batch_size_max")
-        search = _expect_mapping(timers, "search")
-        stats.search_calls = _expect_int(search, "calls")
-        stats.search_seconds = _expect_float(search, "seconds")
-        stats.materialized_nodes = _expect_int(search, "materialized_nodes")
-        stats.completed_simulations = _expect_int(search, "completed_simulations")
-        return stats
-
-    @classmethod
-    def merge(cls, profiles: Sequence[SelfPlayProfileStats]) -> SelfPlayProfileStats:
-        """Return aggregate stats across subprocess shards or benchmark repeats."""
-        merged = cls()
-        for profile in profiles:
-            merged.game_legal_moves_calls += profile.game_legal_moves_calls
-            merged.game_legal_moves_seconds += profile.game_legal_moves_seconds
-            merged.determine_outcome_calls += profile.determine_outcome_calls
-            merged.determine_outcome_seconds += profile.determine_outcome_seconds
-            merged.game_play_known_legal_calls += profile.game_play_known_legal_calls
-            merged.game_play_known_legal_seconds += profile.game_play_known_legal_seconds
-            merged.board_apply_move_calls += profile.board_apply_move_calls
-            merged.board_apply_move_seconds += profile.board_apply_move_seconds
-            merged.model_single_calls += profile.model_single_calls
-            merged.model_single_seconds += profile.model_single_seconds
-            merged.model_batch_calls += profile.model_batch_calls
-            merged.model_batch_seconds += profile.model_batch_seconds
-            merged.model_batch_positions += profile.model_batch_positions
-            if profile.model_batch_size_min is not None and (
-                merged.model_batch_size_min is None
-                or profile.model_batch_size_min < merged.model_batch_size_min
-            ):
-                merged.model_batch_size_min = profile.model_batch_size_min
-            if profile.model_batch_size_max is not None and (
-                merged.model_batch_size_max is None
-                or profile.model_batch_size_max > merged.model_batch_size_max
-            ):
-                merged.model_batch_size_max = profile.model_batch_size_max
-            merged.search_calls += profile.search_calls
-            merged.search_seconds += profile.search_seconds
-            merged.materialized_nodes += profile.materialized_nodes
-            merged.completed_simulations += profile.completed_simulations
-        return merged
-
-
-@contextmanager
-def self_play_profile() -> Iterator[SelfPlayProfileStats]:
-    """Collect in-process self-play legal/search/model timing counters.
-
-    The profiler monkeypatches only the current Python process and is intended for
-    benchmark diagnostics, not production instrumentation. Worker subprocesses must
-    enable their own profiler and merge the resulting JSON reports.
+    Kept as a compatibility wrapper around :func:`activate_self_play_profile`.
     """
-    stats = SelfPlayProfileStats()
-
-    from tinychess.ai import mcts as mcts_module
-    from tinychess.ai import neural_mcts as neural_mcts_module
-    from tinychess.engine import game as game_module
-    from tinychess.nn import model as model_module
-
-    game_class = cast(Any, Game)
-    board_class = cast(Any, Board)
-    neural_module = cast(Any, neural_mcts_module)
-    mcts_any_module = cast(Any, mcts_module)
-    model_class = cast(Any, model_module.PolicyValueInference)
-    player_class = cast(Any, neural_mcts_module.NeuralMCTSPlayer)
-
-    original_legal_moves = game_class.legal_moves
-    original_determine_outcome = game_module.determine_outcome
-    original_self_play_determine_outcome = determine_outcome
-    original_neural_determine_outcome = neural_module.determine_outcome
-    original_mcts_determine_outcome = mcts_any_module.determine_outcome
-    original_play_known_legal = game_class.play_known_legal
-    original_apply_move = board_class.apply_move
-    original_predict = model_class.predict
-    original_predict_with_legal_moves = model_class.predict_with_legal_moves
-    original_predict_batch = model_class.predict_batch
-    original_search = player_class.search
-    original_root_for_game = player_class._root_for_game
-    original_materialize_child = player_class._materialize_child
-
-    legal_getter = cast(Any, original_legal_moves).fget
-    if legal_getter is None:  # pragma: no cover - defensive guard for property shape
-        raise TypeError("Game.legal_moves must have a getter")
-
-    def profiled_legal_moves(game: Game) -> tuple[Move, ...]:
-        start = time.perf_counter()
-        try:
-            return cast(tuple[Move, ...], legal_getter(game))
-        finally:
-            stats.game_legal_moves_calls += 1
-            stats.game_legal_moves_seconds += time.perf_counter() - start
-
-    def profiled_determine_outcome(
-        game: Game, *, legal_moves: tuple[Move, ...] | None = None
-    ) -> Outcome | None:
-        start = time.perf_counter()
-        try:
-            return original_determine_outcome(game, legal_moves=legal_moves)
-        finally:
-            stats.determine_outcome_calls += 1
-            stats.determine_outcome_seconds += time.perf_counter() - start
-
-    def profiled_play_known_legal(game: Game, move: Move) -> Game:
-        start = time.perf_counter()
-        try:
-            return cast(Game, original_play_known_legal(game, move))
-        finally:
-            stats.game_play_known_legal_calls += 1
-            stats.game_play_known_legal_seconds += time.perf_counter() - start
-
-    def profiled_apply_move(board: Board, move: Move) -> Board:
-        start = time.perf_counter()
-        try:
-            return cast(Board, original_apply_move(board, move))
-        finally:
-            stats.board_apply_move_calls += 1
-            stats.board_apply_move_seconds += time.perf_counter() - start
-
-    def profiled_predict(
-        inference: PolicyValueInference, game: Game, *, mask_legal_moves: bool = True
-    ) -> InferenceResult:
-        start = time.perf_counter()
-        try:
-            return cast(
-                InferenceResult,
-                original_predict(inference, game, mask_legal_moves=mask_legal_moves),
-            )
-        finally:
-            stats.model_single_calls += 1
-            stats.model_single_seconds += time.perf_counter() - start
-
-    def profiled_predict_with_legal_moves(
-        inference: PolicyValueInference,
-        game: Game,
-        legal_moves: tuple[Move, ...],
-    ) -> InferenceResult:
-        start = time.perf_counter()
-        try:
-            return cast(
-                InferenceResult,
-                original_predict_with_legal_moves(inference, game, legal_moves),
-            )
-        finally:
-            stats.model_single_calls += 1
-            stats.model_single_seconds += time.perf_counter() - start
-
-    def profiled_predict_batch(
-        inference: PolicyValueInference,
-        inputs: Any,
-        *,
-        legal_masks: Any | None = None,
-        legal_moves: Any | None = None,
-        mask_legal_moves: bool = True,
-    ) -> Any:
-        batch_size = _profile_batch_size(inputs)
-        start = time.perf_counter()
-        try:
-            return original_predict_batch(
-                inference,
-                inputs,
-                legal_masks=legal_masks,
-                legal_moves=legal_moves,
-                mask_legal_moves=mask_legal_moves,
-            )
-        finally:
-            stats.model_batch_calls += 1
-            stats.model_batch_seconds += time.perf_counter() - start
-            stats.record_batch_size(batch_size)
-
-    def profiled_search(
-        player: neural_mcts_module.NeuralMCTSPlayer, game: Game
-    ) -> neural_mcts_module.NeuralMCTSResult:
-        start = time.perf_counter()
-        try:
-            result = cast(neural_mcts_module.NeuralMCTSResult, original_search(player, game))
-        except Exception:
-            stats.search_calls += 1
-            stats.search_seconds += time.perf_counter() - start
-            raise
-        stats.search_calls += 1
-        stats.search_seconds += time.perf_counter() - start
-        stats.completed_simulations += result.simulations
-        return result
-
-    def profiled_root_for_game(
-        player: neural_mcts_module.NeuralMCTSPlayer, game: Game
-    ) -> tuple[
-        neural_mcts_module.NeuralMCTSNode,
-        int,
-        bool,
-    ]:
-        result = cast(
-            tuple[neural_mcts_module.NeuralMCTSNode, int, bool],
-            original_root_for_game(player, game),
-        )
-        if not result[2]:
-            stats.materialized_nodes += 1
-        return result
-
-    def profiled_materialize_child(
-        node: neural_mcts_module.NeuralMCTSNode,
-        edge: neural_mcts_module.NeuralMCTSEdge,
-    ) -> neural_mcts_module.NeuralMCTSNode:
-        child = cast(
-            neural_mcts_module.NeuralMCTSNode,
-            original_materialize_child(node, edge),
-        )
-        stats.materialized_nodes += 1
-        return child
-
-    try:
-        game_class.legal_moves = property(profiled_legal_moves)
-        game_module.determine_outcome = profiled_determine_outcome
-        globals()["determine_outcome"] = profiled_determine_outcome
-        neural_module.determine_outcome = profiled_determine_outcome
-        mcts_any_module.determine_outcome = profiled_determine_outcome
-        game_class.play_known_legal = profiled_play_known_legal
-        board_class.apply_move = profiled_apply_move
-        model_class.predict = profiled_predict
-        model_class.predict_with_legal_moves = profiled_predict_with_legal_moves
-        model_class.predict_batch = profiled_predict_batch
-        player_class.search = profiled_search
-        player_class._root_for_game = profiled_root_for_game
-        player_class._materialize_child = staticmethod(profiled_materialize_child)
-        yield stats
-    finally:
-        game_class.legal_moves = original_legal_moves
-        game_module.determine_outcome = original_determine_outcome
-        globals()["determine_outcome"] = original_self_play_determine_outcome
-        neural_module.determine_outcome = original_neural_determine_outcome
-        mcts_any_module.determine_outcome = original_mcts_determine_outcome
-        game_class.play_known_legal = original_play_known_legal
-        board_class.apply_move = original_apply_move
-        model_class.predict = original_predict
-        model_class.predict_with_legal_moves = original_predict_with_legal_moves
-        model_class.predict_batch = original_predict_batch
-        player_class.search = original_search
-        player_class._root_for_game = original_root_for_game
-        player_class._materialize_child = staticmethod(original_materialize_child)
+    return activate_self_play_profile(level)
 
 
 def generate_self_play_dataset(
@@ -574,13 +248,20 @@ def generate_self_play_dataset(
 ) -> SelfPlayDataset:
     """Generate a small self-play dataset using neural or classical MCTS labels."""
     resolved = SelfPlayConfig() if config is None else config
-    if (
-        resolved.batch_size > 1
-        and resolved.label_source == LABEL_SOURCE_NEURAL
-        and isinstance(inference, PolicyValueInference)
+    with profile_scope(
+        "self_play.generate_dataset",
+        games=resolved.games,
+        max_plies=resolved.max_plies,
+        label_source=resolved.label_source,
+        batch_size=resolved.batch_size,
     ):
-        return _generate_batched_neural_self_play_dataset(inference, resolved)
-    return _generate_serial_self_play_dataset(inference, resolved)
+        if (
+            resolved.batch_size > 1
+            and resolved.label_source == LABEL_SOURCE_NEURAL
+            and isinstance(inference, PolicyValueInference)
+        ):
+            return _generate_batched_neural_self_play_dataset(inference, resolved)
+        return _generate_serial_self_play_dataset(inference, resolved)
 
 
 def _generate_serial_self_play_dataset(
@@ -593,29 +274,47 @@ def _generate_serial_self_play_dataset(
     outcome_values: list[float] = []
     game_records: list[SelfPlayGameRecord] = []
 
-    for game_index in range(config.games):
-        game = Game.new()
-        player = _player_for_game(inference, config, game_index)
-        game_sides: list[Color] = []
-        for _ply in range(config.max_plies):
-            legal = game.legal_moves
-            if determine_outcome(game, legal_moves=legal) is not None:
-                break
-            if not legal:
-                break
-            result = player.search(game)
-            if result.move not in legal:
-                msg = f"search selected illegal move: {result.move}"
-                raise ValueError(msg)
-            positions.append(encode_game_np(game))
-            legal_masks.append(legal_move_mask_from_legal_moves_np(game, legal))
-            policies.append(_policy_target(game, result.visit_counts, result.move))
-            game_sides.append(game.board.side_to_move)
-            game = game.play_known_legal(result.move)
-        if game.outcome is None:
-            game = _with_max_plies_outcome(game)
-        outcome_values.extend(_outcome_values(game, game_sides))
-        game_records.append(_game_record(game_index, game))
+    with profile_scope("self_play.serial_loop"):
+        for game_index in range(config.games):
+            game = Game.new()
+            player = _player_for_game(inference, config, game_index)
+            game_sides: list[Color] = []
+            with profile_scope("self_play.game", game_index=game_index):
+                for ply_index in range(config.max_plies):
+                    with profile_scope("self_play.ply", game_index=game_index, ply_index=ply_index):
+                        legal = game.legal_moves
+                        record_distribution(
+                            "self_play.legal_moves_per_ply",
+                            len(legal),
+                            unit="moves",
+                        )
+                        with profile_scope("self_play.terminal_check"):
+                            terminal = determine_outcome(game, legal_moves=legal)
+                        if terminal is not None:
+                            break
+                        if not legal:
+                            break
+                        result = player.search(game)
+                        if result.move not in legal:
+                            msg = f"search selected illegal move: {result.move}"
+                            raise ValueError(msg)
+                        with profile_scope("record.position_encode_np"):
+                            positions.append(encode_game_np(game))
+                        with profile_scope("record.legal_mask_np"):
+                            legal_masks.append(legal_move_mask_from_legal_moves_np(game, legal))
+                        with profile_scope("record.policy_target"):
+                            policies.append(_policy_target(game, result.visit_counts, result.move))
+                        record_counter("self_play.samples")
+                        record_counter("self_play.plies")
+                        game_sides.append(game.board.side_to_move)
+                        game = game.play_known_legal(result.move)
+                if game.outcome is None:
+                    game = _with_max_plies_outcome(game)
+                with profile_scope("record.outcome_values"):
+                    outcome_values.extend(_outcome_values(game, game_sides))
+                with profile_scope("record.game_record"):
+                    game_records.append(_game_record(game_index, game))
+                record_counter("self_play.games_completed")
 
     return _self_play_dataset_from_samples(
         config,
@@ -676,9 +375,14 @@ def _record_batched_decision(
     if selected_move not in legal:
         msg = f"search selected illegal move: {selected_move}"
         raise ValueError(msg)
-    state.positions.append(encode_game_np(state.game))
-    state.legal_masks.append(legal_move_mask_from_legal_moves_np(state.game, legal))
-    state.policies.append(_policy_target(state.game, visit_counts, selected_move))
+    with profile_scope("record.position_encode_np"):
+        state.positions.append(encode_game_np(state.game))
+    with profile_scope("record.legal_mask_np"):
+        state.legal_masks.append(legal_move_mask_from_legal_moves_np(state.game, legal))
+    with profile_scope("record.policy_target"):
+        state.policies.append(_policy_target(state.game, visit_counts, selected_move))
+    record_counter("self_play.samples")
+    record_counter("self_play.plies")
     state.game_sides.append(state.game.board.side_to_move)
     state.game = state.game.play_known_legal(selected_move)
 
@@ -693,71 +397,96 @@ def _generate_batched_neural_self_play_dataset(
     outcome_values: list[float] = []
     game_records: list[SelfPlayGameRecord] = []
 
-    for start_game in range(0, config.games, config.batch_size):
-        game_count = min(config.batch_size, config.games - start_game)
-        states = [
-            _BatchedGameState(
-                game_index=start_game + offset,
-                game=Game.new(),
-                player=cast(
-                    NeuralMCTSPlayer,
-                    _player_for_game(inference, config, start_game + offset),
-                ),
-            )
-            for offset in range(game_count)
-        ]
-        for _ply in range(config.max_plies):
-            decisions: list[tuple[_BatchedGameState, tuple[Move, ...]]] = []
-            for state in states:
-                legal = state.game.legal_moves
-                if determine_outcome(state.game, legal_moves=legal) is not None:
-                    continue
-                if legal:
-                    decisions.append((state, legal))
-            if not decisions:
-                break
-
-            batched_decisions: list[tuple[_BatchedGameState, tuple[Move, ...]]] = []
-            serial_decisions: list[tuple[_BatchedGameState, tuple[Move, ...]]] = []
-            for state, legal in decisions:
-                if _root_prefetch_would_be_consumed(state.player, state.game):
-                    batched_decisions.append((state, legal))
-                else:
-                    serial_decisions.append((state, legal))
-
-            for state, legal in serial_decisions:
-                result = state.player.search(state.game)
-                _record_batched_decision(state, legal, result.move, result.visit_counts)
-
-            if batched_decisions:
-                games = tuple(state.game for state, _legal in batched_decisions)
-                legal_by_game = tuple(legal for _state, legal in batched_decisions)
-                batch = inference.predict_batch(
-                    games,
-                    legal_moves=legal_by_game,
-                    mask_legal_moves=True,
+    with profile_scope("self_play.batched_loop"):
+        for start_game in range(0, config.games, config.batch_size):
+            game_count = min(config.batch_size, config.games - start_game)
+            states = [
+                _BatchedGameState(
+                    game_index=start_game + offset,
+                    game=Game.new(),
+                    player=cast(
+                        NeuralMCTSPlayer,
+                        _player_for_game(inference, config, start_game + offset),
+                    ),
                 )
-                for batch_index, (state, legal) in enumerate(batched_decisions):
-                    old_inference = state.player.inference
-                    state.player.inference = _PrefetchedRootInference(
-                        inference,
-                        state.game,
-                        batch.result_at(batch_index),
-                    )
-                    try:
-                        result = state.player.search(state.game)
-                    finally:
-                        state.player.inference = old_inference
-                    _record_batched_decision(state, legal, result.move, result.visit_counts)
+                for offset in range(game_count)
+            ]
+            for ply_index in range(config.max_plies):
+                decisions: list[tuple[_BatchedGameState, tuple[Move, ...]]] = []
+                for state in states:
+                    with profile_scope(
+                        "self_play.ply",
+                        game_index=state.game_index,
+                        ply_index=ply_index,
+                    ):
+                        legal = state.game.legal_moves
+                        record_distribution(
+                            "self_play.legal_moves_per_ply",
+                            len(legal),
+                            unit="moves",
+                        )
+                        with profile_scope("self_play.terminal_check"):
+                            terminal = determine_outcome(state.game, legal_moves=legal)
+                        if terminal is None and legal:
+                            decisions.append((state, legal))
+                if not decisions:
+                    break
 
-        for state in states:
-            if state.game.outcome is None:
-                state.game = _with_max_plies_outcome(state.game)
-            positions.extend(state.positions)
-            legal_masks.extend(state.legal_masks)
-            policies.extend(state.policies)
-            outcome_values.extend(_outcome_values(state.game, state.game_sides))
-            game_records.append(_game_record(state.game_index, state.game))
+                batched_decisions: list[tuple[_BatchedGameState, tuple[Move, ...]]] = []
+                serial_decisions: list[tuple[_BatchedGameState, tuple[Move, ...]]] = []
+                for state, legal in decisions:
+                    if _root_prefetch_would_be_consumed(state.player, state.game):
+                        batched_decisions.append((state, legal))
+                    else:
+                        serial_decisions.append((state, legal))
+
+                for state, legal in serial_decisions:
+                    with profile_scope(
+                        "self_play.ply_decision",
+                        game_index=state.game_index,
+                        ply_index=ply_index,
+                    ):
+                        result = state.player.search(state.game)
+                        _record_batched_decision(state, legal, result.move, result.visit_counts)
+
+                if batched_decisions:
+                    games = tuple(state.game for state, _legal in batched_decisions)
+                    legal_by_game = tuple(legal for _state, legal in batched_decisions)
+                    batch = inference.predict_batch(
+                        games,
+                        legal_moves=legal_by_game,
+                        mask_legal_moves=True,
+                    )
+                    for batch_index, (state, legal) in enumerate(batched_decisions):
+                        with profile_scope(
+                            "self_play.ply_decision",
+                            game_index=state.game_index,
+                            ply_index=ply_index,
+                        ):
+                            old_inference = state.player.inference
+                            state.player.inference = _PrefetchedRootInference(
+                                inference,
+                                state.game,
+                                batch.result_at(batch_index),
+                            )
+                            try:
+                                result = state.player.search(state.game)
+                            finally:
+                                state.player.inference = old_inference
+                            _record_batched_decision(state, legal, result.move, result.visit_counts)
+
+            for state in states:
+                with profile_scope("self_play.game", game_index=state.game_index):
+                    if state.game.outcome is None:
+                        state.game = _with_max_plies_outcome(state.game)
+                    positions.extend(state.positions)
+                    legal_masks.extend(state.legal_masks)
+                    policies.extend(state.policies)
+                    with profile_scope("record.outcome_values"):
+                        outcome_values.extend(_outcome_values(state.game, state.game_sides))
+                    with profile_scope("record.game_record"):
+                        game_records.append(_game_record(state.game_index, state.game))
+                    record_counter("self_play.games_completed")
 
     return _self_play_dataset_from_samples(
         config,
@@ -778,12 +507,19 @@ def _self_play_dataset_from_samples(
     outcome_values: list[float],
     game_records: list[SelfPlayGameRecord],
 ) -> SelfPlayDataset:
-    outcomes = np.asarray(outcome_values, dtype=np.float32)
+    with profile_scope("dataset.outcomes_array"):
+        outcomes = np.asarray(outcome_values, dtype=np.float32)
     metadata = SelfPlayMetadata.create(config, sample_count=len(positions))
+    with profile_scope("dataset.stack_positions"):
+        stacked_positions = _stack_or_empty(positions, TENSOR_SHAPE)
+    with profile_scope("dataset.stack_legal_masks"):
+        stacked_legal_masks = _stack_or_empty(legal_masks, (ACTION_SPACE_SIZE,))
+    with profile_scope("dataset.stack_policies"):
+        stacked_policies = _stack_or_empty(policies, (ACTION_SPACE_SIZE,))
     return SelfPlayDataset(
-        positions=_stack_or_empty(positions, TENSOR_SHAPE),
-        legal_masks=_stack_or_empty(legal_masks, (ACTION_SPACE_SIZE,)),
-        mcts_policies=_stack_or_empty(policies, (ACTION_SPACE_SIZE,)),
+        positions=stacked_positions,
+        legal_masks=stacked_legal_masks,
+        mcts_policies=stacked_policies,
         outcomes=outcomes,
         metadata=metadata,
         games=game_records,
@@ -797,6 +533,20 @@ def merge_self_play_datasets(
     generation_settings_extra: dict[str, object] | None = None,
 ) -> SelfPlayDataset:
     """Merge self-play dataset shards into one dataset with contiguous game indexes."""
+    with profile_scope("dataset.merge", shards=len(datasets)):
+        return _merge_self_play_datasets_impl(
+            datasets,
+            config=config,
+            generation_settings_extra=generation_settings_extra,
+        )
+
+
+def _merge_self_play_datasets_impl(
+    datasets: list[SelfPlayDataset],
+    *,
+    config: SelfPlayConfig | None = None,
+    generation_settings_extra: dict[str, object] | None = None,
+) -> SelfPlayDataset:
     if not datasets:
         raise ValueError("at least one self-play dataset is required")
 
@@ -871,22 +621,26 @@ def save_self_play_dataset(dataset: SelfPlayDataset, directory: str | Path) -> N
     """Write a self-play dataset as compressed NPZ tensors plus JSON/JSONL metadata."""
     output_dir = Path(directory)
     output_dir.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        output_dir / DEFAULT_DATASET_FILENAME,
-        positions=dataset.positions,
-        legal_masks=dataset.legal_masks,
-        mcts_policies=dataset.mcts_policies,
-        outcomes=dataset.outcomes,
-    )
-    (output_dir / DEFAULT_METADATA_FILENAME).write_text(
-        json.dumps(dataset.metadata.to_dict(), indent=2, sort_keys=True) + "\n"
-    )
-    (output_dir / DEFAULT_GAMES_FILENAME).write_text(
-        "".join(
-            json.dumps(record.to_dict(), sort_keys=True) + "\n"
-            for record in dataset.games
-        )
-    )
+    with profile_scope("dataset.save"):
+        with profile_scope("dataset.save_npz_compressed"):
+            np.savez_compressed(
+                output_dir / DEFAULT_DATASET_FILENAME,
+                positions=dataset.positions,
+                legal_masks=dataset.legal_masks,
+                mcts_policies=dataset.mcts_policies,
+                outcomes=dataset.outcomes,
+            )
+        with profile_scope("dataset.write_metadata"):
+            (output_dir / DEFAULT_METADATA_FILENAME).write_text(
+                json.dumps(dataset.metadata.to_dict(), indent=2, sort_keys=True) + "\n"
+            )
+        with profile_scope("dataset.write_games_jsonl"):
+            (output_dir / DEFAULT_GAMES_FILENAME).write_text(
+                "".join(
+                    json.dumps(record.to_dict(), sort_keys=True) + "\n"
+                    for record in dataset.games
+                )
+            )
 
 
 def load_self_play_dataset(directory: str | Path) -> SelfPlayDataset:
@@ -1158,39 +912,6 @@ def _git_commit() -> str | None:
         return None
     return result.stdout.strip() or None
 
-
-def _profile_batch_size(inputs: Any) -> int:
-    if isinstance(inputs, Sequence) and not isinstance(inputs, (str, bytes, bytearray)):
-        return len(inputs)
-    shape = getattr(inputs, "shape", None)
-    if isinstance(shape, Sequence) and shape:
-        first = shape[0]
-        if isinstance(first, int):
-            return first
-    return 1
-
-
-def _expect_mapping(data: dict[object, object], key: str) -> dict[str, object]:
-    value = data.get(key)
-    if not isinstance(value, dict):
-        raise TypeError(f"field {key!r} must be an object")
-    return cast(dict[str, object], value)
-
-
-def _expect_float(data: dict[str, object], key: str) -> float:
-    value = data.get(key)
-    if isinstance(value, bool) or not isinstance(value, (float, int)):
-        raise TypeError(f"field {key!r} must be a number")
-    return float(value)
-
-
-def _optional_int(data: dict[str, object], key: str) -> int | None:
-    value = data.get(key)
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError(f"field {key!r} must be an integer or null")
-    return value
 
 
 def _expect_str(data: dict[str, object], key: str) -> str:
