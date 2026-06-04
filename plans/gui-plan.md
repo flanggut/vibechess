@@ -242,10 +242,11 @@ Use stable string codes so Swift can present friendly messages:
    - Acceptance: `(cd swift && swift build)` succeeds and launches/builds an empty native window in development tooling.
    - Completed: added the SwiftPM `TinyChessMacApp` executable target, placeholder SwiftUI root window, and focused app skeleton test.
 
-6. **Add Swift protocol models**
+6. **[Done] Add Swift protocol models**
    - Files: `swift/Sources/TinyChessMacApp/BackendModels.swift`, `swift/Tests/TinyChessMacAppTests/BackendModelsTests.swift`
    - Changes: define `Codable` request/response/state/piece/outcome/AI config models matching protocol v1; parse sample JSON from Python tests.
    - Acceptance: Swift tests decode representative `state`, error, and `aiMove` responses.
+   - Completed: added Swift `Codable` GUI protocol DTOs and focused decode/encode tests for representative backend responses and requests.
 
 7. **Add Swift backend subprocess client**
    - File: `swift/Sources/TinyChessMacApp/BackendClient.swift`
