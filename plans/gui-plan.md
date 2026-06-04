@@ -234,12 +234,13 @@ Use stable string codes so Swift can present friendly messages:
    - Acceptance: AI commands apply legal moves and return search metadata where available; neural remains optional and fails gracefully when no checkpoint is supplied.
    - Completed: implemented and tested GUI `aiMove` support for random, classical MCTS, and graceful neural missing-checkpoint failure in `src/tinychess/protocols/gui.py` and `tests/test_gui_protocol.py`.
 
-5. **Add Swift app target skeleton**
+5. **[Done] Add Swift app target skeleton**
    - File: `swift/Package.swift`
    - Changes: add an executable target `TinyChessMacApp` for macOS SwiftUI and a test target `TinyChessMacAppTests` if SPM supports the desired app shape. Keep existing `TinyChessCore` unchanged except dependency declarations if needed.
    - File: `swift/Sources/TinyChessMacApp/TinyChessMacApp.swift`
    - Changes: define `@main` SwiftUI `App` and root window.
    - Acceptance: `(cd swift && swift build)` succeeds and launches/builds an empty native window in development tooling.
+   - Completed: added the SwiftPM `TinyChessMacApp` executable target, placeholder SwiftUI root window, and focused app skeleton test.
 
 6. **Add Swift protocol models**
    - Files: `swift/Sources/TinyChessMacApp/BackendModels.swift`, `swift/Tests/TinyChessMacAppTests/BackendModelsTests.swift`

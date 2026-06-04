@@ -11,7 +11,11 @@ let package = Package(
         .library(
             name: "TinyChessCore",
             targets: ["TinyChessCore"]
-        )
+        ),
+        .executable(
+            name: "TinyChessMacApp",
+            targets: ["TinyChessMacApp"]
+        ),
     ],
     dependencies: [
         .package(url: "https://github.com/swiftlang/swift-testing.git", from: "0.12.0")
@@ -20,10 +24,20 @@ let package = Package(
         .target(
             name: "TinyChessCore"
         ),
+        .executableTarget(
+            name: "TinyChessMacApp"
+        ),
         .testTarget(
             name: "TinyChessCoreTests",
             dependencies: [
                 "TinyChessCore",
+                .product(name: "Testing", package: "swift-testing"),
+            ]
+        ),
+        .testTarget(
+            name: "TinyChessMacAppTests",
+            dependencies: [
+                "TinyChessMacApp",
                 .product(name: "Testing", package: "swift-testing"),
             ]
         ),
