@@ -29,7 +29,7 @@ from tinychess.nn.encode import (
     legal_move_mask_from_legal_moves_np,
     move_to_action_index,
 )
-from tinychess.nn.model import InferenceResult, PolicyValueInference
+from tinychess.nn.model import InferenceResult, LegalPolicyBatchResult, PolicyValueInference
 from tinychess.nn.self_play_profile import (
     ProfileStats as SelfPlayProfileStats,
 )
@@ -254,6 +254,7 @@ def generate_self_play_dataset(
         max_plies=resolved.max_plies,
         label_source=resolved.label_source,
         batch_size=resolved.batch_size,
+        leaf_parallelism=resolved.mcts.leaf_parallelism,
     ):
         if (
             resolved.batch_size > 1
@@ -359,6 +360,25 @@ class _PrefetchedRootInference:
             self.consumed = True
             return self.root_result
         return self.base.predict_with_legal_moves(game, legal_moves)
+
+    def predict_legal_batch(
+        self,
+        games: list[Game] | tuple[Game, ...],
+        legal_moves: list[tuple[Move, ...]] | tuple[tuple[Move, ...], ...],
+    ) -> LegalPolicyBatchResult:
+        if not self.consumed and len(games) == 1 and games[0] == self.root_game:
+            self.consumed = True
+            result = self.root_result
+            legal = tuple(legal_moves[0])
+            if result.legal_policy is None or result.legal_moves != legal:
+                return self.base.predict_legal_batch(games, legal_moves)
+            return LegalPolicyBatchResult(
+                values=(result.value,),
+                legal_moves=(legal,),
+                legal_action_indices=(result.legal_action_indices,),
+                legal_policies=(result.legal_policy,),
+            )
+        return self.base.predict_legal_batch(games, legal_moves)
 
 
 def _root_prefetch_would_be_consumed(player: NeuralMCTSPlayer, game: Game) -> bool:

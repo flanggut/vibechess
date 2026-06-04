@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import random
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import cast
 
@@ -22,13 +22,15 @@ from tinychess.ai.neural_mcts import (
 from tinychess.ai.player import NoLegalMoveError, RandomPlayer, play_game
 from tinychess.ai.search_config import MCTSConfig
 from tinychess.ai.search_state import SearchState
-from tinychess.engine import Game, Move, OutcomeReason
+from tinychess.engine import Game, Move, Outcome, OutcomeReason
 from tinychess.engine.board import Board, board_from_ascii
 from tinychess.engine.piece import Color
 from tinychess.nn import model as model_module
-from tinychess.nn.encode import ACTION_SPACE_SIZE, move_to_action_index
+from tinychess.nn.encode import ACTION_SPACE_SIZE, legal_action_indices, move_to_action_index
 from tinychess.nn.model import (
     InferenceResult,
+    LegalPolicyBatchResult,
+    LegalPolicyResult,
     PolicyValueConfig,
     PolicyValueInference,
     PolicyValueNet,
@@ -60,6 +62,9 @@ class FakeInference:
 class RecordingPolicyValueInference(PolicyValueInference):
     legal_calls: int
     predict_calls: int
+    legal_batch_calls: int
+    legal_batch_sizes: list[int]
+    legal_batch_paths: list[tuple[tuple[str, ...], ...]]
     seen_legal_moves: list[tuple[Move, ...]]
 
     def __init__(self) -> None:
@@ -73,6 +78,9 @@ class RecordingPolicyValueInference(PolicyValueInference):
         super().__init__(PolicyValueNet(tiny_config))
         self.legal_calls = 0
         self.predict_calls = 0
+        self.legal_batch_calls = 0
+        self.legal_batch_sizes = []
+        self.legal_batch_paths = []
         self.seen_legal_moves = []
 
     def predict(self, game: Game, *, mask_legal_moves: bool = True) -> InferenceResult:
@@ -88,6 +96,18 @@ class RecordingPolicyValueInference(PolicyValueInference):
         self.seen_legal_moves.append(legal_moves)
         return super().predict_with_legal_moves(game, legal_moves)
 
+    def predict_legal_batch(
+        self,
+        games: Sequence[Game],
+        legal_moves: Sequence[Sequence[Move]],
+    ) -> LegalPolicyBatchResult:
+        self.legal_batch_calls += 1
+        self.legal_batch_sizes.append(len(games))
+        self.legal_batch_paths.append(
+            tuple(tuple(move.to_uci() for move in game.moves) for game in games)
+        )
+        return super().predict_legal_batch(games, legal_moves)
+
 
 def _policy_result(values: list[float], *, value: float = 0.0) -> InferenceResult:
     policy = mx.array(values, dtype=mx.float32)
@@ -98,6 +118,80 @@ def _policy_result(values: list[float], *, value: float = 0.0) -> InferenceResul
 class PolicyAccessRaises:
     def __getitem__(self, _index: int) -> object:
         raise AssertionError("compact legal priors should not index the full policy")
+
+
+@dataclass(slots=True)
+class FakeLegalBatchInference:
+    value: float = 0.1
+    batch_sizes: list[int] | None = None
+    batch_paths: list[tuple[tuple[str, ...], ...]] | None = None
+    serial_calls: int = 0
+
+    def __post_init__(self) -> None:
+        if self.batch_sizes is None:
+            self.batch_sizes = []
+        if self.batch_paths is None:
+            self.batch_paths = []
+
+    def _result(self, game: Game, legal_moves: Sequence[Move]) -> LegalPolicyResult:
+        legal = tuple(legal_moves)
+        indices = legal_action_indices(game, legal)
+        if legal:
+            policy = mx.array([1.0 / len(legal) for _move in legal], dtype=mx.float32)
+        else:
+            policy = mx.zeros((0,), dtype=mx.float32)
+        mx.eval(policy)
+        return LegalPolicyResult(
+            value=self.value,
+            legal_moves=legal,
+            legal_action_indices=indices,
+            legal_policy=policy,
+        )
+
+    def predict_legal_batch(
+        self,
+        games: Sequence[Game],
+        legal_moves: Sequence[Sequence[Move]],
+    ) -> LegalPolicyBatchResult:
+        assert self.batch_sizes is not None
+        assert self.batch_paths is not None
+        games_tuple = tuple(games)
+        legal_by_row = tuple(tuple(row) for row in legal_moves)
+        self.batch_sizes.append(len(games_tuple))
+        self.batch_paths.append(
+            tuple(tuple(move.to_uci() for move in game.moves) for game in games_tuple)
+        )
+        results = tuple(
+            self._result(game, legal)
+            for game, legal in zip(games_tuple, legal_by_row, strict=True)
+        )
+        return LegalPolicyBatchResult(
+            values=tuple(result.value for result in results),
+            legal_moves=tuple(result.legal_moves for result in results),
+            legal_action_indices=tuple(result.legal_action_indices for result in results),
+            legal_policies=tuple(result.legal_policy for result in results),
+        )
+
+    def predict(self, game: Game, *, mask_legal_moves: bool = True) -> InferenceResult:
+        assert mask_legal_moves is True
+        return self.predict_with_legal_moves(game, game.legal_moves)
+
+    def predict_with_legal_moves(
+        self,
+        game: Game,
+        legal_moves: tuple[Move, ...],
+    ) -> InferenceResult:
+        self.serial_calls += 1
+        result = self._result(game, legal_moves)
+        dense = mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32)
+        return InferenceResult(
+            policy_logits=dense,
+            policy=dense,
+            value=result.value,
+            legal_moves=result.legal_moves,
+            legal_action_indices=result.legal_action_indices,
+            legal_policy=result.legal_policy,
+        )
 
 
 def test_neural_node_create_caches_legal_moves_and_is_terminal_uses_cache(
@@ -271,6 +365,161 @@ def test_neural_mcts_one_simulation_materializes_only_root() -> None:
     assert set(player._tree_root.edges) == set(game.legal_moves)
     assert set(result.visit_counts) == set(game.legal_moves)
     assert all(visits == 0 for visits in result.visit_counts.values())
+
+
+def test_neural_mcts_leaf_parallelism_one_uses_serial_semantics() -> None:
+    game = Game.new()
+    inference = RecordingPolicyValueInference()
+    player = NeuralMCTSPlayer(
+        inference,
+        NeuralMCTSConfig(simulations=3, seed=1, leaf_parallelism=1),
+    )
+
+    result = player.search(game)
+
+    assert result.move in game.legal_moves
+    assert result.simulations == 3
+    assert inference.legal_batch_calls == 0
+    assert inference.legal_calls == 3
+    assert all(visits >= 0 for visits in result.visit_counts.values())
+
+
+def test_neural_mcts_rejects_invalid_leaf_parallelism() -> None:
+    with pytest.raises(ValueError, match="leaf_parallelism must be at least 1"):
+        NeuralMCTSConfig(leaf_parallelism=0)
+
+
+def test_leaf_parallel_mcts_batches_inference_within_single_game() -> None:
+    game = Game.new()
+    inference = FakeLegalBatchInference()
+    player = NeuralMCTSPlayer(
+        inference,
+        NeuralMCTSConfig(simulations=5, seed=1, leaf_parallelism=3),
+    )
+
+    result = player.search(game)
+
+    assert result.move in game.legal_moves
+    assert result.simulations == 5
+    assert inference.batch_sizes is not None
+    assert any(size > 1 for size in inference.batch_sizes)
+    assert all(visits >= 0 for visits in result.visit_counts.values())
+
+
+def test_leaf_parallel_virtual_bookkeeping_avoids_duplicate_unexpanded_leaves() -> None:
+    game = Game.new()
+    inference = FakeLegalBatchInference()
+    player = NeuralMCTSPlayer(
+        inference,
+        NeuralMCTSConfig(simulations=4, seed=1, leaf_parallelism=4),
+    )
+
+    player.search(game)
+
+    assert inference.batch_paths is not None
+    multi_leaf_batches = [paths for paths in inference.batch_paths if len(paths) > 1]
+    assert multi_leaf_batches
+    for paths in multi_leaf_batches:
+        assert len(paths) == len(set(paths))
+
+
+def test_leaf_parallel_selection_backtracks_from_reserved_forced_reply_leaf() -> None:
+    game = Game.from_fen("r2kNbr1/pb2pp2/np5p/6p1/Q2PP3/1PP3PP/PB2K2R/R7 w - - 7 31")
+    forced_branch = Move.from_uci("a4d7")
+    root = NeuralMCTSNode.create(game)
+    player = NeuralMCTSPlayer(
+        FakeInference(preferred_move=forced_branch),
+        NeuralMCTSConfig(simulations=2, puct_exploration=10.0, seed=1, leaf_parallelism=2),
+    )
+    player._expand(root)
+    forced_child = player._materialize_child(root, root.edges[forced_branch])
+    player._expand(forced_child)
+    assert len(forced_child.legal_moves) == 1
+    nodes_created = 2
+    reserved_leaf_ids: set[int] = set()
+    reserved_budget_node_ids: set[int] = set()
+
+    first, nodes_created = player._select_pending_leaf(
+        root,
+        nodes_created,
+        reserved_leaf_ids=reserved_leaf_ids,
+        reserved_budget_node_ids=reserved_budget_node_ids,
+    )
+    second, nodes_created = player._select_pending_leaf(
+        root,
+        nodes_created,
+        reserved_leaf_ids=reserved_leaf_ids,
+        reserved_budget_node_ids=reserved_budget_node_ids,
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first.node.parent is forced_child
+    assert second.node.parent is root
+    assert second.node.move != forced_branch
+    assert nodes_created == 4
+    assert root.edges[forced_branch].visits == 1
+    assert root.edges[forced_branch].total_value == pytest.approx(1.0)
+
+
+def test_leaf_parallel_mcts_is_deterministic_for_fixed_seed() -> None:
+    game = Game.new()
+    config = NeuralMCTSConfig(
+        simulations=6,
+        temperature=1.0,
+        seed=11,
+        leaf_parallelism=3,
+    )
+
+    first = NeuralMCTSPlayer(FakeLegalBatchInference(), config).search(game)
+    second = NeuralMCTSPlayer(FakeLegalBatchInference(), config).search(game)
+
+    assert first.move == second.move
+    assert first.visit_counts == second.visit_counts
+
+
+def test_leaf_parallel_mcts_respects_node_budget() -> None:
+    game = Game.new()
+    player = NeuralMCTSPlayer(
+        FakeLegalBatchInference(),
+        NeuralMCTSConfig(simulations=5, node_budget=2, seed=1, leaf_parallelism=4),
+    )
+
+    result = player.search(game)
+
+    assert result.nodes <= 2
+    assert result.move in game.legal_moves
+    assert all(visits >= 0 for visits in result.visit_counts.values())
+
+
+def test_leaf_parallel_mcts_handles_terminal_selected_leaf_without_inference() -> None:
+    game = Game.new()
+    root = NeuralMCTSNode.create(game)
+    move = root.legal_moves[0]
+    terminal_child = NeuralMCTSNode.create(
+        root.state.play_known_legal(move),
+        parent=root,
+        move=move,
+        prior=1.0,
+    )
+    terminal_child.legal_moves = ()
+    terminal_child.outcome = Outcome(OutcomeReason.STALEMATE)
+    root.edges = {move: NeuralMCTSEdge(move=move, prior=1.0, child=terminal_child)}
+    root.children = {move: terminal_child}
+    root.is_expanded = True
+    inference = FakeLegalBatchInference()
+    player = NeuralMCTSPlayer(
+        inference,
+        NeuralMCTSConfig(simulations=1, seed=1, leaf_parallelism=2),
+    )
+    player._tree_root = root
+
+    result = player.search(game)
+
+    assert result.move == move
+    assert result.simulations == 1
+    assert result.visit_counts[move] == 1
+    assert inference.batch_sizes == []
 
 
 def test_neural_mcts_masks_illegal_policy_actions_before_expansion() -> None:

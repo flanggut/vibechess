@@ -64,6 +64,7 @@ class CountingPolicyValueInference(PolicyValueInference):
     def __init__(self, model: PolicyValueNet) -> None:
         super().__init__(model)
         self.batch_calls = 0
+        self.legal_batch_calls = 0
 
     def predict_batch(
         self,
@@ -80,6 +81,10 @@ class CountingPolicyValueInference(PolicyValueInference):
             legal_moves=legal_moves,
             mask_legal_moves=mask_legal_moves,
         )
+
+    def predict_legal_batch(self, games: Any, legal_moves: Any) -> Any:
+        self.legal_batch_calls += 1
+        return super().predict_legal_batch(games, legal_moves)
 
 
 def test_generate_self_play_dataset_completes_smoke_game() -> None:
@@ -143,6 +148,50 @@ def test_batched_neural_self_play_preserves_schema_and_legal_targets() -> None:
     assert dataset.outcomes.shape == (4,)
     assert [record.game_index for record in dataset.games] == [0, 1]
     assert [record.plies for record in dataset.games] == [2, 2]
+    assert np.all(dataset.legal_masks.sum(axis=1) > 0)
+    assert np.allclose(dataset.mcts_policies.sum(axis=1), 1.0)
+    assert np.all(dataset.mcts_policies >= 0.0)
+    assert np.all(dataset.mcts_policies <= dataset.legal_masks)
+
+
+def test_leaf_parallel_neural_self_play_preserves_schema_metadata_and_legal_targets() -> None:
+    inference = CountingPolicyValueInference(
+        PolicyValueNet(
+            PolicyValueConfig(
+                residual_channels=4,
+                residual_blocks=0,
+                policy_channels=1,
+                value_channels=1,
+                value_hidden_dim=4,
+            )
+        )
+    )
+
+    dataset = generate_self_play_dataset(
+        inference,
+        SelfPlayConfig(
+            games=1,
+            max_plies=2,
+            mcts=NeuralMCTSConfig(
+                simulations=3,
+                temperature=0.0,
+                seed=21,
+                leaf_parallelism=2,
+            ),
+            seed=21,
+        ),
+    )
+
+    assert inference.legal_batch_calls >= 1
+    assert dataset.metadata.schema_version == SELF_PLAY_DATASET_SCHEMA_VERSION
+    settings = dataset.metadata.generation_settings
+    mcts_settings = settings["mcts"]
+    assert isinstance(mcts_settings, dict)
+    assert mcts_settings["leaf_parallelism"] == 2
+    assert dataset.positions.shape == (2, *TENSOR_SHAPE)
+    assert dataset.legal_masks.shape == (2, ACTION_SPACE_SIZE)
+    assert dataset.mcts_policies.shape == (2, ACTION_SPACE_SIZE)
+    assert dataset.outcomes.shape == (2,)
     assert np.all(dataset.legal_masks.sum(axis=1) > 0)
     assert np.allclose(dataset.mcts_policies.sum(axis=1), 1.0)
     assert np.all(dataset.mcts_policies >= 0.0)
@@ -572,6 +621,38 @@ def test_self_play_script_accepts_batch_size(tmp_path: Path) -> None:
     assert dataset.metadata.game_count == 2
     assert dataset.metadata.sample_count == 2
     assert [record.game_index for record in dataset.games] == [0, 1]
+
+
+def test_self_play_script_accepts_leaf_parallelism(tmp_path: Path) -> None:
+    output = tmp_path / "script-leaf-parallel-output"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/self_play.py",
+            "--games",
+            "1",
+            "--max-plies",
+            "1",
+            "--simulations",
+            "3",
+            "--leaf-parallelism",
+            "2",
+            "--output",
+            str(output),
+        ],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    dataset = load_self_play_dataset(output)
+    mcts_settings = dataset.metadata.generation_settings["mcts"]
+    assert isinstance(mcts_settings, dict)
+    assert mcts_settings["leaf_parallelism"] == 2
+    assert dataset.metadata.sample_count == 1
 
 
 def test_self_play_script_rejects_invalid_worker_count(tmp_path: Path) -> None:
