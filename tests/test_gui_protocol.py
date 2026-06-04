@@ -1,0 +1,233 @@
+from __future__ import annotations
+
+import json
+from io import StringIO
+from typing import Any, cast
+
+from tinychess.engine import Game
+from tinychess.protocols.gui import GuiSession, run_gui_loop, serialize_state
+
+
+def _request(session: GuiSession, payload: dict[str, object]) -> dict[str, Any]:
+    output = StringIO()
+    session.handle_line(json.dumps(payload), output)
+    return cast(dict[str, Any], json.loads(output.getvalue()))
+
+
+def _line_response(text: str) -> dict[str, Any]:
+    return cast(dict[str, Any], json.loads(text.strip()))
+
+
+def test_hello_returns_capabilities_and_canonical_start_state() -> None:
+    session = GuiSession()
+
+    response = _request(session, {"id": 1, "cmd": "hello"})
+
+    assert response["id"] == 1
+    assert response["ok"] is True
+    assert response["protocol"] == "tinychess-gui-v1"
+    assert response["capabilities"] == {
+        "players": ["random", "mcts", "neural"],
+        "supportsUndo": False,
+        "promotion": "auto_queen",
+    }
+    state = response["state"]
+    assert state["fen"] == Game.new().to_fen()
+    assert state["sideToMove"] == "white"
+    assert len(state["squares"]) == 32
+    assert {piece["square"]: piece["piece"] for piece in state["squares"]}["a1"] == "R"
+    assert "e2e4" in state["legalMoves"]
+    assert state["legalDestinationsByFrom"]["e2"] == ["e3", "e4"]
+    assert state["moves"] == []
+    assert state["lastMove"] is None
+    assert state["outcome"] is None
+
+
+def test_state_serializer_uses_canonical_fields_after_move() -> None:
+    game = Game.new().play(next(move for move in Game.new().legal_moves if move.to_uci() == "e2e4"))
+
+    state = serialize_state(game)
+
+    assert state["sideToMove"] == "black"
+    assert state["moves"] == ["e2e4"]
+    assert state["lastMove"] == "e2e4"
+    assert state["fullmoveNumber"] == 1
+    assert state["halfmoveClock"] == 0
+
+
+def test_new_game_resets_state_and_stores_valid_ai_config() -> None:
+    session = GuiSession()
+    _request(session, {"id": 1, "cmd": "makeMove", "move": "e2e4"})
+
+    response = _request(
+        session,
+        {
+            "id": 2,
+            "cmd": "newGame",
+            "humanColor": "black",
+            "seed": 9,
+            "ai": {"kind": "mcts", "simulations": 3, "nodeBudget": 5},
+        },
+    )
+
+    assert response["ok"] is True
+    assert response["state"]["fen"] == Game.new().to_fen()
+    assert response["state"]["moves"] == []
+    assert session.human_color.value == "black"
+    assert session.ai_config.kind == "mcts"
+    assert session.ai_config.simulations == 3
+    assert session.ai_config.node_budget == 5
+    assert session.ai_config.seed == 9
+
+
+def test_make_move_applies_legal_move_and_reports_applied_move() -> None:
+    session = GuiSession()
+
+    response = _request(session, {"id": "move-1", "cmd": "makeMove", "move": "E2E4"})
+
+    assert response["id"] == "move-1"
+    assert response["ok"] is True
+    assert response["appliedMove"] == "e2e4"
+    assert response["state"]["sideToMove"] == "black"
+    assert response["state"]["moves"] == ["e2e4"]
+    assert session.game.moves[-1].to_uci() == "e2e4"
+
+
+def test_make_move_auto_queen_promotes_four_character_promotion() -> None:
+    session = GuiSession()
+    session.game = Game.from_fen("k7/4P3/8/8/8/8/8/4K3 w - - 0 1")
+
+    response = _request(session, {"id": 1, "cmd": "makeMove", "move": "e7e8"})
+
+    assert response["ok"] is True
+    assert response["appliedMove"] == "e7e8q"
+    assert response["state"]["lastMove"] == "e7e8q"
+
+
+def test_invalid_json_returns_structured_error_without_state() -> None:
+    output = StringIO()
+
+    GuiSession().handle_line("{bad json", output)
+
+    response = _line_response(output.getvalue())
+    assert response["id"] is None
+    assert response["ok"] is False
+    assert response["error"]["code"] == "invalid_json"
+    assert "state" not in response
+
+
+def test_unknown_command_returns_error_with_state() -> None:
+    response = _request(GuiSession(), {"id": 7, "cmd": "doesNotExist"})
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "unknown_command"
+    assert response["state"]["fen"] == Game.new().to_fen()
+
+
+def test_illegal_move_returns_structured_error_and_current_state() -> None:
+    response = _request(GuiSession(), {"id": 8, "cmd": "makeMove", "move": "e2e5"})
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "illegal_move"
+    assert response["state"]["fen"] == Game.new().to_fen()
+    assert response["state"]["moves"] == []
+
+
+def test_new_game_validation_failure_does_not_mutate_session_config() -> None:
+    session = GuiSession()
+
+    response = _request(
+        session,
+        {
+            "id": 9,
+            "cmd": "newGame",
+            "humanColor": "black",
+            "seed": 12,
+            "ai": {"kind": "mcts", "simulations": 0},
+        },
+    )
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "configuration_error"
+    assert session.human_color.value == "white"
+    assert session.ai_config.kind == "random"
+    assert session.ai_config.seed is None
+
+
+def test_set_ai_config_requires_ai_object() -> None:
+    response = _request(GuiSession(), {"id": 9, "cmd": "setAiConfig"})
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "invalid_request"
+    assert "ai" in response["error"]["message"]
+
+
+def test_set_ai_config_validates_budget_values() -> None:
+    response = _request(
+        GuiSession(),
+        {"id": 10, "cmd": "setAiConfig", "ai": {"kind": "mcts", "simulations": 0}},
+    )
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "configuration_error"
+    assert "simulations" in response["error"]["message"]
+
+
+def test_set_ai_config_rejects_non_finite_numbers() -> None:
+    output = StringIO()
+
+    GuiSession().handle_line(
+        '{"id":11,"cmd":"setAiConfig","ai":{"kind":"mcts","timeLimitSeconds":NaN}}',
+        output,
+    )
+
+    response = _line_response(output.getvalue())
+    assert response["ok"] is False
+    assert response["error"]["code"] == "configuration_error"
+    assert "finite" in response["error"]["message"]
+
+
+def test_set_ai_config_accepts_optional_neural_checkpoint_settings() -> None:
+    response = _request(
+        GuiSession(),
+        {
+            "id": 12,
+            "cmd": "setAiConfig",
+            "ai": {
+                "kind": "neural",
+                "simulations": 2,
+                "checkpointPath": "/tmp/checkpoint",
+                "timeLimitSeconds": 0.25,
+                "leafParallelism": 2,
+            },
+        },
+    )
+
+    assert response["ok"] is True
+    assert response["ai"]["kind"] == "neural"
+    assert response["ai"]["checkpointPath"] == "/tmp/checkpoint"
+    assert response["ai"]["timeLimitSeconds"] == 0.25
+    assert response["ai"]["leafParallelism"] == 2
+
+
+def test_run_gui_loop_stops_after_quit() -> None:
+    output = StringIO()
+
+    session = run_gui_loop(
+        stdin=StringIO(
+            '\n'.join(
+                (
+                    json.dumps({"id": 1, "cmd": "state"}),
+                    json.dumps({"id": 2, "cmd": "quit"}),
+                    json.dumps({"id": 3, "cmd": "state"}),
+                    "",
+                )
+            )
+        ),
+        stdout=output,
+    )
+
+    assert session.should_quit
+    responses = [json.loads(line) for line in output.getvalue().splitlines()]
+    assert [response["id"] for response in responses] == [1, 2]
+    assert all(response["ok"] for response in responses)
