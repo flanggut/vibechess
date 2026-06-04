@@ -5,12 +5,15 @@ from __future__ import annotations
 import json
 import math
 import sys
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, TextIO, cast
+from typing import Literal, Protocol, TextIO, cast
 
 from tinychess import __version__
+from tinychess.ai.mcts import MCTSPlayer
+from tinychess.ai.player import NoLegalMoveError, RandomPlayer
 from tinychess.ai.search_config import MCTSConfig
 from tinychess.engine.game import Game
 from tinychess.engine.move import Move
@@ -21,6 +24,36 @@ PROTOCOL_VERSION = "tinychess-gui-v1"
 
 PlayerKind = Literal["random", "mcts", "neural"]
 PLAYER_KINDS: frozenset[str] = frozenset(("random", "mcts", "neural"))
+
+
+class SearchResult(Protocol):
+    """Common search metadata exposed by classical and neural MCTS results."""
+
+    @property
+    def move(self) -> Move:
+        """Return the selected move."""
+        ...
+
+    @property
+    def simulations(self) -> int:
+        """Return the number of completed simulations."""
+        ...
+
+    @property
+    def nodes(self) -> int:
+        """Return the number of materialized/search nodes."""
+        ...
+
+    @property
+    def elapsed_seconds(self) -> float:
+        """Return search wall-clock time in seconds."""
+        ...
+
+    @property
+    def visit_counts(self) -> dict[Move, int]:
+        """Return root visit counts keyed by move."""
+        ...
+
 ERROR_CODES: frozenset[str] = frozenset(
     (
         "invalid_json",
@@ -40,8 +73,7 @@ ERROR_CODES: frozenset[str] = frozenset(
 class GuiAiConfig:
     """Validated AI settings carried by the GUI session.
 
-    The Task 1 backend slice validates and stores these settings but intentionally does
-    not run AI searches yet; ``aiMove`` is covered by a later plan task.
+    These settings can be stored on the session or supplied per ``aiMove`` request.
     """
 
     kind: PlayerKind = "random"
@@ -148,6 +180,8 @@ class GuiSession:
                 return self._handle_new_game(request_id, request)
             if command == "makeMove":
                 return self._handle_make_move(request_id, request)
+            if command == "aiMove":
+                return self._handle_ai_move(request_id, request)
             if command == "setAiConfig":
                 return self._handle_set_ai_config(request_id, request)
             if command == "quit":
@@ -234,6 +268,35 @@ class GuiSession:
             state=serialize_state(self.game),
         )
 
+    def _handle_ai_move(
+        self,
+        request_id: object,
+        request: Mapping[str, object],
+    ) -> dict[str, object]:
+        ai_config = self.ai_config
+        if "ai" in request:
+            ai_config = parse_ai_config(request["ai"], current=ai_config)
+        legal = self.game.legal_moves
+        if self.game.outcome is not None or not legal:
+            raise GuiProtocolError(
+                "terminal_position",
+                "cannot select an AI move from a terminal position",
+            )
+
+        try:
+            move, search = _select_ai_move(self.game, ai_config)
+        except NoLegalMoveError as exc:
+            raise GuiProtocolError("terminal_position", str(exc)) from exc
+        if move not in legal:
+            raise GuiProtocolError("internal_error", f"AI selected illegal move: {move.to_uci()}")
+        self.game = self.game.play_known_legal(move)
+        return self._success_response(
+            request_id,
+            appliedMove=move.to_uci(),
+            search=search,
+            state=serialize_state(self.game),
+        )
+
     def _handle_set_ai_config(
         self,
         request_id: object,
@@ -286,6 +349,69 @@ def run_gui_loop(
         if session.should_quit:
             break
     return session
+
+
+def _select_ai_move(game: Game, config: GuiAiConfig) -> tuple[Move, dict[str, object]]:
+    if config.kind == "random":
+        start = time.perf_counter()
+        move = RandomPlayer(seed=config.seed).select_move(game)
+        return move, {"kind": "random", "elapsedSeconds": time.perf_counter() - start}
+    if config.kind == "mcts":
+        player = MCTSPlayer(
+            MCTSConfig(
+                simulations=config.simulations,
+                time_limit_seconds=config.time_limit_seconds,
+                node_budget=config.node_budget,
+                max_rollout_plies=config.max_rollout_plies,
+                seed=config.seed,
+            )
+        )
+        result = player.search(game)
+        return result.move, _serialize_mcts_search("mcts", result)
+    return _select_neural_ai_move(game, config)
+
+
+def _select_neural_ai_move(game: Game, config: GuiAiConfig) -> tuple[Move, dict[str, object]]:
+    if config.checkpoint_path is None:
+        raise GuiProtocolError("configuration_error", "neural aiMove requires checkpointPath")
+    try:
+        from tinychess.ai.neural_mcts import NeuralMCTSConfig, NeuralMCTSPlayer
+        from tinychess.nn.checkpoint import load_checkpoint
+        from tinychess.nn.model import PolicyValueInference
+    except ImportError as exc:
+        message = f"neural checkpoint loading unavailable: {exc}"
+        raise GuiProtocolError("checkpoint_error", message) from exc
+    try:
+        neural_config = NeuralMCTSConfig(
+            simulations=config.simulations,
+            time_limit_seconds=config.time_limit_seconds,
+            node_budget=config.node_budget,
+            puct_exploration=config.puct_exploration,
+            temperature=config.temperature,
+            seed=config.seed,
+            leaf_parallelism=config.leaf_parallelism,
+        )
+        checkpoint = load_checkpoint(config.checkpoint_path)
+    except OSError as exc:
+        raise GuiProtocolError(
+            "checkpoint_error",
+            f"failed to load neural checkpoint {config.checkpoint_path}: {exc}",
+        ) from exc
+    except (TypeError, ValueError) as exc:
+        raise GuiProtocolError("checkpoint_error", f"invalid neural checkpoint: {exc}") from exc
+    player = NeuralMCTSPlayer(PolicyValueInference(checkpoint.model), neural_config)
+    result = player.search(game)
+    return result.move, _serialize_mcts_search("neural", result)
+
+
+def _serialize_mcts_search(kind: str, result: SearchResult) -> dict[str, object]:
+    return {
+        "kind": kind,
+        "simulations": result.simulations,
+        "nodes": result.nodes,
+        "elapsedSeconds": result.elapsed_seconds,
+        "visitCounts": {move.to_uci(): visits for move, visits in result.visit_counts.items()},
+    }
 
 
 def serialize_state(game: Game) -> dict[str, object]:

@@ -227,6 +227,68 @@ def test_new_game_validation_failure_does_not_mutate_session_config() -> None:
     assert session.ai_config.seed is None
 
 
+def test_ai_move_random_applies_deterministic_legal_move() -> None:
+    session = GuiSession()
+    legal_before = set(_request(session, {"id": "state", "cmd": "state"})["state"]["legalMoves"])
+
+    response = _request(
+        session,
+        {"id": 9, "cmd": "aiMove", "ai": {"kind": "random", "seed": 7}},
+    )
+
+    assert response["ok"] is True
+    assert response["appliedMove"] in legal_before
+    assert response["state"]["moves"] == [response["appliedMove"]]
+    assert response["state"]["lastMove"] == response["appliedMove"]
+    assert response["state"]["sideToMove"] == "black"
+    assert response["search"]["kind"] == "random"
+    assert response["search"]["elapsedSeconds"] >= 0.0
+
+    second = _request(
+        GuiSession(),
+        {"id": 10, "cmd": "aiMove", "ai": {"kind": "random", "seed": 7}},
+    )
+    assert second["appliedMove"] == response["appliedMove"]
+
+
+def test_ai_move_mcts_applies_legal_move_and_reports_search_metadata() -> None:
+    session = GuiSession()
+    legal_before = set(_request(session, {"id": "state", "cmd": "state"})["state"]["legalMoves"])
+
+    response = _request(
+        session,
+        {
+            "id": 10,
+            "cmd": "aiMove",
+            "ai": {"kind": "mcts", "simulations": 2, "nodeBudget": 3, "seed": 3},
+        },
+    )
+
+    assert response["ok"] is True
+    assert response["appliedMove"] in legal_before
+    assert response["state"]["moves"] == [response["appliedMove"]]
+    assert response["search"]["kind"] == "mcts"
+    assert response["search"]["simulations"] == 2
+    assert response["search"]["nodes"] <= 3
+    assert response["search"]["elapsedSeconds"] >= 0.0
+    assert set(response["search"]["visitCounts"]).issubset(legal_before)
+
+
+def test_ai_move_neural_without_checkpoint_fails_gracefully() -> None:
+    session = GuiSession()
+
+    response = _request(
+        session,
+        {"id": 11, "cmd": "aiMove", "ai": {"kind": "neural", "simulations": 1}},
+    )
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "configuration_error"
+    assert "checkpointPath" in response["error"]["message"]
+    assert response["state"]["fen"] == Game.new().to_fen()
+    assert response["state"]["moves"] == []
+
+
 def test_set_ai_config_requires_ai_object() -> None:
     response = _request(GuiSession(), {"id": 9, "cmd": "setAiConfig"})
 

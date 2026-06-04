@@ -228,10 +228,11 @@ Use stable string codes so Swift can present friendly messages:
    - Acceptance: targeted tests pass and validate response JSON rather than relying on text substrings.
    - Completed: expanded focused GUI protocol state/move coverage in `tests/test_gui_protocol.py`.
 
-4. **Test Python AI commands**
+4. **[Done] Test Python AI commands**
    - File: `tests/test_gui_protocol.py`
    - Changes: add deterministic/smoke tests for `aiMove` with `random` and small-budget `mcts`; add neural missing-checkpoint/configuration-error test without requiring a real checkpoint.
    - Acceptance: AI commands apply legal moves and return search metadata where available; neural remains optional and fails gracefully when no checkpoint is supplied.
+   - Completed: implemented and tested GUI `aiMove` support for random, classical MCTS, and graceful neural missing-checkpoint failure in `src/tinychess/protocols/gui.py` and `tests/test_gui_protocol.py`.
 
 5. **Add Swift app target skeleton**
    - File: `swift/Package.swift`
