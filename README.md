@@ -111,6 +111,7 @@ uv run tinychess play
 uv run tinychess play --white human --black random
 uv run tinychess play --white random --black random --seed 7 --max-plies 40
 uv run tinychess play --white mcts --black random --seed 7 --mcts-simulations 25 --max-plies 40
+uv run tinychess play --white human --black ai --ai-checkpoint data/checkpoints/train-smoke/checkpoint-final --ai-simulations 25
 uv run tinychess uci
 uv run tinychess uci --seed 7
 ```
@@ -118,8 +119,11 @@ uv run tinychess uci --seed 7
 The `play` command renders the board in the terminal, shows side to move, castling
 en-passant and move-counter status, and accepts human moves in UCI long algebraic
 notation such as `e2e4` or `e7e8q`. Invalid or illegal moves are rejected with a
-message and another prompt. Player kinds are `human`, `random`, and the classical
-`mcts` baseline.
+message and another prompt. Player kinds are `human`, `random`, the classical
+`mcts` baseline, and checkpoint-backed neural `ai`. The `ai` player uses neural
+MCTS and requires `--ai-checkpoint`; use `--ai-simulations`, `--ai-node-budget`,
+`--ai-time-limit-seconds`, `--ai-temperature`, `--ai-puct-exploration`, and
+`--ai-leaf-parallelism` to tune its search.
 
 The `uci` command runs a bounded Universal Chess Interface loop. It supports
 `uci`, `isready`, `ucinewgame`, `position startpos [moves ...]`,

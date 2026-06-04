@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
-from typing import TextIO
+from pathlib import Path
+from typing import Literal, TextIO
 
 from tinychess.ai.mcts import MCTSPlayer
-from tinychess.ai.player import RandomPlayer
+from tinychess.ai.player import Player, RandomPlayer
 from tinychess.ai.search_config import MCTSConfig
 from tinychess.engine.game import Game
 from tinychess.engine.move import Move
 from tinychess.ui.render import render_game
 
-PlayerKind = str
+PlayerKind = Literal["human", "random", "mcts", "ai"]
 
 
 class HumanQuit(Exception):
@@ -30,8 +31,51 @@ class PlayConfig:
     seed: int | None = None
     mcts_simulations: int = 25
     mcts_rollout_plies: int = 0
+    ai_checkpoint: Path | None = None
+    ai_simulations: int = 25
+    ai_node_budget: int | None = None
+    ai_time_limit_seconds: float | None = None
+    ai_temperature: float = 0.0
+    ai_puct_exploration: float = 1.5
+    ai_leaf_parallelism: int = 1
     unicode: bool = False
     coordinates: bool = True
+
+
+def _create_ai_players(config: PlayConfig, players: dict[str, PlayerKind]) -> dict[str, Player]:
+    ai_sides = [side for side, player in players.items() if player == "ai"]
+    if not ai_sides:
+        return {}
+    if config.ai_checkpoint is None:
+        msg = "ai player requires --ai-checkpoint"
+        raise ValueError(msg)
+
+    from tinychess.ai.neural_mcts import NeuralMCTSConfig, NeuralMCTSPlayer
+    from tinychess.nn.checkpoint import load_checkpoint
+    from tinychess.nn.model import PolicyValueInference
+
+    try:
+        checkpoint = load_checkpoint(config.ai_checkpoint)
+    except OSError as exc:
+        msg = f"failed to load ai checkpoint {config.ai_checkpoint}: {exc}"
+        raise ValueError(msg) from exc
+    inference = PolicyValueInference(checkpoint.model)
+
+    def new_player() -> Player:
+        return NeuralMCTSPlayer(
+            inference,
+            NeuralMCTSConfig(
+                simulations=config.ai_simulations,
+                time_limit_seconds=config.ai_time_limit_seconds,
+                node_budget=config.ai_node_budget,
+                puct_exploration=config.ai_puct_exploration,
+                temperature=config.ai_temperature,
+                seed=config.seed,
+                leaf_parallelism=config.ai_leaf_parallelism,
+            ),
+        )
+
+    return {side: new_player() for side in ai_sides}
 
 
 def parse_legal_uci_move(text: str, game: Game) -> Move:
@@ -75,6 +119,7 @@ def play_terminal(
         )
     )
     players = {"white": config.white, "black": config.black}
+    ai_players = _create_ai_players(config, players)
     game = Game.new()
     last_move: Move | None = None
     plies_played = 0
@@ -100,6 +145,9 @@ def play_terminal(
         elif player == "mcts":
             move = mcts_player.select_move(game)
             print(f"{side} mcts plays {move.to_uci()}", file=output_stream)
+        elif player == "ai":
+            move = ai_players[side].select_move(game)
+            print(f"{side} ai plays {move.to_uci()}", file=output_stream)
         elif player == "human":
             move = _read_human_move(
                 game=game,

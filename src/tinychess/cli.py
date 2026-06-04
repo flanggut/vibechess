@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 from typing import TextIO
 
 from tinychess import __version__
@@ -29,16 +30,54 @@ def build_parser() -> argparse.ArgumentParser:
         help="play a terminal chess game",
         description="Play a terminal chess game using UCI moves such as e2e4 or e7e8q.",
     )
-    play.add_argument("--white", choices=("human", "random", "mcts"), default="human")
-    play.add_argument("--black", choices=("human", "random", "mcts"), default="human")
+    player_choices = ("human", "random", "mcts", "ai")
+    play.add_argument("--white", choices=player_choices, default="human")
+    play.add_argument("--black", choices=player_choices, default="human")
     play.add_argument("--max-plies", type=int, default=512)
-    play.add_argument("--seed", type=int, default=None, help="seed for random/MCTS players")
+    play.add_argument("--seed", type=int, default=None, help="seed for random/MCTS/AI players")
     play.add_argument("--mcts-simulations", type=int, default=25, help="MCTS simulations per move")
     play.add_argument(
         "--mcts-rollout-plies",
         type=int,
         default=0,
         help="MCTS random rollout plies per simulation; default 0 uses static leaf evaluation",
+    )
+    play.add_argument(
+        "--ai-checkpoint",
+        type=Path,
+        default=None,
+        help="checkpoint directory for ai player kind",
+    )
+    play.add_argument(
+        "--ai-simulations",
+        type=int,
+        default=25,
+        help="neural MCTS simulations per move",
+    )
+    play.add_argument(
+        "--ai-node-budget",
+        type=int,
+        default=None,
+        help="optional neural MCTS node cap",
+    )
+    play.add_argument(
+        "--ai-time-limit-seconds",
+        type=float,
+        default=None,
+        help="optional neural MCTS wall-clock cap per move",
+    )
+    play.add_argument("--ai-temperature", type=float, default=0.0, help="neural move temperature")
+    play.add_argument(
+        "--ai-puct-exploration",
+        type=float,
+        default=1.5,
+        help="neural PUCT exploration constant",
+    )
+    play.add_argument(
+        "--ai-leaf-parallelism",
+        type=int,
+        default=1,
+        help="optional approximate neural MCTS leaf parallelism",
     )
     play.add_argument("--unicode", action="store_true", help="render Unicode chess pieces")
     play.add_argument(
@@ -77,6 +116,13 @@ def main(
             seed=args.seed,
             mcts_simulations=args.mcts_simulations,
             mcts_rollout_plies=args.mcts_rollout_plies,
+            ai_checkpoint=args.ai_checkpoint,
+            ai_simulations=args.ai_simulations,
+            ai_node_budget=args.ai_node_budget,
+            ai_time_limit_seconds=args.ai_time_limit_seconds,
+            ai_temperature=args.ai_temperature,
+            ai_puct_exploration=args.ai_puct_exploration,
+            ai_leaf_parallelism=args.ai_leaf_parallelism,
             unicode=args.unicode,
             coordinates=not args.no_coordinates,
         )

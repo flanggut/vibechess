@@ -1,13 +1,24 @@
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from io import StringIO
+from pathlib import Path
 
 import pytest
 
 from tinychess.cli import main
 from tinychess.engine.game import Game
+from tinychess.engine.move import Move
+from tinychess.ui import terminal
 from tinychess.ui.render import render_game
 from tinychess.ui.terminal import PlayConfig, parse_legal_uci_move, play_terminal
+
+
+class FirstLegalPlayer:
+    def select_move(self, game: Game) -> Move:
+        return game.legal_moves[0]
 
 
 def test_render_game_shows_board_and_status() -> None:
@@ -59,7 +70,151 @@ def test_cli_play_random_vs_random() -> None:
 
 
 def test_play_config_defaults_to_static_leaf_mcts() -> None:
-    assert PlayConfig().mcts_rollout_plies == 0
+    config = PlayConfig()
+
+    assert config.mcts_rollout_plies == 0
+    assert config.ai_checkpoint is None
+    assert config.ai_simulations == 25
+
+
+def test_play_terminal_ai_uses_configured_player_and_prints_move(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = StringIO()
+    seen_checkpoint: Path | None = None
+
+    def fake_create_ai_players(
+        config: PlayConfig,
+        players: dict[str, terminal.PlayerKind],
+    ) -> dict[str, FirstLegalPlayer]:
+        nonlocal seen_checkpoint
+        seen_checkpoint = config.ai_checkpoint
+        assert players == {"white": "random", "black": "ai"}
+        return {"black": FirstLegalPlayer()}
+
+    monkeypatch.setattr(terminal, "_create_ai_players", fake_create_ai_players)
+
+    game = play_terminal(
+        PlayConfig(
+            white="random",
+            black="ai",
+            max_plies=2,
+            seed=7,
+            ai_checkpoint=Path("checkpoint-dir"),
+        ),
+        stdout=output,
+    )
+
+    assert seen_checkpoint == Path("checkpoint-dir")
+    assert len(game.moves) == 2
+    text = output.getvalue()
+    assert "white random plays" in text
+    assert "black ai plays" in text
+
+
+def test_cli_play_ai_accepts_neural_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    output = StringIO()
+    seen_config: PlayConfig | None = None
+
+    def fake_create_ai_players(
+        config: PlayConfig,
+        players: dict[str, terminal.PlayerKind],
+    ) -> dict[str, FirstLegalPlayer]:
+        nonlocal seen_config
+        seen_config = config
+        assert players == {"white": "ai", "black": "random"}
+        return {"white": FirstLegalPlayer()}
+
+    monkeypatch.setattr(terminal, "_create_ai_players", fake_create_ai_players)
+
+    code = main(
+        [
+            "play",
+            "--white",
+            "ai",
+            "--black",
+            "random",
+            "--max-plies",
+            "1",
+            "--seed",
+            "1",
+            "--ai-checkpoint",
+            "checkpoint-dir",
+            "--ai-simulations",
+            "3",
+            "--ai-node-budget",
+            "7",
+            "--ai-time-limit-seconds",
+            "0.5",
+            "--ai-temperature",
+            "0.25",
+            "--ai-puct-exploration",
+            "1.25",
+            "--ai-leaf-parallelism",
+            "2",
+        ],
+        stdout=output,
+    )
+
+    assert code == 0
+    assert seen_config is not None
+    assert str(seen_config.ai_checkpoint) == "checkpoint-dir"
+    assert seen_config.ai_simulations == 3
+    assert seen_config.ai_node_budget == 7
+    assert seen_config.ai_time_limit_seconds == 0.5
+    assert seen_config.ai_temperature == 0.25
+    assert seen_config.ai_puct_exploration == 1.25
+    assert seen_config.ai_leaf_parallelism == 2
+    assert "white ai plays" in output.getvalue()
+
+
+def test_cli_import_does_not_import_neural_modules() -> None:
+    modules = [
+        "tinychess.ai.neural_mcts",
+        "tinychess.nn.checkpoint",
+        "tinychess.nn.model",
+        "mlx.core",
+    ]
+    code = (
+        "import json\n"
+        "import sys\n"
+        "import tinychess.cli\n"
+        f"modules = {modules!r}\n"
+        "print(json.dumps({name: name in sys.modules for name in modules}, sort_keys=True))\n"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {name: False for name in modules}
+
+
+def test_cli_play_ai_requires_checkpoint() -> None:
+    error = StringIO()
+
+    code = main(["play", "--black", "ai", "--max-plies", "0"], stderr=error)
+
+    assert code == 2
+    assert "ai player requires --ai-checkpoint" in error.getvalue()
+
+
+def test_cli_play_ai_invalid_checkpoint_path_returns_usage_error(tmp_path: Path) -> None:
+    error = StringIO()
+
+    code = main(
+        ["play", "--black", "ai", "--ai-checkpoint", str(tmp_path / "missing")],
+        stdout=StringIO(),
+        stderr=error,
+    )
+
+    text = error.getvalue()
+    assert code == 2
+    assert "failed to load ai checkpoint" in text
+    assert "Traceback" not in text
 
 
 def test_cli_play_mcts_supports_static_leaf_rollout_plies() -> None:
