@@ -216,10 +216,11 @@ Use stable string codes so Swift can present friendly messages:
    - Acceptance: unit tests can instantiate `GuiSession`, call command handlers via strings/streams, and receive valid JSON with canonical state.
    - Completed: implemented in `src/tinychess/protocols/gui.py` with focused coverage in `tests/test_gui_protocol.py`.
 
-2. **Add CLI entrypoint for backend server**
+2. **[Done] Add CLI entrypoint for backend server**
    - File: `src/tinychess/cli.py`
    - Changes: add `gui-server` subcommand with options for `--seed`, optional default AI budgets, and maybe `--traceback` for local debugging; call `run_gui_loop()`.
    - Acceptance: `uv run tinychess gui-server` responds to `hello`, `state`, and `quit` JSON-lines requests; `uv run tinychess --help` lists the subcommand.
+   - Completed: implemented in `src/tinychess/cli.py` with focused CLI coverage in `tests/test_cli.py`.
 
 3. **Test Python protocol state and move commands**
    - File: `tests/test_gui_protocol.py`

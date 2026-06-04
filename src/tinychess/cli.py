@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TextIO
 
 from tinychess import __version__
+from tinychess.protocols.gui import GuiAiConfig, GuiConfig, parse_ai_config, run_gui_loop
 from tinychess.protocols.uci import UciConfig, run_uci_loop
 from tinychess.ui.terminal import HumanQuit, PlayConfig, play_terminal
 
@@ -92,7 +93,93 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run a basic Universal Chess Interface loop with random legal best moves.",
     )
     uci.add_argument("--seed", type=int, default=None, help="seed for deterministic best moves")
+
+    gui_server = subparsers.add_parser(
+        "gui-server",
+        help="run the JSON-lines protocol backend for the native GUI",
+        description=(
+            "Run the tinychess GUI backend. The protocol reads one JSON request per "
+            "line from stdin and writes one JSON response per line to stdout."
+        ),
+    )
+    gui_server.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="default seed for GUI AI players",
+    )
+    gui_server.add_argument(
+        "--ai-kind",
+        choices=("random", "mcts", "neural"),
+        default="random",
+        help="default GUI AI kind",
+    )
+    gui_server.add_argument(
+        "--ai-simulations",
+        type=int,
+        default=25,
+        help="default MCTS/neural simulations per GUI AI move",
+    )
+    gui_server.add_argument(
+        "--ai-node-budget",
+        type=int,
+        default=None,
+        help="optional default GUI AI node cap",
+    )
+    gui_server.add_argument(
+        "--ai-time-limit-seconds",
+        type=float,
+        default=None,
+        help="optional default GUI AI wall-clock cap per move",
+    )
+    gui_server.add_argument(
+        "--ai-checkpoint",
+        type=Path,
+        default=None,
+        help="optional default checkpoint directory for neural GUI AI",
+    )
+    gui_server.add_argument(
+        "--ai-max-rollout-plies",
+        type=int,
+        default=0,
+        help="default classical MCTS random rollout plies; 0 uses static leaf evaluation",
+    )
+    gui_server.add_argument(
+        "--ai-temperature",
+        type=float,
+        default=0.0,
+        help="default neural GUI AI move temperature",
+    )
+    gui_server.add_argument(
+        "--ai-puct-exploration",
+        type=float,
+        default=1.5,
+        help="default neural GUI AI PUCT exploration constant",
+    )
+    gui_server.add_argument(
+        "--ai-leaf-parallelism",
+        type=int,
+        default=1,
+        help="default approximate neural GUI AI leaf parallelism",
+    )
     return parser
+
+
+def _gui_ai_config_from_args(args: argparse.Namespace) -> GuiAiConfig:
+    """Return a validated default GUI AI config from parsed CLI arguments."""
+    default_ai = GuiAiConfig(
+        kind=args.ai_kind,
+        simulations=args.ai_simulations,
+        time_limit_seconds=args.ai_time_limit_seconds,
+        node_budget=args.ai_node_budget,
+        max_rollout_plies=args.ai_max_rollout_plies,
+        checkpoint_path=args.ai_checkpoint,
+        puct_exploration=args.ai_puct_exploration,
+        temperature=args.ai_temperature,
+        leaf_parallelism=args.ai_leaf_parallelism,
+        seed=args.seed,
+    )
+    return parse_ai_config(default_ai.to_response())
 
 
 def main(
@@ -140,6 +227,19 @@ def main(
 
     if args.command == "uci":
         run_uci_loop(UciConfig(seed=args.seed), stdin=stdin, stdout=output_stream)
+        return 0
+
+    if args.command == "gui-server":
+        try:
+            default_ai = _gui_ai_config_from_args(args)
+            run_gui_loop(
+                GuiConfig(seed=args.seed, default_ai=default_ai),
+                stdin=stdin,
+                stdout=output_stream,
+            )
+        except ValueError as exc:
+            print(f"tinychess gui-server: {exc}", file=error_stream)
+            return 2
         return 0
 
     parser.print_help(file=output_stream)
