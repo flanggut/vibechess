@@ -18,6 +18,13 @@ def _line_response(text: str) -> dict[str, Any]:
     return cast(dict[str, Any], json.loads(text.strip()))
 
 
+def _destination_sets(state: dict[str, Any]) -> dict[str, set[str]]:
+    return {
+        from_square: set(destinations)
+        for from_square, destinations in state["legalDestinationsByFrom"].items()
+    }
+
+
 def test_hello_returns_capabilities_and_canonical_start_state() -> None:
     session = GuiSession()
 
@@ -55,6 +62,63 @@ def test_state_serializer_uses_canonical_fields_after_move() -> None:
     assert state["halfmoveClock"] == 0
 
 
+def test_state_command_returns_current_canonical_state_after_move() -> None:
+    session = GuiSession()
+    _request(session, {"id": 1, "cmd": "makeMove", "move": "e2e4"})
+
+    response = _request(session, {"id": 2, "cmd": "state"})
+
+    assert response["id"] == 2
+    assert response["ok"] is True
+    state = response["state"]
+    assert state["fen"] == session.game.to_fen()
+    assert state["sideToMove"] == "black"
+    assert state["moves"] == ["e2e4"]
+    assert state["lastMove"] == "e2e4"
+    assert "e7e5" in state["legalMoves"]
+    assert _destination_sets(state)["e7"] == {"e6", "e5"}
+
+
+def test_start_state_legal_move_shape_is_highlight_friendly() -> None:
+    state = _request(GuiSession(), {"id": 1, "cmd": "state"})["state"]
+
+    expected_moves = {
+        "b1c3",
+        "b1a3",
+        "g1h3",
+        "g1f3",
+        "a2a3",
+        "a2a4",
+        "b2b3",
+        "b2b4",
+        "c2c3",
+        "c2c4",
+        "d2d3",
+        "d2d4",
+        "e2e3",
+        "e2e4",
+        "f2f3",
+        "f2f4",
+        "g2g3",
+        "g2g4",
+        "h2h3",
+        "h2h4",
+    }
+    assert set(state["legalMoves"]) == expected_moves
+    assert _destination_sets(state) == {
+        "b1": {"c3", "a3"},
+        "g1": {"h3", "f3"},
+        "a2": {"a3", "a4"},
+        "b2": {"b3", "b4"},
+        "c2": {"c3", "c4"},
+        "d2": {"d3", "d4"},
+        "e2": {"e3", "e4"},
+        "f2": {"f3", "f4"},
+        "g2": {"g3", "g4"},
+        "h2": {"h3", "h4"},
+    }
+
+
 def test_new_game_resets_state_and_stores_valid_ai_config() -> None:
     session = GuiSession()
     _request(session, {"id": 1, "cmd": "makeMove", "move": "e2e4"})
@@ -73,6 +137,8 @@ def test_new_game_resets_state_and_stores_valid_ai_config() -> None:
     assert response["ok"] is True
     assert response["state"]["fen"] == Game.new().to_fen()
     assert response["state"]["moves"] == []
+    assert response["state"]["lastMove"] is None
+    assert _destination_sets(response["state"])["e2"] == {"e3", "e4"}
     assert session.human_color.value == "black"
     assert session.ai_config.kind == "mcts"
     assert session.ai_config.simulations == 3
@@ -90,6 +156,8 @@ def test_make_move_applies_legal_move_and_reports_applied_move() -> None:
     assert response["appliedMove"] == "e2e4"
     assert response["state"]["sideToMove"] == "black"
     assert response["state"]["moves"] == ["e2e4"]
+    assert response["state"]["lastMove"] == "e2e4"
+    assert _destination_sets(response["state"])["e7"] == {"e6", "e5"}
     assert session.game.moves[-1].to_uci() == "e2e4"
 
 
@@ -102,6 +170,11 @@ def test_make_move_auto_queen_promotes_four_character_promotion() -> None:
     assert response["ok"] is True
     assert response["appliedMove"] == "e7e8q"
     assert response["state"]["lastMove"] == "e7e8q"
+    assert response["state"]["squares"] == [
+        {"square": "e1", "index": 4, "piece": "K", "color": "white", "kind": "king"},
+        {"square": "a8", "index": 56, "piece": "k", "color": "black", "kind": "king"},
+        {"square": "e8", "index": 60, "piece": "Q", "color": "white", "kind": "queen"},
+    ]
 
 
 def test_invalid_json_returns_structured_error_without_state() -> None:
@@ -231,3 +304,4 @@ def test_run_gui_loop_stops_after_quit() -> None:
     responses = [json.loads(line) for line in output.getvalue().splitlines()]
     assert [response["id"] for response in responses] == [1, 2]
     assert all(response["ok"] for response in responses)
+    assert responses[1]["state"]["fen"] == Game.new().to_fen()

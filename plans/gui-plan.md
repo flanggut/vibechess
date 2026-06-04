@@ -222,10 +222,11 @@ Use stable string codes so Swift can present friendly messages:
    - Acceptance: `uv run tinychess gui-server` responds to `hello`, `state`, and `quit` JSON-lines requests; `uv run tinychess --help` lists the subcommand.
    - Completed: implemented in `src/tinychess/cli.py` with focused CLI coverage in `tests/test_cli.py`.
 
-3. **Test Python protocol state and move commands**
+3. **[Done] Test Python protocol state and move commands**
    - File: `tests/test_gui_protocol.py`
    - Changes: add tests for `hello`, `state`, `newGame`, legal-move shape, legal `makeMove`, illegal move error with state, auto-queen promotion from a fixture FEN, and `quit`.
    - Acceptance: targeted tests pass and validate response JSON rather than relying on text substrings.
+   - Completed: expanded focused GUI protocol state/move coverage in `tests/test_gui_protocol.py`.
 
 4. **Test Python AI commands**
    - File: `tests/test_gui_protocol.py`
