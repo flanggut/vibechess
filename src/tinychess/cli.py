@@ -74,12 +74,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=1.5,
         help="neural PUCT exploration constant",
     )
-    play.add_argument(
-        "--ai-leaf-parallelism",
-        type=int,
-        default=1,
-        help="optional approximate neural MCTS leaf parallelism",
-    )
     play.add_argument("--unicode", action="store_true", help="render Unicode chess pieces")
     play.add_argument(
         "--no-coordinates",
@@ -156,12 +150,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=1.5,
         help="default neural GUI AI PUCT exploration constant",
     )
-    gui_server.add_argument(
-        "--ai-leaf-parallelism",
-        type=int,
-        default=1,
-        help="default approximate neural GUI AI leaf parallelism",
-    )
     return parser
 
 
@@ -176,7 +164,6 @@ def _gui_ai_config_from_args(args: argparse.Namespace) -> GuiAiConfig:
         checkpoint_path=args.ai_checkpoint,
         puct_exploration=args.ai_puct_exploration,
         temperature=args.ai_temperature,
-        leaf_parallelism=args.ai_leaf_parallelism,
         seed=args.seed,
     )
     return parse_ai_config(default_ai.to_response())
@@ -209,7 +196,6 @@ def main(
             ai_time_limit_seconds=args.ai_time_limit_seconds,
             ai_temperature=args.ai_temperature,
             ai_puct_exploration=args.ai_puct_exploration,
-            ai_leaf_parallelism=args.ai_leaf_parallelism,
             unicode=args.unicode,
             coordinates=not args.no_coordinates,
         )

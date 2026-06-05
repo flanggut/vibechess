@@ -150,8 +150,6 @@ def test_cli_play_ai_accepts_neural_options(monkeypatch: pytest.MonkeyPatch) -> 
             "0.25",
             "--ai-puct-exploration",
             "1.25",
-            "--ai-leaf-parallelism",
-            "2",
         ],
         stdout=output,
     )
@@ -164,8 +162,13 @@ def test_cli_play_ai_accepts_neural_options(monkeypatch: pytest.MonkeyPatch) -> 
     assert seen_config.ai_time_limit_seconds == 0.5
     assert seen_config.ai_temperature == 0.25
     assert seen_config.ai_puct_exploration == 1.25
-    assert seen_config.ai_leaf_parallelism == 2
     assert "white ai plays" in output.getvalue()
+
+
+def test_cli_play_rejects_removed_ai_parallel_batch_option() -> None:
+    removed_option = "--ai-" + "leaf" + "-parallelism"
+    with pytest.raises(SystemExit):
+        main(["play", removed_option, "2"])
 
 
 def test_cli_import_does_not_import_neural_modules() -> None:

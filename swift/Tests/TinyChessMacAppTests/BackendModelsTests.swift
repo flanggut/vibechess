@@ -150,7 +150,6 @@ import Testing
             maxRolloutPlies: 0,
             puctExploration: 1.5,
             temperature: 0.0,
-            leafParallelism: 2,
             seed: 11
         ),
         seed: 11
@@ -173,7 +172,6 @@ import Testing
     #expect(ai["maxRolloutPlies"] as? Int == 0)
     #expect(ai["puctExploration"] as? Double == 1.5)
     #expect(ai["temperature"] as? Double == 0.0)
-    #expect(ai["leafParallelism"] as? Int == 2)
     #expect(ai["checkpointPath"] == nil)
 }
 

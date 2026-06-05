@@ -37,7 +37,6 @@ class PlayConfig:
     ai_time_limit_seconds: float | None = None
     ai_temperature: float = 0.0
     ai_puct_exploration: float = 1.5
-    ai_leaf_parallelism: int = 1
     unicode: bool = False
     coordinates: bool = True
 
@@ -71,7 +70,6 @@ def _create_ai_players(config: PlayConfig, players: dict[str, PlayerKind]) -> di
                 puct_exploration=config.ai_puct_exploration,
                 temperature=config.ai_temperature,
                 seed=config.seed,
-                leaf_parallelism=config.ai_leaf_parallelism,
             ),
         )
 

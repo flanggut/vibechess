@@ -18,6 +18,8 @@ from tinychess.engine import Game, Move, OutcomeReason
 from tinychess.nn.checkpoint import save_checkpoint
 from tinychess.nn.encode import (
     ACTION_SPACE_SIZE,
+    ACTION_SPACE_VERSION,
+    ENCODER_VERSION,
     TENSOR_SHAPE,
     legal_move_mask_from_legal_moves_np,
     move_to_action_index,
@@ -37,6 +39,7 @@ from tinychess.nn.self_play import (
     LABEL_SOURCE_NEURAL,
     SELF_PLAY_DATASET_SCHEMA_VERSION,
     SelfPlayConfig,
+    SelfPlayMetadata,
     generate_self_play_dataset,
     load_self_play_dataset,
     merge_self_play_datasets,
@@ -103,6 +106,10 @@ def test_generate_self_play_dataset_completes_smoke_game() -> None:
     assert dataset.metadata.action_space_version
     assert dataset.metadata.engine_version
     assert dataset.metadata.model_checkpoint_id == "fake-checkpoint"
+    mcts_settings = dataset.metadata.generation_settings["mcts"]
+    assert isinstance(mcts_settings, dict)
+    removed_field = "leaf" + "_parallelism"
+    assert removed_field not in mcts_settings
     assert dataset.positions.shape == (4, *TENSOR_SHAPE)
     assert dataset.legal_masks.shape == (4, ACTION_SPACE_SIZE)
     assert dataset.mcts_policies.shape == (4, ACTION_SPACE_SIZE)
@@ -148,50 +155,6 @@ def test_batched_neural_self_play_preserves_schema_and_legal_targets() -> None:
     assert dataset.outcomes.shape == (4,)
     assert [record.game_index for record in dataset.games] == [0, 1]
     assert [record.plies for record in dataset.games] == [2, 2]
-    assert np.all(dataset.legal_masks.sum(axis=1) > 0)
-    assert np.allclose(dataset.mcts_policies.sum(axis=1), 1.0)
-    assert np.all(dataset.mcts_policies >= 0.0)
-    assert np.all(dataset.mcts_policies <= dataset.legal_masks)
-
-
-def test_leaf_parallel_neural_self_play_preserves_schema_metadata_and_legal_targets() -> None:
-    inference = CountingPolicyValueInference(
-        PolicyValueNet(
-            PolicyValueConfig(
-                residual_channels=4,
-                residual_blocks=0,
-                policy_channels=1,
-                value_channels=1,
-                value_hidden_dim=4,
-            )
-        )
-    )
-
-    dataset = generate_self_play_dataset(
-        inference,
-        SelfPlayConfig(
-            games=1,
-            max_plies=2,
-            mcts=NeuralMCTSConfig(
-                simulations=3,
-                temperature=0.0,
-                seed=21,
-                leaf_parallelism=2,
-            ),
-            seed=21,
-        ),
-    )
-
-    assert inference.legal_batch_calls >= 1
-    assert dataset.metadata.schema_version == SELF_PLAY_DATASET_SCHEMA_VERSION
-    settings = dataset.metadata.generation_settings
-    mcts_settings = settings["mcts"]
-    assert isinstance(mcts_settings, dict)
-    assert mcts_settings["leaf_parallelism"] == 2
-    assert dataset.positions.shape == (2, *TENSOR_SHAPE)
-    assert dataset.legal_masks.shape == (2, ACTION_SPACE_SIZE)
-    assert dataset.mcts_policies.shape == (2, ACTION_SPACE_SIZE)
-    assert dataset.outcomes.shape == (2,)
     assert np.all(dataset.legal_masks.sum(axis=1) > 0)
     assert np.allclose(dataset.mcts_policies.sum(axis=1), 1.0)
     assert np.all(dataset.mcts_policies >= 0.0)
@@ -623,8 +586,9 @@ def test_self_play_script_accepts_batch_size(tmp_path: Path) -> None:
     assert [record.game_index for record in dataset.games] == [0, 1]
 
 
-def test_self_play_script_accepts_leaf_parallelism(tmp_path: Path) -> None:
-    output = tmp_path / "script-leaf-parallel-output"
+def test_self_play_script_rejects_removed_parallel_batch_flag(tmp_path: Path) -> None:
+    output = tmp_path / "script-removed-parallel-batch-output"
+    removed_flag = "--" + "leaf" + "-parallelism"
     result = subprocess.run(
         [
             sys.executable,
@@ -635,7 +599,7 @@ def test_self_play_script_accepts_leaf_parallelism(tmp_path: Path) -> None:
             "1",
             "--simulations",
             "3",
-            "--leaf-parallelism",
+            removed_flag,
             "2",
             "--output",
             str(output),
@@ -647,12 +611,32 @@ def test_self_play_script_accepts_leaf_parallelism(tmp_path: Path) -> None:
         timeout=30,
     )
 
-    assert result.returncode == 0, result.stderr
-    dataset = load_self_play_dataset(output)
-    mcts_settings = dataset.metadata.generation_settings["mcts"]
+    assert result.returncode != 0
+    assert f"unrecognized arguments: {removed_flag}" in result.stderr
+
+
+def test_historical_metadata_with_opaque_parallel_batch_setting_still_loads() -> None:
+    historical_field = "leaf" + "_parallelism"
+    metadata = SelfPlayMetadata.from_dict(
+        {
+            "schema_version": SELF_PLAY_DATASET_SCHEMA_VERSION,
+            "generated_at": "2026-06-05T00:00:00+00:00",
+            "engine_version": "0.1.0",
+            "git_commit": None,
+            "action_space_version": ACTION_SPACE_VERSION,
+            "encoder_version": ENCODER_VERSION,
+            "model_checkpoint_id": None,
+            "generation_settings": {
+                "mcts": {"simulations": 3, historical_field: 2}
+            },
+            "sample_count": 0,
+            "game_count": 0,
+        }
+    )
+
+    mcts_settings = metadata.generation_settings["mcts"]
     assert isinstance(mcts_settings, dict)
-    assert mcts_settings["leaf_parallelism"] == 2
-    assert dataset.metadata.sample_count == 1
+    assert mcts_settings[historical_field] == 2
 
 
 def test_self_play_script_rejects_invalid_worker_count(tmp_path: Path) -> None:

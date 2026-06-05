@@ -84,7 +84,6 @@ class GuiAiConfig:
     checkpoint_path: Path | None = None
     puct_exploration: float = 1.5
     temperature: float = 0.0
-    leaf_parallelism: int = 1
     seed: int | None = None
 
     def to_response(self) -> dict[str, object]:
@@ -98,7 +97,6 @@ class GuiAiConfig:
             "checkpointPath": None if self.checkpoint_path is None else str(self.checkpoint_path),
             "puctExploration": self.puct_exploration,
             "temperature": self.temperature,
-            "leafParallelism": self.leaf_parallelism,
             "seed": self.seed,
         }
 
@@ -230,7 +228,6 @@ class GuiSession:
                 checkpoint_path=ai_config.checkpoint_path,
                 puct_exploration=ai_config.puct_exploration,
                 temperature=ai_config.temperature,
-                leaf_parallelism=ai_config.leaf_parallelism,
                 seed=seed,
             )
         if "ai" in request:
@@ -403,7 +400,6 @@ def _select_neural_ai_move(game: Game, config: GuiAiConfig) -> tuple[Move, dict[
             puct_exploration=config.puct_exploration,
             temperature=config.temperature,
             seed=config.seed,
-            leaf_parallelism=config.leaf_parallelism,
         )
         checkpoint = load_checkpoint(config.checkpoint_path)
     except OSError as exc:
@@ -499,10 +495,6 @@ def parse_ai_config(value: object, *, current: GuiAiConfig | None = None) -> Gui
         ),
     )
     temperature = cast(float, _optional_float(data, "temperature", base.temperature, minimum=0.0))
-    leaf_parallelism = cast(
-        int,
-        _optional_int(data, "leafParallelism", base.leaf_parallelism, minimum=1),
-    )
     seed = _optional_int(data, "seed", base.seed, minimum=None)
     checkpoint_path = _optional_path(data, "checkpointPath", base.checkpoint_path)
 
@@ -527,9 +519,9 @@ def parse_ai_config(value: object, *, current: GuiAiConfig | None = None) -> Gui
         checkpoint_path=checkpoint_path,
         puct_exploration=puct_exploration,
         temperature=temperature,
-        leaf_parallelism=leaf_parallelism,
         seed=seed,
     )
+
 
 
 def _serialize_squares(game: Game) -> list[dict[str, object]]:

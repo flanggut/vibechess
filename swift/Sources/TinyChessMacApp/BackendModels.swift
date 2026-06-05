@@ -192,7 +192,6 @@ struct BackendAIConfig: Codable, Equatable, Sendable {
     var checkpointPath: String?
     var puctExploration: Double?
     var temperature: Double?
-    var leafParallelism: Int?
     var seed: Int?
 
     init(
@@ -204,7 +203,6 @@ struct BackendAIConfig: Codable, Equatable, Sendable {
         checkpointPath: String? = nil,
         puctExploration: Double? = nil,
         temperature: Double? = nil,
-        leafParallelism: Int? = nil,
         seed: Int? = nil
     ) {
         self.kind = kind
@@ -215,7 +213,6 @@ struct BackendAIConfig: Codable, Equatable, Sendable {
         self.checkpointPath = checkpointPath
         self.puctExploration = puctExploration
         self.temperature = temperature
-        self.leafParallelism = leafParallelism
         self.seed = seed
     }
 }

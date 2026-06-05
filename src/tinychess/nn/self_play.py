@@ -254,7 +254,6 @@ def generate_self_play_dataset(
         max_plies=resolved.max_plies,
         label_source=resolved.label_source,
         batch_size=resolved.batch_size,
-        leaf_parallelism=resolved.mcts.leaf_parallelism,
     ):
         if (
             resolved.batch_size > 1

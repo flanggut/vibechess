@@ -55,7 +55,6 @@ class GenerationArgs:
     channels: int
     blocks: int
     batch_size: int
-    leaf_parallelism: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,7 +97,6 @@ def _self_play_config(args: GenerationArgs, *, games: int, seed: int) -> SelfPla
             simulations=args.simulations,
             temperature=args.temperature,
             seed=seed,
-            leaf_parallelism=args.leaf_parallelism,
         ),
         classical_mcts=MCTSConfig(
             simulations=args.simulations,
@@ -258,15 +256,9 @@ def main() -> int:
         "--batch-size",
         type=int,
         default=1,
-        help="neural self-play root inference batch size; default 1 preserves serial behavior",
-    )
-    parser.add_argument(
-        "--leaf-parallelism",
-        type=int,
-        default=1,
         help=(
-            "opt-in leaf-parallel neural MCTS batch width within one game; "
-            "default 1 preserves serial search semantics"
+            "neural self-play batch size across independent games; "
+            "default 1 preserves serial behavior"
         ),
     )
     parser.add_argument(
@@ -281,9 +273,6 @@ def main() -> int:
         parser.error("--workers must be at least 1")
     if args.batch_size < 1:
         parser.error("--batch-size must be at least 1")
-    if args.leaf_parallelism < 1:
-        parser.error("--leaf-parallelism must be at least 1")
-
     if args.label_source == LABEL_SOURCE_CLASSICAL:
         if args.checkpoint is not None:
             parser.error("--checkpoint is only supported with --label-source neural")
@@ -306,7 +295,6 @@ def main() -> int:
         channels=args.channels,
         blocks=args.blocks,
         batch_size=args.batch_size,
-        leaf_parallelism=args.leaf_parallelism,
     )
     full_config = _self_play_config(generation_args, games=args.games, seed=args.seed)
 

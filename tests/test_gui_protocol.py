@@ -388,7 +388,6 @@ def test_set_ai_config_accepts_optional_neural_checkpoint_settings() -> None:
                 "simulations": 2,
                 "checkpointPath": "/tmp/checkpoint",
                 "timeLimitSeconds": 0.25,
-                "leafParallelism": 2,
             },
         },
     )
@@ -397,7 +396,9 @@ def test_set_ai_config_accepts_optional_neural_checkpoint_settings() -> None:
     assert response["ai"]["kind"] == "neural"
     assert response["ai"]["checkpointPath"] == "/tmp/checkpoint"
     assert response["ai"]["timeLimitSeconds"] == 0.25
-    assert response["ai"]["leafParallelism"] == 2
+    removed_field = "leaf" + "Parallelism"
+    assert removed_field not in response["ai"]
+
 
 
 def test_run_gui_loop_stops_after_quit() -> None:

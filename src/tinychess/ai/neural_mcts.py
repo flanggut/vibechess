@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import random
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Protocol, cast
 
@@ -21,7 +21,6 @@ from tinychess.engine.piece import Color
 from tinychess.nn.encode import move_to_action_index
 from tinychess.nn.model import (
     InferenceResult,
-    LegalPolicyBatchResult,
     LegalPolicyResult,
     PolicyValueInference,
 )
@@ -54,7 +53,6 @@ class NeuralMCTSConfig:
     puct_exploration: float = 1.5
     temperature: float = 0.0
     seed: int | None = None
-    leaf_parallelism: int = 1
 
     def __post_init__(self) -> None:
         if self.simulations < 1:
@@ -71,9 +69,6 @@ class NeuralMCTSConfig:
             raise ValueError(msg)
         if self.temperature < 0:
             msg = f"temperature must be non-negative, got {self.temperature}"
-            raise ValueError(msg)
-        if self.leaf_parallelism < 1:
-            msg = f"leaf_parallelism must be at least 1, got {self.leaf_parallelism}"
             raise ValueError(msg)
 
 
@@ -170,59 +165,14 @@ class NeuralMCTSNode:
             return 0.0
         return self.total_value / self.visits
 
-    def best_edge(
-        self,
-        exploration: float,
-        *,
-        excluded_child_ids: set[int] | frozenset[int] = frozenset(),
-    ) -> NeuralMCTSEdge:
+    def best_edge(self, exploration: float) -> NeuralMCTSEdge:
         """Return the legal edge with the highest PUCT score for this node's mover."""
-        edge = self._best_edge(
-            exploration,
-            excluded_child_ids=excluded_child_ids,
-            require_unexcluded=False,
-        )
-        if edge is None:
-            msg = "cannot select best edge from an unexpanded leaf"
-            raise ValueError(msg)
-        return edge
-
-    def best_unexcluded_edge(
-        self,
-        exploration: float,
-        *,
-        excluded_child_ids: set[int] | frozenset[int],
-    ) -> NeuralMCTSEdge | None:
-        """Return the highest-scoring edge not leading to an excluded child, if any."""
-        return self._best_edge(
-            exploration,
-            excluded_child_ids=excluded_child_ids,
-            require_unexcluded=True,
-        )
-
-    def _best_edge(
-        self,
-        exploration: float,
-        *,
-        excluded_child_ids: set[int] | frozenset[int],
-        require_unexcluded: bool,
-    ) -> NeuralMCTSEdge | None:
         with profile_scope("mcts.best_edge"):
             record_counter("mcts.best_edge.calls")
             if not self.edges:
                 msg = "cannot select best edge from an unexpanded leaf"
                 raise ValueError(msg)
             candidates = tuple(self.edges.values())
-            if excluded_child_ids:
-                unreserved = tuple(
-                    edge
-                    for edge in candidates
-                    if edge.child is None or id(edge.child) not in excluded_child_ids
-                )
-                if unreserved:
-                    candidates = unreserved
-                elif require_unexcluded:
-                    return None
             parent_visits = max(1, self.visits)
 
             def score(edge: NeuralMCTSEdge) -> float:
@@ -262,16 +212,6 @@ class NeuralMCTSResult:
         if self.elapsed_seconds == 0:
             return math.inf
         return self.simulations / self.elapsed_seconds
-
-
-@dataclass(slots=True)
-class _PendingLeafEvaluation:
-    """One virtually reserved leaf selected for a leaf-parallel search batch."""
-
-    node: NeuralMCTSNode
-    budget_blocked: bool
-    terminal_value: float | None
-    selection_depth: int
 
 
 @dataclass(slots=True)
@@ -324,18 +264,11 @@ class NeuralMCTSPlayer:
         deadline = None
         if self.config.time_limit_seconds is not None:
             deadline = start + self.config.time_limit_seconds
-        if self.config.leaf_parallelism == 1:
-            simulations, nodes_created = self._run_serial_simulations(
-                root,
-                nodes_created,
-                deadline,
-            )
-        else:
-            simulations, nodes_created = self._run_leaf_parallel_simulations(
-                root,
-                nodes_created,
-                deadline,
-            )
+        simulations, nodes_created = self._run_serial_simulations(
+            root,
+            nodes_created,
+            deadline,
+        )
 
         record_counter("mcts.completed_simulations", simulations)
         record_distribution("mcts.simulations_per_search", simulations, unit="simulations")
@@ -404,196 +337,6 @@ class NeuralMCTSPlayer:
                 self._backup(node, value)
                 simulations += 1
         return simulations, nodes_created
-
-    def _run_leaf_parallel_simulations(
-        self,
-        root: NeuralMCTSNode,
-        nodes_created: int,
-        deadline: float | None,
-    ) -> tuple[int, int]:
-        simulations = 0
-        while simulations < self.config.simulations:
-            if deadline is not None and simulations > 0 and time.perf_counter() >= deadline:
-                break
-            pending: list[_PendingLeafEvaluation] = []
-            reserved_leaf_ids: set[int] = set()
-            reserved_budget_node_ids: set[int] = set()
-            with profile_scope(
-                "mcts.leaf_parallel_batch",
-                leaf_parallelism=self.config.leaf_parallelism,
-            ):
-                while (
-                    len(pending) < self.config.leaf_parallelism
-                    and simulations + len(pending) < self.config.simulations
-                ):
-                    if deadline is not None and time.perf_counter() >= deadline:
-                        break
-                    selected, nodes_created = self._select_pending_leaf(
-                        root,
-                        nodes_created,
-                        reserved_leaf_ids=reserved_leaf_ids,
-                        reserved_budget_node_ids=reserved_budget_node_ids,
-                    )
-                    if selected is None:
-                        record_counter("mcts.leaf_parallel.no_available_leaf")
-                        break
-                    pending.append(selected)
-                record_distribution(
-                    "mcts.leaf_parallel.batch_size",
-                    len(pending),
-                    unit="leaves",
-                )
-
-                if not pending:
-                    break
-
-                for selected in pending:
-                    self._revert_virtual_loss(selected.node)
-
-                non_terminal = [
-                    selected for selected in pending if selected.terminal_value is None
-                ]
-                predictions = iter(self._predict_leaf_batch(non_terminal))
-                for selected in pending:
-                    with profile_scope("mcts.simulation", simulation_index=simulations):
-                        record_distribution(
-                            "mcts.selection_depth",
-                            selected.selection_depth,
-                            unit="edges",
-                        )
-                        if selected.terminal_value is not None:
-                            value = selected.terminal_value
-                        else:
-                            prediction = next(predictions)
-                            if selected.budget_blocked:
-                                record_counter("mcts.evaluate.calls")
-                                value = prediction.value
-                            else:
-                                value = self._expand_from_prediction(selected.node, prediction)
-                                record_counter("mcts.expanded_simulations")
-                        self._backup(selected.node, value)
-                        simulations += 1
-        return simulations, nodes_created
-
-    def _select_pending_leaf(
-        self,
-        root: NeuralMCTSNode,
-        nodes_created: int,
-        *,
-        reserved_leaf_ids: set[int],
-        reserved_budget_node_ids: set[int],
-    ) -> tuple[_PendingLeafEvaluation | None, int]:
-        excluded_by_node: dict[int, set[int]] = {}
-        with profile_scope("mcts.selection"):
-            while True:
-                node = root
-                budget_blocked = False
-                selection_depth = 0
-                restart_selection = False
-                while node.is_expanded and node.edges and not node.is_terminal:
-                    excluded_child_ids = set(reserved_leaf_ids)
-                    excluded_child_ids.update(reserved_budget_node_ids)
-                    excluded_child_ids.update(excluded_by_node.get(id(node), ()))
-                    edge = node.best_unexcluded_edge(
-                        self.config.puct_exploration,
-                        excluded_child_ids=excluded_child_ids,
-                    )
-                    if edge is None:
-                        if node.parent is None or node.move is None:
-                            return None, nodes_created
-                        excluded_by_node.setdefault(id(node.parent), set()).add(id(node))
-                        restart_selection = True
-                        break
-                    if edge.child is None:
-                        budget_reached = (
-                            self.config.node_budget is not None
-                            and nodes_created >= self.config.node_budget
-                        )
-                        if budget_reached:
-                            budget_blocked = True
-                            record_counter("mcts.node_budget_blocked")
-                            break
-                        node = self._materialize_child(node, edge)
-                        nodes_created += 1
-                        record_counter("mcts.materialized_nodes")
-                    else:
-                        node = edge.child
-                    selection_depth += 1
-                if restart_selection:
-                    continue
-
-                selected_id = id(node)
-                if budget_blocked:
-                    if selected_id in reserved_budget_node_ids:
-                        if node.parent is None or node.move is None:
-                            return None, nodes_created
-                        excluded_by_node.setdefault(id(node.parent), set()).add(selected_id)
-                        continue
-                    reserved_budget_node_ids.add(selected_id)
-                    terminal_value = None
-                else:
-                    if selected_id in reserved_leaf_ids:
-                        if node.parent is None or node.move is None:
-                            return None, nodes_created
-                        excluded_by_node.setdefault(id(node.parent), set()).add(selected_id)
-                        continue
-                    reserved_leaf_ids.add(selected_id)
-                    terminal_value = None
-                    if node.is_terminal:
-                        with profile_scope("mcts.terminal_value"):
-                            record_counter("mcts.terminal_simulations")
-                            terminal_value = _terminal_value(
-                                node.outcome,
-                                node.state.board.side_to_move,
-                            )
-
-                self._apply_virtual_loss(node)
-                return (
-                    _PendingLeafEvaluation(
-                        node=node,
-                        budget_blocked=budget_blocked,
-                        terminal_value=terminal_value,
-                        selection_depth=selection_depth,
-                    ),
-                    nodes_created,
-                )
-
-    def _predict_leaf_batch(
-        self,
-        pending: Sequence[_PendingLeafEvaluation],
-    ) -> tuple[InferenceResult | LegalPolicyResult, ...]:
-        if not pending:
-            return ()
-        predict_legal_batch = getattr(self.inference, "predict_legal_batch", None)
-        if callable(predict_legal_batch):
-            typed_predict = cast(
-                Callable[[Sequence[Game], Sequence[Sequence[Move]]], LegalPolicyBatchResult],
-                predict_legal_batch,
-            )
-            games = tuple(
-                selected.node.state.to_game(include_positions=False) for selected in pending
-            )
-            legal_moves = tuple(selected.node.legal_moves for selected in pending)
-            batch = typed_predict(games, legal_moves)
-            record_counter("mcts.leaf_parallel.batched_inference_calls")
-            record_distribution(
-                "mcts.leaf_parallel.inference_batch_size",
-                len(pending),
-                unit="leaves",
-            )
-            return tuple(batch.result_at(index) for index in range(len(pending)))
-
-        record_counter("mcts.leaf_parallel.serial_inference_fallback")
-        return tuple(self._predict(selected.node) for selected in pending)
-
-    @staticmethod
-    def _apply_virtual_loss(node: NeuralMCTSNode) -> None:
-        record_counter("mcts.leaf_parallel.virtual_leaves")
-        _add_virtual_path_loss(node, visit_delta=1, value_delta=1.0)
-
-    @staticmethod
-    def _revert_virtual_loss(node: NeuralMCTSNode) -> None:
-        _add_virtual_path_loss(node, visit_delta=-1, value_delta=-1.0)
 
     def _root_for_game(self, game: Game) -> tuple[NeuralMCTSNode, int, bool]:
         with profile_scope("mcts.root_for_game"):
@@ -724,31 +467,6 @@ def _add_path_value(node: NeuralMCTSNode, value: float, *, visit_delta: int) -> 
         current_value = -current_value
         current = parent
     return depth
-
-
-def _add_virtual_path_loss(
-    node: NeuralMCTSNode,
-    *,
-    visit_delta: int,
-    value_delta: float,
-) -> None:
-    current: NeuralMCTSNode | None = node
-    while current is not None:
-        current.visits += visit_delta
-        if current.visits < 0:
-            msg = "neural MCTS virtual visit reconciliation made node visits negative"
-            raise RuntimeError(msg)
-        current.total_value += value_delta
-        parent = current.parent
-        if parent is not None and current.move is not None:
-            edge = parent.edges.get(current.move)
-            if edge is not None:
-                edge.visits += visit_delta
-                if edge.visits < 0:
-                    msg = "neural MCTS virtual visit reconciliation made edge visits negative"
-                    raise RuntimeError(msg)
-                edge.total_value += value_delta
-        current = parent
 
 
 def _legal_priors(

@@ -135,8 +135,8 @@ notation such as `e2e4` or `e7e8q`. Invalid or illegal moves are rejected with a
 message and another prompt. Player kinds are `human`, `random`, the classical
 `mcts` baseline, and checkpoint-backed neural `ai`. The `ai` player uses neural
 MCTS and requires `--ai-checkpoint`; use `--ai-simulations`, `--ai-node-budget`,
-`--ai-time-limit-seconds`, `--ai-temperature`, `--ai-puct-exploration`, and
-`--ai-leaf-parallelism` to tune its search.
+`--ai-time-limit-seconds`, `--ai-temperature`, and `--ai-puct-exploration` to tune
+its search.
 
 The `uci` command runs a bounded Universal Chess Interface loop. It supports
 `uci`, `isready`, `ucinewgame`, `position startpos [moves ...]`,
