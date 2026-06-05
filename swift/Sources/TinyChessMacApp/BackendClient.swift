@@ -19,10 +19,11 @@ struct BackendProcessCommand: Equatable, Sendable {
         self.environment = environment
     }
 
-    /// Developer default used by the local SwiftUI app while the Python package is repo-local.
+    /// Developer default used by the local SwiftUI app while launched from `swift/`.
     static let developmentDefault = BackendProcessCommand(
         executable: "uv",
-        arguments: ["run", "tinychess", "gui-server"]
+        arguments: ["run", "tinychess", "gui-server"],
+        workingDirectory: ".."
     )
 }
 

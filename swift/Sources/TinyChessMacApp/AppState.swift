@@ -28,7 +28,11 @@ final class AppState: ObservableObject {
         backend: any BackendSession,
         initialState: BackendState? = nil,
         humanColor: BackendColor = .white,
-        aiConfig: BackendAIConfig = BackendAIConfig(kind: .neural, simulations: 200),
+        aiConfig: BackendAIConfig = BackendAIConfig(
+            kind: .neural,
+            simulations: 200,
+            checkpointPath: "data/checkpoints/strongest"
+        ),
         boardOrientation: BackendColor = .white
     ) {
         self.backend = backend

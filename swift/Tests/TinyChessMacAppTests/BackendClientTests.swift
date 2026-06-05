@@ -2,6 +2,12 @@ import Foundation
 import Testing
 @testable import TinyChessMacApp
 
+@Test func backendProcessDevelopmentDefaultRunsFromRepositoryRoot() {
+    #expect(BackendProcessCommand.developmentDefault.executable == "uv")
+    #expect(BackendProcessCommand.developmentDefault.arguments == ["run", "tinychess", "gui-server"])
+    #expect(BackendProcessCommand.developmentDefault.workingDirectory == "..")
+}
+
 @Test func backendClientSendsRequestAndDecodesResponse() async throws {
     let client = try BackendClient(
         command: shellCommand(

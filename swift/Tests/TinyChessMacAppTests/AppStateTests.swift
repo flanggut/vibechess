@@ -14,6 +14,7 @@ import Testing
     #expect(appState.humanColor == .white)
     #expect(appState.aiConfig.kind == .neural)
     #expect(appState.aiConfig.simulations == 200)
+    #expect(appState.aiConfig.checkpointPath == "data/checkpoints/strongest")
     #expect(appState.boardOrientation == .white)
     #expect(appState.isThinking == false)
     #expect(appState.errorMessage == nil)
