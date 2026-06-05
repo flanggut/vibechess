@@ -284,10 +284,11 @@ Use stable string codes so Swift can present friendly messages:
    - Acceptance: after human+AI moves, undo returns to the position before the human move and clears AI reusable tree state.
    - Completed: added GUI protocol undo support plus Swift undo/reset state and controls with focused backend and app-state tests.
 
-13. **Documentation update**
+13. **[Done] Documentation update**
    - Files: `README.md`, `docs/architecture.md`, `swift/README.md`
    - Changes: document `tinychess gui-server`, protocol boundary, local Swift app launch, MVP limitations, and distributable-app packaging as later phase.
    - Acceptance: docs accurately describe Python-first backend and do not claim Swift chess-rule support.
+   - Completed: documented the GUI server, SwiftUI app workflow, Python-first protocol boundary, MVP limitations, and deferred distributable-app packaging in README and architecture docs.
 
 14. **Local-first validation pass**
    - Files: no new product files unless fixing tests/docs.

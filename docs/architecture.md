@@ -2,7 +2,7 @@
 
 ## Current State
 
-The project is a Python-first chess engine and AI workspace targeting Apple Silicon macOS. FEN, bounded PGN, bounded UCI, terminal play, classical MCTS, neural MCTS, self-play data generation, the first MLX training loop, smoke-oriented checkpoint evaluation, benchmark reporting, and the initial Swift Package Manager bootstrap are implemented. Swift acceleration logic is planned for later work packages after benchmark evidence and fixture parity work.
+The project is a Python-first chess engine and AI workspace targeting Apple Silicon macOS. FEN, bounded PGN, bounded UCI, terminal play, a JSON-lines GUI backend, a local-first SwiftUI macOS app, classical MCTS, neural MCTS, self-play data generation, the first MLX training loop, smoke-oriented checkpoint evaluation, benchmark reporting, and the initial Swift Package Manager bootstrap are implemented. Swift acceleration logic remains separate from the GUI and is planned for later work packages after benchmark evidence and fixture parity work.
 
 Implemented work packages:
 
@@ -24,6 +24,7 @@ Implemented work packages:
 - WP16: Evaluation harness for checkpoint/player matches against random and classical MCTS baselines with early progress-validation promotion criteria.
 - WP17: Full benchmark suite with Swift acceleration recommendation heuristic.
 - WP18: Swift package bootstrap with `TinyChessCore` and Swift tests.
+- GUI MVP: `tinychess gui-server` plus a SwiftUI `TinyChessMacApp` frontend for human-vs-AI play.
 
 ## Package Layout
 
@@ -60,6 +61,7 @@ src/tinychess/
 │   └── train.py
 ├── protocols/
 │   ├── __init__.py
+│   ├── gui.py
 │   └── uci.py
 └── ui/
     ├── __init__.py
@@ -67,18 +69,34 @@ src/tinychess/
     └── terminal.py
 ```
 
-The Swift bootstrap currently lives separately under `swift/`:
+The Swift workspace currently lives separately under `swift/`:
 
 ```text
 swift/
 ├── Package.swift
 ├── README.md
 ├── Sources/
-│   └── TinyChessCore/
-│       └── TinyChessCore.swift
+│   ├── TinyChessCore/
+│   │   └── TinyChessCore.swift
+│   └── TinyChessMacApp/
+│       ├── AppState.swift
+│       ├── BackendClient.swift
+│       ├── BackendModels.swift
+│       ├── BoardView.swift
+│       ├── ControlsView.swift
+│       ├── MoveListView.swift
+│       ├── SquareView.swift
+│       └── TinyChessMacApp.swift
 └── Tests/
-    └── TinyChessCoreTests/
-        └── TinyChessCoreTests.swift
+    ├── TinyChessCoreTests/
+    │   └── TinyChessCoreTests.swift
+    └── TinyChessMacAppTests/
+        ├── AppStateTests.swift
+        ├── BackendClientTests.swift
+        ├── BackendModelsTests.swift
+        ├── BoardViewTests.swift
+        ├── ControlsMoveListTests.swift
+        └── TinyChessMacAppTests.swift
 ```
 
 ## Engine Boundaries
@@ -97,15 +115,49 @@ The engine currently owns:
 - Checkmate, stalemate, and pragmatic draw outcomes.
 - Complete-game simulation with caller-provided move selectors.
 
-Protocol support currently includes a bounded synchronous UCI loop in
-`tinychess.protocols.uci`. It accepts standard handshake/readiness commands,
-`ucinewgame`, `position startpos [moves ...]`, `position fen ... [moves ...]`,
-`go`, `stop`, and `quit`. `go` returns a random legal `bestmove` or `bestmove
-0000` for terminal/no-legal positions.
+Protocol support currently includes two separate frontends:
 
-The AI layer owns the `Player` protocol, `RandomPlayer`, `MCTSPlayer`, neural PUCT MCTS, search configuration, and the WP16 smoke evaluation harness. These players interact with positions through public `Game.legal_moves` and `Game.play()` APIs rather than mutating engine internals. The evaluation harness runs small player/checkpoint matches from fresh games, compares checkpoints against random and classical MCTS baselines, and records early promotion decisions as progress validation rather than evidence of competitive strength.
+- A bounded synchronous UCI loop in `tinychess.protocols.uci`. It accepts
+  standard handshake/readiness commands, `ucinewgame`, `position startpos
+  [moves ...]`, `position fen ... [moves ...]`, `go`, `stop`, and `quit`. `go`
+  returns a random legal `bestmove` or `bestmove 0000` for terminal/no-legal
+  positions.
+- A GUI-specific JSON-lines loop in `tinychess.protocols.gui`, exposed through
+  `uv run tinychess gui-server`. It reads one request object per line and writes
+  one response object per line. Commands include `hello`, `newGame`, `state`,
+  `makeMove`, `aiMove`, `undo`, `setAiConfig`, and `quit`. State-bearing
+  responses include FEN, occupied squares, side to move, legal moves, legal
+  destinations grouped by source square, move history, last move, counters, and
+  outcome. The GUI protocol is intentionally not UCI: it exists so the native app
+  can render and resync state without duplicating chess rules or broadening the
+  bounded UCI surface.
 
-The engine does **not** yet own:
+The AI layer owns the `Player` protocol, `RandomPlayer`, `MCTSPlayer`, neural PUCT MCTS, search configuration, and the WP16 smoke evaluation harness. These players interact with positions through public `Game.legal_moves` and `Game.play()` APIs rather than mutating engine internals. The GUI backend reuses these players for `aiMove`: random and classical MCTS work without external assets, while neural MCTS remains optional and requires a local checkpoint path. The evaluation harness runs small player/checkpoint matches from fresh games, compares checkpoints against random and classical MCTS baselines, and records early promotion decisions as progress validation rather than evidence of competitive strength.
+
+The native macOS app is a SwiftUI frontend, not a Swift chess engine. It maps
+squares, renders Unicode pieces, displays state and controls, and sends
+UCI-style move strings to the backend. Legal move generation, move application,
+outcome detection, undo replay, and AI selection remain in Python. `TinyChessCore`
+continues to be acceleration scaffolding only until future benchmark-driven
+parity work proves a Swift implementation.
+
+Current GUI MVP limitations:
+
+- Local development launch assumes `uv run tinychess gui-server` is available
+  from the repository checkout.
+- Search is synchronous in the Python backend; the Swift app keeps the UI
+  responsive by awaiting backend work outside direct button handlers, but
+  protocol-level cancellation/progress streaming is deferred.
+- Promotion is auto-queen for the MVP; there is no native promotion chooser or
+  underpromotion UI yet.
+- Move history is UCI strings, not SAN/PGN; PGN import/export and save/load are
+  deferred.
+- There is no drag-and-drop, clocks, opening book, tablebase, or external UCI
+  engine integration.
+- A distributable, codesigned/notarized `.app` with bundled Python backend is a
+  later packaging slice; generated apps and checkpoints should not be committed.
+
+The engine/protocol stack does **not** yet own:
 - Full UCI features such as pondering, rich options, MultiPV, advanced time
   management, detailed info streaming, tablebases, or opening books.
 - Strict FIDE claim-vs-automatic draw semantics.
@@ -122,6 +174,7 @@ uv run pytest
 uv run ruff check .
 uv run mypy
 uv run tinychess --help
+printf '{"id":1,"cmd":"hello"}\n{"id":2,"cmd":"quit"}\n' | uv run tinychess gui-server
 ```
 
 A lightweight perft benchmark is available:
@@ -137,4 +190,5 @@ uv run python scripts/train.py --dataset data/selfplay/smoke --output data/check
 uv run python scripts/evaluate.py --checkpoint data/checkpoints/train-smoke/checkpoint-final --games 1 --max-plies 8 --neural-simulations 1
 (cd swift && swift test)
 (cd swift && swift build -c release)
+(cd swift && swift run TinyChessMacApp)  # launches the local-first GUI app
 ```
