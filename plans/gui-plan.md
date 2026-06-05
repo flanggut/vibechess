@@ -266,10 +266,11 @@ Use stable string codes so Swift can present friendly messages:
    - Acceptance: starting position displays correctly for White and Black orientation; legal destinations highlight after selecting a piece; last move remains highlighted.
    - Completed: added SwiftUI board/square rendering driven by AppState plus focused tests for orientation, square color parity, last-move parsing, and Unicode FEN glyph mapping.
 
-10. **Implement controls, move list, and status**
+10. **[Done] Implement controls, move list, and status**
    - Files: `swift/Sources/TinyChessMacApp/ControlsView.swift`, `swift/Sources/TinyChessMacApp/MoveListView.swift`, root content view if separate.
    - Changes: add start/reset controls, human color picker, AI kind/budget controls, optional neural checkpoint path field, flip board, thinking indicator, outcome/status text, move list/history, and error banner.
    - Acceptance: user can configure Random/MCTS/neural path, start/reset, see moves as UCI strings, see outcome/draw status, and manually flip orientation.
+   - Completed: added SwiftUI controls, status/error presentation, UCI move history, root view composition, and focused presentation tests.
 
 11. **Wire human-vs-AI flow**
    - Files: `swift/Sources/TinyChessMacApp/AppState.swift`, `BackendClient.swift`, UI files.
