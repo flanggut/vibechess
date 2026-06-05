@@ -214,6 +214,35 @@ class NeuralMCTSResult:
         return self.simulations / self.elapsed_seconds
 
 
+@dataclass(frozen=True, slots=True)
+class NeuralMCTSInferenceRequest:
+    """Single pending neural inference needed by a serial MCTS search session."""
+
+    session_id: int
+    node: NeuralMCTSNode
+    game: Game
+    legal_moves: tuple[Move, ...]
+    budget_blocked: bool
+    selection_depth: int
+
+
+@dataclass(frozen=True, slots=True)
+class _SerialLeafSelection:
+    node: NeuralMCTSNode
+    terminal_value: float | None
+    budget_blocked: bool
+    nodes_created: int
+    selection_depth: int
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedNeuralMCTSSearch:
+    root: NeuralMCTSNode
+    nodes_created: int
+    start_time: float
+    deadline: float | None
+
+
 @dataclass(slots=True)
 class NeuralMCTSPlayer:
     """AlphaZero-style PUCT player using neural policy priors and value estimates."""
@@ -246,7 +275,26 @@ class NeuralMCTSPlayer:
             return self._search_profiled(game)
 
     def _search_profiled(self, game: Game) -> NeuralMCTSResult:
-        start = time.perf_counter()
+        prepared = self._prepare_serial_search(game, start_time=time.perf_counter())
+        simulations, nodes_created = self._run_serial_simulations(
+            prepared.root,
+            prepared.nodes_created,
+            prepared.deadline,
+        )
+
+        return self._finish_search(
+            prepared.root,
+            simulations=simulations,
+            nodes_created=nodes_created,
+            start_time=prepared.start_time,
+        )
+
+    def _prepare_serial_search(
+        self,
+        game: Game,
+        *,
+        start_time: float,
+    ) -> _PreparedNeuralMCTSSearch:
         root, nodes_created, adopted_root = self._root_for_game(game)
         if root.outcome is not None:
             msg = f"cannot select a move from a terminal game: {root.outcome.reason.value}"
@@ -263,30 +311,13 @@ class NeuralMCTSPlayer:
 
         deadline = None
         if self.config.time_limit_seconds is not None:
-            deadline = start + self.config.time_limit_seconds
-        simulations, nodes_created = self._run_serial_simulations(
-            root,
-            nodes_created,
-            deadline,
+            deadline = start_time + self.config.time_limit_seconds
+        return _PreparedNeuralMCTSSearch(
+            root=root,
+            nodes_created=nodes_created,
+            start_time=start_time,
+            deadline=deadline,
         )
-
-        record_counter("mcts.completed_simulations", simulations)
-        record_distribution("mcts.simulations_per_search", simulations, unit="simulations")
-        record_distribution("mcts.nodes_per_search", nodes_created, unit="nodes")
-        selected_move = _select_by_temperature(root, self.config.temperature, self._rng)
-        if selected_move is None:
-            selected_move = self._rng.choice(legal)
-        elapsed = time.perf_counter() - start
-        result = NeuralMCTSResult(
-            move=selected_move,
-            simulations=simulations,
-            nodes=nodes_created,
-            elapsed_seconds=elapsed,
-            visit_counts={move: edge.visits for move, edge in root.edges.items()},
-        )
-        self.last_result = result
-        self._tree_root = root
-        return result
 
     def _run_serial_simulations(
         self,
@@ -299,44 +330,88 @@ class NeuralMCTSPlayer:
             if deadline is not None and simulations > 0 and time.perf_counter() >= deadline:
                 break
             with profile_scope("mcts.simulation", simulation_index=simulations):
-                node = root
                 if deadline is not None and time.perf_counter() >= deadline:
                     break
 
-                budget_blocked = False
-                selection_depth = 0
-                with profile_scope("mcts.selection"):
-                    while node.is_expanded and node.edges and not node.is_terminal:
-                        edge = node.best_edge(self.config.puct_exploration)
-                        if edge.child is None:
-                            budget_reached = (
-                                self.config.node_budget is not None
-                                and nodes_created >= self.config.node_budget
-                            )
-                            if budget_reached:
-                                budget_blocked = True
-                                record_counter("mcts.node_budget_blocked")
-                                break
-                            node = self._materialize_child(node, edge)
-                            nodes_created += 1
-                            record_counter("mcts.materialized_nodes")
-                        else:
-                            node = edge.child
-                        selection_depth += 1
-                record_distribution("mcts.selection_depth", selection_depth, unit="edges")
-
-                if node.is_terminal:
-                    with profile_scope("mcts.terminal_value"):
-                        record_counter("mcts.terminal_simulations")
-                        value = _terminal_value(node.outcome, node.state.board.side_to_move)
-                elif budget_blocked:
-                    value = self._evaluate(node)
+                selection = self._select_serial_leaf(root, nodes_created)
+                nodes_created = selection.nodes_created
+                if selection.terminal_value is not None:
+                    value = selection.terminal_value
+                elif selection.budget_blocked:
+                    value = self._evaluate(selection.node)
                 else:
-                    value = self._expand(node)
+                    value = self._expand(selection.node)
                     record_counter("mcts.expanded_simulations")
-                self._backup(node, value)
+                self._backup(selection.node, value)
                 simulations += 1
         return simulations, nodes_created
+
+    def _select_serial_leaf(
+        self,
+        root: NeuralMCTSNode,
+        nodes_created: int,
+    ) -> _SerialLeafSelection:
+        node = root
+        budget_blocked = False
+        selection_depth = 0
+        with profile_scope("mcts.selection"):
+            while node.is_expanded and node.edges and not node.is_terminal:
+                edge = node.best_edge(self.config.puct_exploration)
+                if edge.child is None:
+                    budget_reached = (
+                        self.config.node_budget is not None
+                        and nodes_created >= self.config.node_budget
+                    )
+                    if budget_reached:
+                        budget_blocked = True
+                        record_counter("mcts.node_budget_blocked")
+                        break
+                    node = self._materialize_child(node, edge)
+                    nodes_created += 1
+                    record_counter("mcts.materialized_nodes")
+                else:
+                    node = edge.child
+                selection_depth += 1
+        record_distribution("mcts.selection_depth", selection_depth, unit="edges")
+
+        terminal_value = None
+        if node.is_terminal:
+            with profile_scope("mcts.terminal_value"):
+                record_counter("mcts.terminal_simulations")
+                terminal_value = _terminal_value(node.outcome, node.state.board.side_to_move)
+        return _SerialLeafSelection(
+            node=node,
+            terminal_value=terminal_value,
+            budget_blocked=budget_blocked,
+            nodes_created=nodes_created,
+            selection_depth=selection_depth,
+        )
+
+    def _finish_search(
+        self,
+        root: NeuralMCTSNode,
+        *,
+        simulations: int,
+        nodes_created: int,
+        start_time: float,
+    ) -> NeuralMCTSResult:
+        record_counter("mcts.completed_simulations", simulations)
+        record_distribution("mcts.simulations_per_search", simulations, unit="simulations")
+        record_distribution("mcts.nodes_per_search", nodes_created, unit="nodes")
+        selected_move = _select_by_temperature(root, self.config.temperature, self._rng)
+        if selected_move is None:
+            selected_move = self._rng.choice(root.legal_moves)
+        elapsed = time.perf_counter() - start_time
+        result = NeuralMCTSResult(
+            move=selected_move,
+            simulations=simulations,
+            nodes=nodes_created,
+            elapsed_seconds=elapsed,
+            visit_counts={move: edge.visits for move, edge in root.edges.items()},
+        )
+        self.last_result = result
+        self._tree_root = root
+        return result
 
     def _root_for_game(self, game: Game) -> tuple[NeuralMCTSNode, int, bool]:
         with profile_scope("mcts.root_for_game"):
@@ -442,6 +517,133 @@ class NeuralMCTSPlayer:
         with profile_scope("mcts.backup"):
             depth = _add_path_value(node, value, visit_delta=1)
             record_distribution("mcts.backup_depth", depth, unit="nodes")
+
+
+@dataclass(slots=True, init=False)
+class NeuralMCTSSearchSession:
+    """Cooperative serial neural-MCTS search session.
+
+    ``advance()`` runs serial simulations until the session either completes or
+    needs one neural prediction for the selected leaf. The caller must provide that
+    prediction with ``resume()`` before the same session can select another leaf.
+    """
+
+    player: NeuralMCTSPlayer
+    game: Game
+    session_id: int
+    root: NeuralMCTSNode
+    simulations: int
+    nodes_created: int
+    _start_time: float
+    _deadline: float | None
+    _pending_selection: _SerialLeafSelection | None
+    _pending_request: NeuralMCTSInferenceRequest | None
+    _result: NeuralMCTSResult | None
+
+    def __init__(
+        self,
+        player: NeuralMCTSPlayer,
+        game: Game,
+        *,
+        session_id: int = 0,
+    ) -> None:
+        self.player = player
+        self.game = game
+        self.session_id = session_id
+        prepared = player._prepare_serial_search(game, start_time=time.perf_counter())
+        self.root = prepared.root
+        self.nodes_created = prepared.nodes_created
+        self._start_time = prepared.start_time
+        self._deadline = prepared.deadline
+        self.simulations = 0
+        self._pending_selection = None
+        self._pending_request = None
+        self._result = None
+
+    @property
+    def pending_request(self) -> NeuralMCTSInferenceRequest | None:
+        """Return the request awaiting ``resume()``, if any."""
+        return self._pending_request
+
+    @property
+    def result(self) -> NeuralMCTSResult | None:
+        """Return the completed result, if the session has finished."""
+        return self._result
+
+    @property
+    def is_complete(self) -> bool:
+        """Return whether the session has completed and updated its player."""
+        return self._result is not None
+
+    def advance(self) -> NeuralMCTSInferenceRequest | NeuralMCTSResult:
+        """Advance until completion or the next required neural inference request."""
+        if self._result is not None:
+            return self._result
+        if self._pending_request is not None:
+            return self._pending_request
+
+        while self.simulations < self.player.config.simulations:
+            if (
+                self._deadline is not None
+                and self.simulations > 0
+                and time.perf_counter() >= self._deadline
+            ):
+                return self._finish()
+            with profile_scope("mcts.simulation", simulation_index=self.simulations):
+                if self._deadline is not None and time.perf_counter() >= self._deadline:
+                    return self._finish()
+
+                selection = self.player._select_serial_leaf(self.root, self.nodes_created)
+                self.nodes_created = selection.nodes_created
+                if selection.terminal_value is not None:
+                    self.player._backup(selection.node, selection.terminal_value)
+                    self.simulations += 1
+                    continue
+
+                request = NeuralMCTSInferenceRequest(
+                    session_id=self.session_id,
+                    node=selection.node,
+                    game=selection.node.state.to_game(include_positions=False),
+                    legal_moves=selection.node.legal_moves,
+                    budget_blocked=selection.budget_blocked,
+                    selection_depth=selection.selection_depth,
+                )
+                self._pending_selection = selection
+                self._pending_request = request
+                return request
+
+        return self._finish()
+
+    def resume(self, prediction: InferenceResult | LegalPolicyResult) -> None:
+        """Resume a pending simulation with its neural prediction and back it up."""
+        if self._result is not None:
+            msg = "cannot resume a completed neural MCTS search session"
+            raise RuntimeError(msg)
+        selection = self._pending_selection
+        if selection is None or self._pending_request is None:
+            msg = "cannot resume neural MCTS search session without a pending request"
+            raise RuntimeError(msg)
+
+        if selection.budget_blocked:
+            record_counter("mcts.evaluate.calls")
+            value = prediction.value
+        else:
+            value = self.player._expand_from_prediction(selection.node, prediction)
+            record_counter("mcts.expanded_simulations")
+        self.player._backup(selection.node, value)
+        self.simulations += 1
+        self._pending_selection = None
+        self._pending_request = None
+
+    def _finish(self) -> NeuralMCTSResult:
+        if self._result is None:
+            self._result = self.player._finish_search(
+                self.root,
+                simulations=self.simulations,
+                nodes_created=self.nodes_created,
+                start_time=self._start_time,
+            )
+        return self._result
 
 
 def _add_path_value(node: NeuralMCTSNode, value: float, *, visit_delta: int) -> int:

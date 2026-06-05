@@ -145,15 +145,17 @@ This replaces the current root-prefetch-only batching path for neural self-play 
    - Acceptance: `rg "leaf_parallelism|leaf-parallelism|leafParallelism|ai-leaf" README.md docs scripts` has no stale recommendations; any retained references are explicitly historical or compatibility-only.
    - Completed: removed stale user-facing recommendations and documented serial per-tree semantics plus future cross-game batching direction.
 
-9. **Refactor serial neural MCTS leaf selection into reusable helpers**
+9. **[Done] Refactor serial neural MCTS leaf selection into reusable helpers**
    - File: `src/tinychess/ai/neural_mcts.py`
    - Changes: Extract serial simulation selection logic from `_run_serial_simulations` into a helper that returns the selected node, terminal value, budget-blocked flag, updated node count, and selection depth.
    - Acceptance: Existing `tests/ai/test_neural_mcts.py` pass with no behavior changes for `NeuralMCTSPlayer.search` after leaf-parallel cleanup.
+   - Completed: extracted shared serial search preparation, leaf selection, and finish helpers used by normal search and session execution without changing serial search behavior.
 
-10. **Add serial search session primitives**
+10. **[Done] Add serial search session primitives**
    - File: `src/tinychess/ai/neural_mcts.py`
    - Changes: Add `NeuralMCTSInferenceRequest` and `NeuralMCTSSearchSession` (names can be adjusted) that use the refactored helpers and update the owning `NeuralMCTSPlayer.last_result`/tree root on completion.
    - Acceptance: New unit test can run one session to completion with single-request batches and produce the same `move`, `visit_counts`, `simulations`, and `nodes` as `NeuralMCTSPlayer.search` for fixed seed and fake inference.
+   - Completed: added session/request primitives with single-pending-request semantics plus focused parity, resume-state, and node-budget tests.
 
 11. **Implement deterministic central inference coordinator**
    - File: `src/tinychess/nn/self_play.py`

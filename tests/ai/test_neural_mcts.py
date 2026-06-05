@@ -14,8 +14,11 @@ from tinychess.ai.mcts import MCTSPlayer
 from tinychess.ai.neural_mcts import (
     NeuralMCTSConfig,
     NeuralMCTSEdge,
+    NeuralMCTSInferenceRequest,
     NeuralMCTSNode,
     NeuralMCTSPlayer,
+    NeuralMCTSResult,
+    NeuralMCTSSearchSession,
     _legal_priors,
     _select_by_temperature,
 )
@@ -30,6 +33,7 @@ from tinychess.nn.encode import ACTION_SPACE_SIZE, move_to_action_index
 from tinychess.nn.model import (
     InferenceResult,
     LegalPolicyBatchResult,
+    MLXArray,
     PolicyValueConfig,
     PolicyValueInference,
     PolicyValueNet,
@@ -56,6 +60,65 @@ class FakeInference:
         policy = mx.array(values, dtype=mx.float32)
         mx.eval(policy)
         return InferenceResult(policy_logits=policy, policy=policy, value=self.value)
+
+
+@dataclass(slots=True)
+class FakeLegalBatchInference(FakeInference):
+    legal_calls: int = 0
+    legal_batch_calls: int = 0
+
+    def predict_with_legal_moves(
+        self,
+        game: Game,
+        legal_moves: tuple[Move, ...],
+    ) -> InferenceResult:
+        self.legal_calls += 1
+        policy = mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32)
+        legal_policy = self._legal_policy(game, legal_moves)
+        mx.eval(policy, legal_policy)
+        return InferenceResult(
+            policy_logits=policy,
+            policy=policy,
+            value=self.value,
+            legal_moves=legal_moves,
+            legal_action_indices=tuple(
+                move_to_action_index(move, game.board) for move in legal_moves
+            ),
+            legal_policy=legal_policy,
+        )
+
+    def predict_legal_batch(
+        self,
+        games: Sequence[Game],
+        legal_moves: Sequence[Sequence[Move]],
+    ) -> LegalPolicyBatchResult:
+        self.legal_batch_calls += 1
+        games_tuple = tuple(games)
+        legal_tuple = tuple(tuple(row) for row in legal_moves)
+        policies = tuple(
+            self._legal_policy(game, legal)
+            for game, legal in zip(games_tuple, legal_tuple, strict=True)
+        )
+        mx.eval(*policies)
+        return LegalPolicyBatchResult(
+            values=tuple(self.value for _game in games_tuple),
+            legal_moves=legal_tuple,
+            legal_action_indices=tuple(
+                tuple(move_to_action_index(move, game.board) for move in legal)
+                for game, legal in zip(games_tuple, legal_tuple, strict=True)
+            ),
+            legal_policies=policies,
+        )
+
+    def _legal_policy(self, game: Game, legal_moves: tuple[Move, ...]) -> MLXArray:
+        weights = [0.0] * len(legal_moves)
+        if self.preferred_move in legal_moves:
+            weights[legal_moves.index(self.preferred_move)] = 1.0
+        elif legal_moves:
+            weights[0] = 1.0
+        if self.illegal_move is not None and self.illegal_move in game.legal_moves:
+            weights[legal_moves.index(self.illegal_move)] = 1000.0
+        return mx.array(weights, dtype=mx.float32)
 
 
 class RecordingPolicyValueInference(PolicyValueInference):
@@ -304,6 +367,75 @@ def test_neural_mcts_uses_serial_inference_semantics() -> None:
     assert inference.legal_batch_calls == 0
     assert inference.legal_calls == 3
     assert all(visits >= 0 for visits in result.visit_counts.values())
+
+
+def test_neural_mcts_session_single_request_batches_match_search() -> None:
+    game = Game.new()
+    config = NeuralMCTSConfig(simulations=6, puct_exploration=1.5, temperature=0.0, seed=11)
+    preferred = Move.from_uci("e2e4")
+    serial_player = NeuralMCTSPlayer(FakeLegalBatchInference(preferred_move=preferred), config)
+    session_inference = FakeLegalBatchInference(preferred_move=preferred)
+    session_player = NeuralMCTSPlayer(session_inference, config)
+
+    serial_result = serial_player.search(game)
+    session = NeuralMCTSSearchSession(session_player, game, session_id=17)
+    while True:
+        advanced = session.advance()
+        if isinstance(advanced, NeuralMCTSResult):
+            session_result = advanced
+            break
+        assert isinstance(advanced, NeuralMCTSInferenceRequest)
+        assert advanced.session_id == 17
+        batch = session_inference.predict_legal_batch((advanced.game,), (advanced.legal_moves,))
+        session.resume(batch.result_at(0))
+
+    assert session_result.move == serial_result.move
+    assert session_result.visit_counts == serial_result.visit_counts
+    assert session_result.simulations == serial_result.simulations
+    assert session_result.nodes == serial_result.nodes
+    assert session_player.last_result is session_result
+    assert session_player._tree_root is session.root
+    assert session_inference.legal_batch_calls == config.simulations
+
+
+def test_neural_mcts_session_request_resume_state_and_node_budget() -> None:
+    game = Game.new()
+    inference = FakeLegalBatchInference(preferred_move=Move.from_uci("e2e4"))
+    player = NeuralMCTSPlayer(inference, NeuralMCTSConfig(simulations=2, node_budget=1, seed=3))
+    session = NeuralMCTSSearchSession(player, game, session_id=5)
+
+    first = session.advance()
+
+    assert isinstance(first, NeuralMCTSInferenceRequest)
+    assert first.session_id == 5
+    assert first.node is session.root
+    assert first.game.positions == (game.board,)
+    assert first.legal_moves == game.legal_moves
+    assert not first.budget_blocked
+    assert first.selection_depth == 0
+    assert session.advance() is first
+
+    first_batch = inference.predict_legal_batch((first.game,), (first.legal_moves,))
+    session.resume(first_batch.result_at(0))
+    with pytest.raises(RuntimeError, match="without a pending request"):
+        session.resume(first_batch.result_at(0))
+
+    second = session.advance()
+
+    assert isinstance(second, NeuralMCTSInferenceRequest)
+    assert second.budget_blocked
+    assert second.node is session.root
+    assert second.selection_depth == 0
+    second_batch = inference.predict_legal_batch((second.game,), (second.legal_moves,))
+    session.resume(second_batch.result_at(0))
+    result = session.advance()
+
+    assert isinstance(result, NeuralMCTSResult)
+    assert result.simulations == 2
+    assert result.nodes == 1
+    assert session.is_complete
+    assert session.advance() is result
+    assert player.last_result is result
 
 
 def test_neural_mcts_masks_illegal_policy_actions_before_expansion() -> None:
