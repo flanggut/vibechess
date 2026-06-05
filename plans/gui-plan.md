@@ -254,10 +254,11 @@ Use stable string codes so Swift can present friendly messages:
    - Acceptance: a smoke/manual run can send `hello` and `state` from the app without blocking the main thread; backend stderr is captured/logged for diagnostics.
    - Completed: added the Swift JSON-lines subprocess client with focused mock-process tests for response decoding, backend errors, stderr capture, and lifecycle cleanup.
 
-8. **Add app state/view model**
+8. **[Done] Add app state/view model**
    - File: `swift/Sources/TinyChessMacApp/AppState.swift`
    - Changes: create `@MainActor` observable state for board, selected square, legal destinations, move history, human color, AI config, orientation, thinking status, and errors. Add actions: new game, select square, make move, request AI move, undo, flip board.
    - Acceptance: unit tests or manual smoke verify state transitions from mocked backend responses; UI does not issue moves while `thinking` is true.
+   - Completed: added `AppState` with a mockable backend seam and focused tests for state transitions, selection, backend errors, AI/undo request seams, and input blocking while thinking.
 
 9. **Implement board UI with Unicode pieces**
    - Files: `swift/Sources/TinyChessMacApp/BoardView.swift`, `swift/Sources/TinyChessMacApp/SquareView.swift`
