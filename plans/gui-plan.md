@@ -248,10 +248,11 @@ Use stable string codes so Swift can present friendly messages:
    - Acceptance: Swift tests decode representative `state`, error, and `aiMove` responses.
    - Completed: added Swift `Codable` GUI protocol DTOs and focused decode/encode tests for representative backend responses and requests.
 
-7. **Add Swift backend subprocess client**
+7. **[Done] Add Swift backend subprocess client**
    - File: `swift/Sources/TinyChessMacApp/BackendClient.swift`
    - Changes: implement an actor or main-safe service that launches `uv run tinychess gui-server` in repo/dev mode, sends serialized requests, reads line-delimited responses, maps errors, and terminates on app close.
    - Acceptance: a smoke/manual run can send `hello` and `state` from the app without blocking the main thread; backend stderr is captured/logged for diagnostics.
+   - Completed: added the Swift JSON-lines subprocess client with focused mock-process tests for response decoding, backend errors, stderr capture, and lifecycle cleanup.
 
 8. **Add app state/view model**
    - File: `swift/Sources/TinyChessMacApp/AppState.swift`
