@@ -276,6 +276,27 @@ class ProfileStats:
                 "batch_size_max": self._distribution_value("inference.batch_size", "max"),
                 "batch_size_mean": self._distribution_value("inference.batch_size", "mean") or 0.0,
             },
+            "model_legal_batch": {
+                **self._compat_timer(("inference.predict_legal_batch",)),
+                "positions": int(
+                    self.counters.get(
+                        "inference.legal_batch_positions",
+                        CounterAggregate(),
+                    ).value
+                ),
+                "batch_size_min": self._distribution_value(
+                    "inference.legal_batch_size",
+                    "min",
+                ),
+                "batch_size_max": self._distribution_value(
+                    "inference.legal_batch_size",
+                    "max",
+                ),
+                "batch_size_mean": self._distribution_value(
+                    "inference.legal_batch_size",
+                    "mean",
+                ) or 0.0,
+            },
             "search": {
                 **self._compat_timer(("mcts.search",)),
                 "materialized_nodes": int(

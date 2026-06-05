@@ -84,6 +84,8 @@ class RepeatResult:
     output_directory: str
     command: list[str]
     stdout: str
+    batching_mode: str | None
+    inference_batch_size: int | None
     profile: dict[str, object] | None
 
 
@@ -94,6 +96,8 @@ class BenchmarkReport:
     benchmark: str
     format_version: int
     config: BenchmarkConfig
+    batching_mode: str
+    inference_batch_size: int | None
     elapsed_seconds: float
     elapsed_seconds_min: float
     elapsed_seconds_max: float
@@ -189,6 +193,8 @@ def run_benchmark(config: BenchmarkConfig) -> BenchmarkReport:
         benchmark="self_play_generation",
         format_version=2,
         config=config,
+        batching_mode=_aggregate_batching_mode(results),
+        inference_batch_size=_aggregate_inference_batch_size(results),
         elapsed_seconds=float(median(elapsed_values)),
         elapsed_seconds_min=min(elapsed_values),
         elapsed_seconds_max=max(elapsed_values),
@@ -257,6 +263,7 @@ def _run_repeat(config: BenchmarkConfig, repeat_index: int, output_dir: Path) ->
     sample_count = _expect_int(metadata, "sample_count")
     game_count = _expect_int(metadata, "game_count")
     ply_count = _read_ply_count(output_dir)
+    batching_mode, inference_batch_size = _read_batching_settings(metadata)
     profile = (
         _read_profile(output_dir)
         if config.profile and config.profile_level != "none"
@@ -275,6 +282,8 @@ def _run_repeat(config: BenchmarkConfig, repeat_index: int, output_dir: Path) ->
         output_directory=str(output_dir),
         command=command,
         stdout=completed.stdout.strip(),
+        batching_mode=batching_mode,
+        inference_batch_size=inference_batch_size,
         profile=profile,
     )
 
@@ -526,6 +535,8 @@ def _report_to_dict(report: BenchmarkReport) -> dict[str, object]:
         "benchmark": report.benchmark,
         "format_version": report.format_version,
         "config": asdict(report.config),
+        "batching_mode": report.batching_mode,
+        "inference_batch_size": report.inference_batch_size,
         "games": report.config.games,
         "max_plies": report.config.max_plies,
         "simulations": report.config.simulations,
@@ -587,6 +598,8 @@ def _format_markdown(report: BenchmarkReport) -> str:
         f"- output_bytes_median: {report.output_bytes}",
         f"- workers: {report.workers}",
         f"- effective_workers: {report.effective_workers}",
+        f"- batching_mode: {report.batching_mode}",
+        f"- inference_batch_size: {report.inference_batch_size}",
         "",
         "## Config",
         "",
@@ -596,7 +609,11 @@ def _format_markdown(report: BenchmarkReport) -> str:
         "",
         "## Profile",
         "",
-        *_format_profile_lines(report.profile),
+        *_format_profile_lines(
+            report.profile,
+            report.batching_mode,
+            report.inference_batch_size,
+        ),
         "",
         "## Profiling Overhead",
         "",
@@ -623,6 +640,8 @@ def _format_markdown(report: BenchmarkReport) -> str:
                 f"- ply_count: {result.ply_count}",
                 f"- output_bytes: {result.output_bytes}",
                 f"- output_directory: {result.output_directory}",
+                f"- batching_mode: {result.batching_mode}",
+                f"- inference_batch_size: {result.inference_batch_size}",
                 f"- command: `{' '.join(result.command)}`",
                 "",
             ]
@@ -630,7 +649,11 @@ def _format_markdown(report: BenchmarkReport) -> str:
     return "\n".join(lines)
 
 
-def _format_profile_lines(profile: dict[str, object] | None) -> list[str]:
+def _format_profile_lines(
+    profile: dict[str, object] | None,
+    batching_mode: str,
+    inference_batch_size: int | None,
+) -> list[str]:
     if profile is None:
         return ["- profile: disabled or unavailable"]
     stats = _expect_mapping(profile, "stats")
@@ -685,6 +708,9 @@ def _format_profile_lines(profile: dict[str, object] | None) -> list[str]:
                 "inference.predict",
                 "inference.predict_with_legal_moves",
                 "inference.predict_batch",
+                "inference.predict_legal_batch",
+                "self_play.central_inference_queue",
+                "self_play.central_predict_legal_batch",
                 "encode.game_mlx",
                 "encode.batch_stack",
                 "model.forward",
@@ -743,6 +769,7 @@ def _format_profile_lines(profile: dict[str, object] | None) -> list[str]:
         "board_apply_move",
         "model_single",
         "model_batch",
+        "model_legal_batch",
         "search",
     ):
         timer = _expect_mapping(timers, name)
@@ -754,14 +781,65 @@ def _format_profile_lines(profile: dict[str, object] | None) -> list[str]:
         )
     search = _expect_mapping(timers, "search")
     model_batch = _expect_mapping(timers, "model_batch")
+    model_legal_batch = _expect_mapping(timers, "model_legal_batch")
     lines.extend(
         [
             f"- completed_simulations: {_expect_int(search, 'completed_simulations')}",
             f"- materialized_nodes: {_expect_int(search, 'materialized_nodes')}",
             f"- model_batch_positions: {_expect_int(model_batch, 'positions')}",
             f"- model_batch_size_mean: {_expect_number(model_batch, 'batch_size_mean'):.2f}",
+            f"- model_legal_batch_calls: {_expect_int(model_legal_batch, 'calls')}",
+            f"- model_legal_batch_positions: {_expect_int(model_legal_batch, 'positions')}",
+            f"- model_legal_batch_size_mean: "
+            f"{_expect_number(model_legal_batch, 'batch_size_mean'):.2f}",
         ]
     )
+    if _has_central_queue_profile(stats, batching_mode):
+        lines.extend(["", "## Central Queue Batching", ""])
+        lines.extend(_central_queue_profile_lines(stats, batching_mode, inference_batch_size))
+    return lines
+
+
+def _has_central_queue_profile(stats: dict[str, object], batching_mode: str) -> bool:
+    if batching_mode == "central_inference_queue":
+        return True
+    counters = _expect_mapping(stats, "counters")
+    distributions = _expect_mapping(stats, "distributions")
+    return (
+        _counter_int(counters, "inference.predict_legal_batch.calls") > 0
+        or _counter_int(counters, "inference.legal_batch_positions") > 0
+        or isinstance(distributions.get("inference.legal_batch_size"), dict)
+    )
+
+
+def _central_queue_profile_lines(
+    stats: dict[str, object],
+    batching_mode: str,
+    inference_batch_size: int | None,
+) -> list[str]:
+    counters = _expect_mapping(stats, "counters")
+    distributions = _expect_mapping(stats, "distributions")
+    legal_batch = distributions.get("inference.legal_batch_size")
+    lines = [
+        f"- batching_mode: {batching_mode}",
+        f"- inference_batch_size: {inference_batch_size}",
+        "- inference.predict_legal_batch.calls: "
+        f"{_counter_int(counters, 'inference.predict_legal_batch.calls')}",
+        "- inference.legal_batch_positions: "
+        f"{_counter_int(counters, 'inference.legal_batch_positions')}",
+    ]
+    if isinstance(legal_batch, dict):
+        lines.extend(
+            [
+                "- inference.legal_batch_size.count: "
+                f"{_expect_int(legal_batch, 'count')}",
+                f"- inference.legal_batch_size.min: {_expect_number(legal_batch, 'min'):.0f}",
+                f"- inference.legal_batch_size.max: {_expect_number(legal_batch, 'max'):.0f}",
+                f"- inference.legal_batch_size.mean: {_expect_number(legal_batch, 'mean'):.2f}",
+            ]
+        )
+    else:
+        lines.append("- inference.legal_batch_size: none recorded")
     return lines
 
 
@@ -865,6 +943,7 @@ def _profile_derived(
             "inference.predict",
             "inference.predict_with_legal_moves",
             "inference.predict_batch",
+            "inference.predict_legal_batch",
         )
     )
     legal_transition = sum(
@@ -879,6 +958,9 @@ def _profile_derived(
         )
     )
     save = _zone_seconds(zones, "dataset.save")
+    central_queue = _zone_seconds(zones, "self_play.central_inference_queue")
+    central_predict = _zone_seconds(zones, "self_play.central_predict_legal_batch")
+    legal_batch_distribution = stats.distributions.get("inference.legal_batch_size")
     derived: dict[str, object] = {
         "self_play_main_seconds": main,
         "generation_seconds": generation,
@@ -887,8 +969,20 @@ def _profile_derived(
         "inference_percent_of_mcts_search": _pct(inference, mcts),
         "legal_transition_percent_of_mcts_search": _pct(legal_transition, mcts),
         "dataset_save_percent_of_self_play_main": _pct(save, main),
+        "central_queue_seconds": central_queue,
+        "central_queue_predict_seconds": central_predict,
+        "predict_legal_batch_calls": _stats_counter_int(
+            stats,
+            "inference.predict_legal_batch.calls",
+        ),
+        "predict_legal_batch_positions": _stats_counter_int(
+            stats,
+            "inference.legal_batch_positions",
+        ),
         "repeat_wall_seconds": elapsed_seconds,
     }
+    if legal_batch_distribution is not None:
+        derived["predict_legal_batch_size"] = legal_batch_distribution.to_dict()
     pool = _zone_seconds(zones, "worker.pool_elapsed")
     worker = _zone_seconds(zones, "worker.chunk_elapsed")
     if pool > 0:
@@ -953,6 +1047,11 @@ def _zone_seconds(zones: dict[str, object] | dict[str, Any], name: str) -> float
     if hasattr(raw, "inclusive_ns"):
         return float(raw.inclusive_ns) / 1_000_000_000.0
     return 0.0
+
+
+def _stats_counter_int(stats: ProfileStats, name: str) -> int:
+    counter = stats.counters.get(name)
+    return 0 if counter is None else int(counter.value)
 
 
 def _pct(value: float, denominator: float) -> float:
@@ -1074,6 +1173,41 @@ def _read_metadata(output_dir: Path) -> dict[str, object]:
     return data
 
 
+def _read_batching_settings(metadata: dict[str, object]) -> tuple[str | None, int | None]:
+    settings = metadata.get("generation_settings")
+    if not isinstance(settings, dict):
+        return None, None
+    batching_mode = settings.get("batching_mode")
+    inference_batch_size = settings.get("inference_batch_size")
+    resolved_mode = batching_mode if isinstance(batching_mode, str) else None
+    resolved_size = (
+        inference_batch_size
+        if isinstance(inference_batch_size, int) and not isinstance(inference_batch_size, bool)
+        else None
+    )
+    return resolved_mode, resolved_size
+
+
+def _aggregate_batching_mode(results: list[RepeatResult]) -> str:
+    modes = {result.batching_mode for result in results if result.batching_mode is not None}
+    if not modes:
+        return "unknown"
+    if len(modes) == 1:
+        return modes.pop()
+    return "mixed"
+
+
+def _aggregate_inference_batch_size(results: list[RepeatResult]) -> int | None:
+    sizes = {
+        result.inference_batch_size
+        for result in results
+        if result.inference_batch_size is not None
+    }
+    if len(sizes) == 1:
+        return sizes.pop()
+    return None
+
+
 def _read_ply_count(output_dir: Path) -> int:
     games_path = output_dir / "games.jsonl"
     total = 0
@@ -1134,6 +1268,13 @@ def _expect_mapping(data: dict[str, object], key: str) -> dict[str, object]:
     if not isinstance(value, dict):
         raise TypeError(f"profile field {key!r} must be an object")
     return dict(value)
+
+
+def _counter_int(data: dict[str, object], key: str) -> int:
+    value = data.get(key, 0)
+    if isinstance(value, bool) or not isinstance(value, (float, int)):
+        raise TypeError(f"profile counter {key!r} must be numeric")
+    return int(value)
 
 
 def _remove_empty_directory(directory: Path) -> None:

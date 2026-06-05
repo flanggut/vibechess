@@ -413,10 +413,12 @@ def test_neural_mcts_session_request_resume_state_and_node_budget() -> None:
     assert first.legal_moves == game.legal_moves
     assert not first.budget_blocked
     assert first.selection_depth == 0
+    assert session.pending_request is first
     assert session.advance() is first
 
     first_batch = inference.predict_legal_batch((first.game,), (first.legal_moves,))
     session.resume(first_batch.result_at(0))
+    assert session.pending_request is None
     with pytest.raises(RuntimeError, match="without a pending request"):
         session.resume(first_batch.result_at(0))
 
@@ -434,8 +436,45 @@ def test_neural_mcts_session_request_resume_state_and_node_budget() -> None:
     assert result.simulations == 2
     assert result.nodes == 1
     assert session.is_complete
+    assert session.result is result
     assert session.advance() is result
     assert player.last_result is result
+
+
+def test_neural_mcts_session_terminal_leaf_completes_without_second_request() -> None:
+    game = Game.new(board_from_ascii("7k/5Q2/6K1/8/8/8/8/8", side_to_move=Color.WHITE))
+    mating_move = Move.from_uci("f7f8")
+    inference = FakeLegalBatchInference(preferred_move=mating_move)
+    player = NeuralMCTSPlayer(
+        inference,
+        NeuralMCTSConfig(simulations=2, puct_exploration=1.5, temperature=0.0, seed=7),
+    )
+    session = NeuralMCTSSearchSession(player, game, session_id=9)
+
+    first = session.advance()
+    assert isinstance(first, NeuralMCTSInferenceRequest)
+    session.resume(inference.predict_legal_batch((first.game,), (first.legal_moves,)).result_at(0))
+
+    result = session.advance()
+
+    assert isinstance(result, NeuralMCTSResult)
+    assert session.is_complete
+    assert inference.legal_batch_calls == 1
+    assert mating_move in session.root.children
+    terminal_child = session.root.children[mating_move]
+    assert terminal_child.outcome is not None
+    assert terminal_child.outcome.reason is OutcomeReason.CHECKMATE
+    assert terminal_child.outcome.winner is Color.WHITE
+    assert result.simulations == 2
+    assert result.visit_counts[mating_move] == 1
+
+
+def test_neural_mcts_session_terminal_root_raises_clear_error() -> None:
+    game = Game.new(board_from_ascii("7k/5Q2/6K1/8/8/8/8/8", side_to_move=Color.BLACK))
+    player = NeuralMCTSPlayer(FakeLegalBatchInference(), NeuralMCTSConfig(simulations=2, seed=5))
+
+    with pytest.raises(NoLegalMoveError, match="terminal game: stalemate"):
+        NeuralMCTSSearchSession(player, game, session_id=3)
 
 
 def test_neural_mcts_masks_illegal_policy_actions_before_expansion() -> None:

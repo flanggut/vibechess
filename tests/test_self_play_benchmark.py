@@ -87,6 +87,56 @@ def test_self_play_benchmark_json_smoke_removes_outputs(tmp_path: Path) -> None:
     assert not output_root.exists()
 
 
+def test_self_play_benchmark_central_queue_profile_counters(tmp_path: Path) -> None:
+    output_root = tmp_path / "benchmark-central"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/self_play_benchmark.py",
+            "--games",
+            "2",
+            "--max-plies",
+            "1",
+            "--simulations",
+            "1",
+            "--batch-size",
+            "2",
+            "--workers",
+            "1",
+            "--repeat",
+            "1",
+            "--format",
+            "json",
+            "--output-root",
+            str(output_root),
+        ],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    data = json.loads(completed.stdout)
+    assert data["batching_mode"] == "central_inference_queue"
+    assert data["inference_batch_size"] == 2
+    repeat = _single_repeat(data)
+    assert repeat["batching_mode"] == "central_inference_queue"
+    assert repeat["inference_batch_size"] == 2
+    stats = data["profile"]["stats"]
+    assert stats["counters"]["inference.predict_legal_batch.calls"] >= 1
+    assert stats["counters"]["inference.legal_batch_positions"] == 2
+    legal_batch_size = stats["distributions"]["inference.legal_batch_size"]
+    assert legal_batch_size["count"] >= 1
+    assert legal_batch_size["max"] == 2.0
+    derived = data["profile"]["derived"]
+    assert derived["predict_legal_batch_calls"] >= 1
+    assert derived["predict_legal_batch_positions"] == 2
+    assert data["profile"]["stats"]["timers"]["model_legal_batch"]["positions"] == 2
+    assert not output_root.exists()
+
+
 def test_self_play_benchmark_keep_output_preserves_dataset(tmp_path: Path) -> None:
     output_root = tmp_path / "benchmark-output"
 
@@ -207,6 +257,8 @@ def test_self_play_benchmark_markdown_profile_sections(tmp_path: Path) -> None:
     assert "## Legal and Transition Breakdown" in completed.stdout
     assert "## Dataset and Serialization Breakdown" in completed.stdout
     assert "## Worker Breakdown" in completed.stdout
+    assert "batching_label: central_inference_queue" not in completed.stdout
+    assert "## Central Queue Batching" not in completed.stdout
 
 
 def test_self_play_benchmark_profile_overhead_check_reports_pair(tmp_path: Path) -> None:
