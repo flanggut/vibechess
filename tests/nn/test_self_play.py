@@ -34,6 +34,8 @@ from tinychess.nn.model import (
     PolicyValueNet,
 )
 from tinychess.nn.self_play import (
+    BATCHING_MODE_CENTRAL_INFERENCE_QUEUE,
+    BATCHING_MODE_SERIAL,
     DEFAULT_DATASET_FILENAME,
     DEFAULT_GAMES_FILENAME,
     DEFAULT_METADATA_FILENAME,
@@ -172,6 +174,8 @@ def test_generate_self_play_dataset_completes_smoke_game() -> None:
     assert dataset.metadata.action_space_version
     assert dataset.metadata.engine_version
     assert dataset.metadata.model_checkpoint_id == "fake-checkpoint"
+    assert dataset.metadata.generation_settings["batching_mode"] == BATCHING_MODE_SERIAL
+    assert dataset.metadata.generation_settings["inference_batch_size"] == 1
     mcts_settings = dataset.metadata.generation_settings["mcts"]
     assert isinstance(mcts_settings, dict)
     removed_field = "leaf" + "_parallelism"
@@ -217,6 +221,11 @@ def test_batched_neural_self_play_preserves_schema_and_legal_targets() -> None:
     assert 2 in inference.legal_batch_sizes
     assert dataset.metadata.schema_version == SELF_PLAY_DATASET_SCHEMA_VERSION
     assert dataset.metadata.generation_settings["batch_size"] == 2
+    assert (
+        dataset.metadata.generation_settings["batching_mode"]
+        == BATCHING_MODE_CENTRAL_INFERENCE_QUEUE
+    )
+    assert dataset.metadata.generation_settings["inference_batch_size"] == 2
     assert dataset.positions.shape == (4, *TENSOR_SHAPE)
     assert dataset.legal_masks.shape == (4, ACTION_SPACE_SIZE)
     assert dataset.mcts_policies.shape == (4, ACTION_SPACE_SIZE)
@@ -295,6 +304,7 @@ def test_central_neural_self_play_matches_serial_with_deterministic_inference() 
         games=2,
         max_plies=2,
         mcts=NeuralMCTSConfig(simulations=3, temperature=0.0, seed=37),
+        model_checkpoint_id="fake-compact-checkpoint",
         seed=37,
     )
 
@@ -416,6 +426,35 @@ def test_generate_self_play_dataset_can_use_classical_mcts_labels() -> None:
     assert np.allclose(dataset.mcts_policies.sum(axis=1), 1.0)
     assert np.all(dataset.mcts_policies <= dataset.legal_masks)
     assert dataset.games[0].plies == 2
+
+
+def test_serial_fallbacks_with_batch_size_record_serial_metadata() -> None:
+    classical = generate_self_play_dataset(
+        None,
+        SelfPlayConfig(
+            games=2,
+            max_plies=1,
+            classical_mcts=MCTSConfig(simulations=1, max_rollout_plies=1, seed=41),
+            label_source=LABEL_SOURCE_CLASSICAL,
+            seed=41,
+            batch_size=2,
+        ),
+    )
+    custom_neural = generate_self_play_dataset(
+        FakeInference(),
+        SelfPlayConfig(
+            games=2,
+            max_plies=1,
+            mcts=NeuralMCTSConfig(simulations=1, temperature=0.0, seed=43),
+            seed=43,
+            batch_size=2,
+        ),
+    )
+
+    for dataset in (classical, custom_neural):
+        assert dataset.metadata.generation_settings["batch_size"] == 2
+        assert dataset.metadata.generation_settings["batching_mode"] == BATCHING_MODE_SERIAL
+        assert dataset.metadata.generation_settings["inference_batch_size"] == 1
 
 
 def test_neural_self_play_requires_inference() -> None:
@@ -681,9 +720,31 @@ def test_self_play_script_accepts_batch_size(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     dataset = load_self_play_dataset(output)
     assert dataset.metadata.generation_settings["batch_size"] == 2
+    assert (
+        dataset.metadata.generation_settings["batching_mode"]
+        == BATCHING_MODE_CENTRAL_INFERENCE_QUEUE
+    )
+    assert dataset.metadata.generation_settings["inference_batch_size"] == 2
     assert dataset.metadata.game_count == 2
     assert dataset.metadata.sample_count == 2
     assert [record.game_index for record in dataset.games] == [0, 1]
+
+
+def test_self_play_script_help_describes_central_batching() -> None:
+    result = subprocess.run(
+        [sys.executable, "scripts/self_play.py", "--help"],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "central inference batch size" in result.stdout
+    assert "independent neural self-play games/searches" in result.stdout
+    assert "not within-tree" in result.stdout
+    assert "leaf parallelism" in result.stdout
 
 
 def test_self_play_script_rejects_removed_parallel_batch_flag(tmp_path: Path) -> None:

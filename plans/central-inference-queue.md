@@ -169,23 +169,26 @@ This replaces the current root-prefetch-only batching path for neural self-play 
    - Acceptance: Existing dataset shape/schema tests pass; new equivalence tests show batched central queue and serial generation match for fixed seeds on small deterministic runs.
    - Completed: replaced root-prefetch batching with the central coordinator, removed the prefetch wrapper, and added focused batching/equivalence tests.
 
-13. **Add central queue configuration metadata**
+13. **[Done] Add central queue configuration metadata**
    - File: `src/tinychess/nn/self_play.py`
    - Changes: Add `batching_mode` and `inference_batch_size` to `SelfPlayConfig.to_dict()` or generation settings extra in the batched path.
    - Acceptance: Tests assert metadata includes central queue mode for `batch_size > 1` and serial mode for `batch_size == 1`.
+   - Completed: metadata now records `central_inference_queue` for the actual central queue path and `serial` for serial fallbacks, including classical/custom inference with `batch_size > 1`.
 
-14. **Update self-play CLI help for central batching**
+14. **[Done] Update self-play CLI help for central batching**
    - File: `scripts/self_play.py`
    - Changes: Update `--batch-size` help text to describe in-process central inference batching across independent games/searches.
    - Acceptance: CLI help distinguishes central cross-game batching from removed within-tree leaf parallelism.
+   - Completed: `--batch-size` help describes central cross-game neural inference batching and explicitly distinguishes removed within-tree leaf parallelism.
 
-15. **Add determinism/equivalence tests for central queue**
+15. **[Done] Add determinism/equivalence tests for central queue**
    - File: `tests/nn/test_self_play.py`
    - Changes: Add tests comparing serial vs central queue outputs for fixed seed/checkpoint-model config:
      - `positions`, `legal_masks`, `mcts_policies`, `outcomes`
      - `games[].moves_uci`
      - `games[].final_fen`
    - Acceptance: Arrays and game records are identical for `batch_size=1` vs `batch_size=2` with no time limit and deterministic fake/compact inference.
+   - Completed: deterministic inference coverage compares tensors, outcomes, move lists, and final FENs for serial vs central queue generation.
 
 16. **Add neural MCTS session unit tests**
    - File: `tests/ai/test_neural_mcts.py`

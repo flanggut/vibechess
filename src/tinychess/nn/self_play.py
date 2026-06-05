@@ -55,6 +55,8 @@ DEFAULT_PROFILE_FILENAME = "profile.json"
 LABEL_SOURCE_NEURAL = "neural"
 LABEL_SOURCE_CLASSICAL = "classical"
 LABEL_SOURCES = (LABEL_SOURCE_NEURAL, LABEL_SOURCE_CLASSICAL)
+BATCHING_MODE_SERIAL = "serial"
+BATCHING_MODE_CENTRAL_INFERENCE_QUEUE = "central_inference_queue"
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,8 +84,23 @@ class SelfPlayConfig:
         if self.batch_size < 1:
             raise ValueError(f"batch_size must be at least 1, got {self.batch_size}")
 
-    def to_dict(self) -> dict[str, object]:
+    def to_dict(
+        self,
+        *,
+        batching_mode: str | None = None,
+        inference_batch_size: int | None = None,
+    ) -> dict[str, object]:
         """Return JSON-serializable generation settings."""
+        resolved_batching_mode = batching_mode or BATCHING_MODE_SERIAL
+        resolved_inference_batch_size = (
+            inference_batch_size
+            if inference_batch_size is not None
+            else (
+                self.batch_size
+                if resolved_batching_mode == BATCHING_MODE_CENTRAL_INFERENCE_QUEUE
+                else 1
+            )
+        )
         return {
             "games": self.games,
             "max_plies": self.max_plies,
@@ -93,6 +110,8 @@ class SelfPlayConfig:
             "model_checkpoint_id": self.model_checkpoint_id,
             "seed": self.seed,
             "batch_size": self.batch_size,
+            "batching_mode": resolved_batching_mode,
+            "inference_batch_size": resolved_inference_batch_size,
         }
 
 
@@ -155,7 +174,14 @@ class SelfPlayMetadata:
     game_count: int
 
     @classmethod
-    def create(cls, config: SelfPlayConfig, *, sample_count: int) -> SelfPlayMetadata:
+    def create(
+        cls,
+        config: SelfPlayConfig,
+        *,
+        sample_count: int,
+        batching_mode: str | None = None,
+        inference_batch_size: int | None = None,
+    ) -> SelfPlayMetadata:
         """Create metadata for a generated dataset."""
         return cls(
             schema_version=SELF_PLAY_DATASET_SCHEMA_VERSION,
@@ -165,7 +191,10 @@ class SelfPlayMetadata:
             action_space_version=ACTION_SPACE_VERSION,
             encoder_version=ENCODER_VERSION,
             model_checkpoint_id=config.model_checkpoint_id,
-            generation_settings=config.to_dict(),
+            generation_settings=config.to_dict(
+                batching_mode=batching_mode,
+                inference_batch_size=inference_batch_size,
+            ),
             sample_count=sample_count,
             game_count=config.games,
         )
@@ -325,6 +354,8 @@ def _generate_serial_self_play_dataset(
 
     return _self_play_dataset_from_samples(
         config,
+        batching_mode=BATCHING_MODE_SERIAL,
+        inference_batch_size=1,
         positions=positions,
         legal_masks=legal_masks,
         policies=policies,
@@ -507,6 +538,8 @@ def _generate_batched_neural_self_play_dataset(
 
     return _self_play_dataset_from_samples(
         config,
+        batching_mode=BATCHING_MODE_CENTRAL_INFERENCE_QUEUE,
+        inference_batch_size=config.batch_size,
         positions=positions,
         legal_masks=legal_masks,
         policies=policies,
@@ -518,6 +551,8 @@ def _generate_batched_neural_self_play_dataset(
 def _self_play_dataset_from_samples(
     config: SelfPlayConfig,
     *,
+    batching_mode: str,
+    inference_batch_size: int,
     positions: list[npt.NDArray[np.float32]],
     legal_masks: list[npt.NDArray[np.float32]],
     policies: list[npt.NDArray[np.float32]],
@@ -526,7 +561,12 @@ def _self_play_dataset_from_samples(
 ) -> SelfPlayDataset:
     with profile_scope("dataset.outcomes_array"):
         outcomes = np.asarray(outcome_values, dtype=np.float32)
-    metadata = SelfPlayMetadata.create(config, sample_count=len(positions))
+    metadata = SelfPlayMetadata.create(
+        config,
+        sample_count=len(positions),
+        batching_mode=batching_mode,
+        inference_batch_size=inference_batch_size,
+    )
     with profile_scope("dataset.stack_positions"):
         stacked_positions = _stack_or_empty(positions, TENSOR_SHAPE)
     with profile_scope("dataset.stack_legal_masks"):
@@ -614,7 +654,17 @@ def _merge_self_play_datasets_impl(
             game_count=len(games),
         )
     else:
-        metadata = SelfPlayMetadata.create(config, sample_count=int(outcomes.shape[0]))
+        metadata_batching_settings = _metadata_batching_settings(first.metadata)
+        if metadata_batching_settings is None:
+            metadata = SelfPlayMetadata.create(config, sample_count=int(outcomes.shape[0]))
+        else:
+            batching_mode, inference_batch_size = metadata_batching_settings
+            metadata = SelfPlayMetadata.create(
+                config,
+                sample_count=int(outcomes.shape[0]),
+                batching_mode=batching_mode,
+                inference_batch_size=inference_batch_size,
+            )
         if generation_settings_extra:
             metadata = replace(
                 metadata,
@@ -632,6 +682,19 @@ def _merge_self_play_datasets_impl(
         metadata=metadata,
         games=games,
     )
+
+
+def _metadata_batching_settings(metadata: SelfPlayMetadata) -> tuple[str, int] | None:
+    settings = metadata.generation_settings
+    batching_mode = settings.get("batching_mode")
+    inference_batch_size = settings.get("inference_batch_size")
+    if (
+        not isinstance(batching_mode, str)
+        or isinstance(inference_batch_size, bool)
+        or not isinstance(inference_batch_size, int)
+    ):
+        return None
+    return batching_mode, inference_batch_size
 
 
 def save_self_play_dataset(dataset: SelfPlayDataset, directory: str | Path) -> None:
