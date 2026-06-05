@@ -130,6 +130,7 @@ class GuiSession:
         self.config = GuiConfig() if config is None else config
         default_ai = self.config.default_ai or GuiAiConfig(seed=self.config.seed)
         self.game = Game.new()
+        self._initial_game = self.game
         self.human_color = Color.WHITE
         self.ai_config = default_ai
         self._quit = False
@@ -182,6 +183,8 @@ class GuiSession:
                 return self._handle_make_move(request_id, request)
             if command == "aiMove":
                 return self._handle_ai_move(request_id, request)
+            if command == "undo":
+                return self._handle_undo(request_id, request)
             if command == "setAiConfig":
                 return self._handle_set_ai_config(request_id, request)
             if command == "quit":
@@ -196,7 +199,7 @@ class GuiSession:
     def _handle_hello(self, request_id: object) -> dict[str, object]:
         capabilities: dict[str, object] = {
             "players": ["random", "mcts", "neural"],
-            "supportsUndo": False,
+            "supportsUndo": True,
             "promotion": "auto_queen",
         }
         return self._success_response(
@@ -235,6 +238,7 @@ class GuiSession:
         self.human_color = human_color
         self.ai_config = ai_config
         self.game = Game.new()
+        self._initial_game = self.game
         return self._success_response(request_id, state=serialize_state(self.game))
 
     def _handle_make_move(
@@ -296,6 +300,16 @@ class GuiSession:
             search=search,
             state=serialize_state(self.game),
         )
+
+    def _handle_undo(
+        self,
+        request_id: object,
+        request: Mapping[str, object],
+    ) -> dict[str, object]:
+        plies = _optional_request_int(request, "plies", 2, minimum=0)
+        target_move_count = max(0, len(self.game.moves) - plies)
+        self.game = _replay_moves(self._initial_game, self.game.moves[:target_move_count])
+        return self._success_response(request_id, state=serialize_state(self.game))
 
     def _handle_set_ai_config(
         self,
@@ -412,6 +426,18 @@ def _serialize_mcts_search(kind: str, result: SearchResult) -> dict[str, object]
         "elapsedSeconds": result.elapsed_seconds,
         "visitCounts": {move.to_uci(): visits for move, visits in result.visit_counts.items()},
     }
+
+
+def _replay_moves(initial_game: Game, moves: tuple[Move, ...]) -> Game:
+    game = initial_game
+    for move in moves:
+        if move not in game.legal_moves:
+            raise GuiProtocolError(
+                "internal_error",
+                f"cannot replay move while undoing: {move.to_uci()}",
+            )
+        game = game.play_known_legal(move)
+    return game
 
 
 def serialize_state(game: Game) -> dict[str, object]:
@@ -569,6 +595,29 @@ def _required_str(data: Mapping[str, object], field_name: str) -> str:
     value = data.get(field_name)
     if not isinstance(value, str):
         raise GuiProtocolError("invalid_request", f"request field {field_name!r} must be a string")
+    return value
+
+
+def _optional_request_int(
+    data: Mapping[str, object],
+    field_name: str,
+    default: int,
+    *,
+    minimum: int,
+) -> int:
+    if field_name not in data or data[field_name] is None:
+        return default
+    value = data[field_name]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise GuiProtocolError(
+            "invalid_request",
+            f"request field {field_name!r} must be an integer",
+        )
+    if value < minimum:
+        raise GuiProtocolError(
+            "invalid_request",
+            f"request field {field_name!r} must be at least {minimum}, got {value}",
+        )
     return value
 
 

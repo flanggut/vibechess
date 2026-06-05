@@ -22,6 +22,12 @@ struct ControlsView: View {
                     .disabled(appState.isThinking)
                     .keyboardShortcut("r", modifiers: [.command])
 
+                    Button("Undo Last Full Move") {
+                        Task { await appState.undo() }
+                    }
+                    .disabled(!appState.canUndo)
+                    .keyboardShortcut("z", modifiers: [.command])
+
                     Picker("Human", selection: humanColorBinding) {
                         Text("White").tag(BackendColor.white)
                         Text("Black").tag(BackendColor.black)

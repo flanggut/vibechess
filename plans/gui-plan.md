@@ -278,10 +278,11 @@ Use stable string codes so Swift can present friendly messages:
    - Acceptance: manual smoke can play at least 10 plies against Random and 4 plies against MCTS without UI freeze.
    - Completed: wired `AppState` to automatically request AI replies after human moves and opening AI moves for Black-human games, with focused mocked-backend tests for flow and input blocking.
 
-12. **Add undo/reset behavior**
+12. **[Done] Add undo/reset behavior**
    - Files: Python `src/tinychess/protocols/gui.py`; Swift `AppState.swift`, `ControlsView.swift`.
    - Changes: expose `undo plies=2` in UI as "Undo last full move"; disable when no moves; reset clears selection/errors/thinking.
    - Acceptance: after human+AI moves, undo returns to the position before the human move and clears AI reusable tree state.
+   - Completed: added GUI protocol undo support plus Swift undo/reset state and controls with focused backend and app-state tests.
 
 13. **Documentation update**
    - Files: `README.md`, `docs/architecture.md`, `swift/README.md`

@@ -168,7 +168,7 @@ final class AppState: ObservableObject {
     }
 
     func undo(plies: Int = 2) async {
-        guard beginBackendOperation() else {
+        guard canUndo, beginBackendOperation() else {
             return
         }
         defer { finishBackendOperation() }

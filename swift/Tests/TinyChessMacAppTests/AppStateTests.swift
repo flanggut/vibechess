@@ -245,6 +245,82 @@ import Testing
 }
 
 @MainActor
+@Test func appStateUndoIsDisabledWithoutMoveHistory() async throws {
+    let backend = MockBackend(responses: [BackendResponse.success(id: .int(1), state: startingState())])
+    let appState = AppState(backend: backend, initialState: startingState())
+
+    #expect(appState.canUndo == false)
+    await appState.undo()
+
+    #expect(await backend.requests.isEmpty)
+    #expect(appState.backendState?.moves == [])
+}
+
+@MainActor
+@Test func appStateUndoClearsSelectionErrorAndLastAppliedMove() async throws {
+    let backend = MockBackend(
+        responses: [
+            BackendResponse.error(
+                id: .int(1),
+                code: "internal_error",
+                message: "search failed",
+                state: aiReplyState()
+            ),
+            BackendResponse.success(id: .int(2), state: startingState()),
+        ]
+    )
+    let appState = AppState(backend: backend, initialState: aiReplyState())
+    appState.selectSquare("g1")
+
+    await appState.requestAIMove()
+    #expect(appState.errorMessage == "internal_error: search failed")
+    #expect(appState.selectedSquare == "g1")
+    #expect(appState.canUndo)
+
+    await appState.undo()
+
+    let requests = await backend.requests
+    #expect(requests.map(\.cmd) == [.aiMove, .undo])
+    #expect(requests[1].plies == 2)
+    #expect(appState.backendState?.moves == [])
+    #expect(appState.selectedSquare == nil)
+    #expect(appState.errorMessage == nil)
+    #expect(appState.lastAppliedMove == nil)
+    #expect(appState.isThinking == false)
+}
+
+@MainActor
+@Test func appStateResetClearsSelectionErrorAndThinking() async throws {
+    let backend = MockBackend(
+        responses: [
+            BackendResponse.error(
+                id: .int(1),
+                code: "illegal_move",
+                message: "illegal move",
+                state: startingState()
+            ),
+            BackendResponse.success(id: .int(2), state: startingState()),
+        ]
+    )
+    let appState = AppState(backend: backend, initialState: startingState())
+    appState.selectSquare("e2")
+
+    await appState.makeMove("e2e5")
+    #expect(appState.errorMessage == "illegal_move: illegal move")
+    #expect(appState.selectedSquare == "e2")
+
+    await appState.newGame()
+
+    let requests = await backend.requests
+    #expect(requests.map(\.cmd) == [.makeMove, .newGame])
+    #expect(appState.backendState?.moves == [])
+    #expect(appState.selectedSquare == nil)
+    #expect(appState.errorMessage == nil)
+    #expect(appState.lastAppliedMove == nil)
+    #expect(appState.isThinking == false)
+}
+
+@MainActor
 @Test func appStateAppliesBackendErrorStateAndMessage() async throws {
     let response = BackendResponse.error(
         id: .int(1),

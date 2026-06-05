@@ -35,7 +35,7 @@ def test_hello_returns_capabilities_and_canonical_start_state() -> None:
     assert response["protocol"] == "tinychess-gui-v1"
     assert response["capabilities"] == {
         "players": ["random", "mcts", "neural"],
-        "supportsUndo": False,
+        "supportsUndo": True,
         "promotion": "auto_queen",
     }
     state = response["state"]
@@ -225,6 +225,61 @@ def test_new_game_validation_failure_does_not_mutate_session_config() -> None:
     assert session.human_color.value == "white"
     assert session.ai_config.kind == "random"
     assert session.ai_config.seed is None
+
+
+def test_undo_default_replays_to_position_before_last_full_move() -> None:
+    session = GuiSession()
+    _request(session, {"id": 1, "cmd": "makeMove", "move": "e2e4"})
+    _request(session, {"id": 2, "cmd": "makeMove", "move": "e7e5"})
+    before_undo_moves = [move.to_uci() for move in session.game.moves]
+
+    response = _request(session, {"id": 3, "cmd": "undo"})
+
+    assert before_undo_moves == ["e2e4", "e7e5"]
+    assert response["ok"] is True
+    assert response["state"]["fen"] == Game.new().to_fen()
+    assert response["state"]["moves"] == []
+    assert response["state"]["lastMove"] is None
+    assert session.game.to_fen() == Game.new().to_fen()
+
+
+def test_undo_clamps_to_start_when_more_plies_than_history_requested() -> None:
+    session = GuiSession()
+    _request(session, {"id": 1, "cmd": "makeMove", "move": "e2e4"})
+
+    response = _request(session, {"id": 2, "cmd": "undo", "plies": 99})
+
+    assert response["ok"] is True
+    assert response["state"]["fen"] == Game.new().to_fen()
+    assert response["state"]["moves"] == []
+
+
+def test_undo_one_ply_returns_previous_half_move_position() -> None:
+    session = GuiSession()
+    _request(session, {"id": 1, "cmd": "makeMove", "move": "e2e4"})
+    after_white = session.game.to_fen()
+    _request(session, {"id": 2, "cmd": "makeMove", "move": "e7e5"})
+
+    response = _request(session, {"id": 3, "cmd": "undo", "plies": 1})
+
+    assert response["ok"] is True
+    assert response["state"]["fen"] == after_white
+    assert response["state"]["moves"] == ["e2e4"]
+    assert response["state"]["lastMove"] == "e2e4"
+
+
+def test_undo_rejects_invalid_plies_without_mutating_state() -> None:
+    session = GuiSession()
+    _request(session, {"id": 1, "cmd": "makeMove", "move": "e2e4"})
+    fen_before = session.game.to_fen()
+
+    response = _request(session, {"id": 2, "cmd": "undo", "plies": -1})
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "invalid_request"
+    assert "plies" in response["error"]["message"]
+    assert response["state"]["fen"] == fen_before
+    assert session.game.to_fen() == fen_before
 
 
 def test_ai_move_random_applies_deterministic_legal_move() -> None:

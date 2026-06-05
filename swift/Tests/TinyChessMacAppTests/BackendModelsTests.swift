@@ -12,7 +12,7 @@ import Testing
           "protocol": "tinychess-gui-v1",
           "capabilities": {
             "players": ["random", "mcts", "neural"],
-            "supportsUndo": false,
+            "supportsUndo": true,
             "promotion": "auto_queen"
           },
           "state": {
@@ -40,7 +40,7 @@ import Testing
     #expect(response.ok)
     #expect(response.protocolVersion == "tinychess-gui-v1")
     #expect(response.capabilities?.players == [.random, .mcts, .neural])
-    #expect(response.capabilities?.supportsUndo == false)
+    #expect(response.capabilities?.supportsUndo == true)
     #expect(response.capabilities?.promotion == "auto_queen")
     #expect(response.state?.sideToMove == .white)
     #expect(response.state?.squares.count == 2)
@@ -177,13 +177,14 @@ import Testing
     #expect(ai["checkpointPath"] == nil)
 }
 
-@Test func encodesMakeMoveAndAiMoveRequests() throws {
+@Test func encodesMakeMoveAiMoveAndUndoRequests() throws {
     let makeMove = BackendRequest(id: .string("human-1"), cmd: .makeMove, move: "e2e4")
     let aiMove = BackendRequest(
         id: .int(8),
         cmd: .aiMove,
         ai: BackendAIConfig(kind: .random, seed: 3)
     )
+    let undo = BackendRequest(id: .int(9), cmd: .undo, plies: 2)
 
     let encoder = JSONEncoder()
     let makeMoveObject = try #require(
@@ -191,6 +192,9 @@ import Testing
     )
     let aiMoveObject = try #require(
         JSONSerialization.jsonObject(with: try encoder.encode(aiMove)) as? [String: Any]
+    )
+    let undoObject = try #require(
+        JSONSerialization.jsonObject(with: try encoder.encode(undo)) as? [String: Any]
     )
     let ai = try #require(aiMoveObject["ai"] as? [String: Any])
 
@@ -201,4 +205,6 @@ import Testing
     #expect(aiMoveObject["cmd"] as? String == "aiMove")
     #expect(ai["kind"] as? String == "random")
     #expect(ai["seed"] as? Int == 3)
+    #expect(undoObject["cmd"] as? String == "undo")
+    #expect(undoObject["plies"] as? Int == 2)
 }
