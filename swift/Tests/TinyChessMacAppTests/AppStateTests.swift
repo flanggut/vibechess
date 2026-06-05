@@ -71,7 +71,7 @@ import Testing
         responses: [
             BackendResponse.success(
                 id: .int(1),
-                state: playedState(),
+                state: playedState(sideToMove: .white),
                 appliedMove: "e2e4"
             )
         ]
@@ -88,6 +88,133 @@ import Testing
     #expect(appState.backendState?.moves == ["e2e4"])
     #expect(appState.lastAppliedMove == "e2e4")
     #expect(appState.selectedSquare == nil)
+}
+
+@MainActor
+@Test func appStateWhiteHumanMoveAutomaticallyRequestsAIMove() async throws {
+    let backend = MockBackend(
+        responses: [
+            BackendResponse.success(
+                id: .int(1),
+                state: playedState(),
+                appliedMove: "e2e4"
+            ),
+            BackendResponse.success(
+                id: .int(2),
+                state: aiReplyState(),
+                appliedMove: "e7e5"
+            ),
+        ]
+    )
+    let aiConfig = BackendAIConfig(kind: .random, seed: 7)
+    let appState = AppState(backend: backend, initialState: startingState(), aiConfig: aiConfig)
+
+    await appState.makeMove("e2e4")
+
+    let requests = await backend.requests
+    #expect(requests.map(\.cmd) == [.makeMove, .aiMove])
+    #expect(requests[0].move == "e2e4")
+    #expect(requests[1].ai == aiConfig)
+    #expect(appState.backendState?.moves == ["e2e4", "e7e5"])
+    #expect(appState.backendState?.sideToMove == .white)
+    #expect(appState.lastAppliedMove == "e7e5")
+    #expect(appState.selectedSquare == nil)
+    #expect(appState.isThinking == false)
+}
+
+@MainActor
+@Test func appStateBlackHumanNewGameAutomaticallyRequestsOpeningAIMove() async throws {
+    let backend = MockBackend(
+        responses: [
+            BackendResponse.success(id: .int(1), state: startingState(sideToMove: .white)),
+            BackendResponse.success(
+                id: .int(2),
+                state: playedState(moves: ["g1f3"], lastMove: "g1f3", sideToMove: .black),
+                appliedMove: "g1f3"
+            ),
+        ]
+    )
+    let aiConfig = BackendAIConfig(kind: .mcts, simulations: 3, nodeBudget: 5)
+    let appState = AppState(backend: backend, initialState: playedState())
+
+    await appState.newGame(humanColor: .black, aiConfig: aiConfig)
+
+    let requests = await backend.requests
+    #expect(requests.map(\.cmd) == [.newGame, .aiMove])
+    #expect(requests[0].humanColor == .black)
+    #expect(requests[0].ai == aiConfig)
+    #expect(requests[1].ai == aiConfig)
+    #expect(appState.humanColor == .black)
+    #expect(appState.boardOrientation == .black)
+    #expect(appState.aiConfig == aiConfig)
+    #expect(appState.backendState?.sideToMove == .black)
+    #expect(appState.backendState?.moves == ["g1f3"])
+    #expect(appState.lastAppliedMove == "g1f3")
+    #expect(appState.isThinking == false)
+}
+
+@MainActor
+@Test func appStateDoesNotRequestAIAfterTerminalHumanMove() async throws {
+    let backend = MockBackend(
+        responses: [
+            BackendResponse.success(
+                id: .int(1),
+                state: terminalState(moves: ["e2e4"], lastMove: "e2e4"),
+                appliedMove: "e2e4"
+            ),
+        ]
+    )
+    let appState = AppState(backend: backend, initialState: startingState())
+
+    await appState.makeMove("e2e4")
+
+    let requests = await backend.requests
+    #expect(requests.map(\.cmd) == [.makeMove])
+    #expect(appState.backendState?.outcome?.reason == .checkmate)
+    #expect(appState.lastAppliedMove == "e2e4")
+    #expect(appState.isThinking == false)
+}
+
+@MainActor
+@Test func appStateBlocksDuplicateInputDuringAutomaticAIMove() async throws {
+    let backend = BlockingSequenceBackend(
+        responses: [
+            BackendResponse.success(
+                id: .int(1),
+                state: playedState(),
+                appliedMove: "e2e4"
+            ),
+            BackendResponse.success(
+                id: .int(2),
+                state: aiReplyState(),
+                appliedMove: "e7e5"
+            ),
+        ],
+        blockAtRequestCount: 2
+    )
+    let appState = AppState(backend: backend, initialState: startingState())
+
+    let moveTask = Task { await appState.makeMove("e2e4") }
+    await backend.waitUntilRequestCount(2)
+    #expect(appState.isThinking)
+
+    appState.selectSquare("e2")
+    await appState.makeMove("g1f3")
+    appState.flipBoard()
+    appState.updateHumanColor(.black)
+
+    #expect(appState.selectedSquare == nil)
+    #expect(appState.boardOrientation == .white)
+    #expect(appState.humanColor == .white)
+    #expect(await backend.requestCount == 2)
+
+    await backend.release()
+    await moveTask.value
+
+    #expect(appState.isThinking == false)
+    #expect(appState.backendState?.moves == ["e2e4", "e7e5"])
+    #expect(appState.lastAppliedMove == "e7e5")
+    #expect(await backend.requestCount == 2)
 }
 
 @MainActor
@@ -229,6 +356,62 @@ private actor BlockingBackend: BackendSession {
     }
 }
 
+private actor BlockingSequenceBackend: BackendSession {
+    private(set) var requests: [BackendRequest] = []
+    private var responses: [BackendResponse]
+    private let blockAtRequestCount: Int
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+    private var requestCountContinuations: [Int: [CheckedContinuation<Void, Never>]] = [:]
+
+    init(responses: [BackendResponse], blockAtRequestCount: Int) {
+        self.responses = responses
+        self.blockAtRequestCount = blockAtRequestCount
+    }
+
+    var requestCount: Int {
+        requests.count
+    }
+
+    func send(_ request: BackendRequest) async throws -> BackendResponse {
+        requests.append(request)
+        resumeRequestCountWaiters()
+        if requests.count == blockAtRequestCount {
+            await withCheckedContinuation { continuation in
+                releaseContinuation = continuation
+            }
+        }
+        guard !responses.isEmpty else {
+            return BackendResponse.success(id: request.id, state: startingState())
+        }
+        var response = responses.removeFirst()
+        response.id = request.id
+        return response
+    }
+
+    func waitUntilRequestCount(_ count: Int) async {
+        if requests.count >= count {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            requestCountContinuations[count, default: []].append(continuation)
+        }
+    }
+
+    func release() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+
+    private func resumeRequestCountWaiters() {
+        for count in requestCountContinuations.keys where requests.count >= count {
+            let continuations = requestCountContinuations.removeValue(forKey: count) ?? []
+            for continuation in continuations {
+                continuation.resume()
+            }
+        }
+    }
+}
+
 private extension BackendResponse {
     static func success(
         id: BackendMessageID,
@@ -293,11 +476,12 @@ private func startingState(sideToMove: BackendColor = .white) -> BackendState {
 
 private func playedState(
     moves: [String] = ["e2e4"],
-    lastMove: String? = "e2e4"
+    lastMove: String? = "e2e4",
+    sideToMove: BackendColor = .black
 ) -> BackendState {
     BackendState(
         fen: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
-        sideToMove: .black,
+        sideToMove: sideToMove,
         squares: [
             BackendPiece(square: "e4", index: 28, piece: "P", color: .white, kind: .pawn),
             BackendPiece(square: "e7", index: 52, piece: "p", color: .black, kind: .pawn),
@@ -309,5 +493,42 @@ private func playedState(
         halfmoveClock: 0,
         fullmoveNumber: 1,
         outcome: nil
+    )
+}
+
+private func aiReplyState() -> BackendState {
+    BackendState(
+        fen: "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2",
+        sideToMove: .white,
+        squares: [
+            BackendPiece(square: "e4", index: 28, piece: "P", color: .white, kind: .pawn),
+            BackendPiece(square: "e5", index: 36, piece: "p", color: .black, kind: .pawn),
+        ],
+        legalMoves: ["g1f3"],
+        legalDestinationsByFrom: ["g1": ["f3"]],
+        moves: ["e2e4", "e7e5"],
+        lastMove: "e7e5",
+        halfmoveClock: 0,
+        fullmoveNumber: 2,
+        outcome: nil
+    )
+}
+
+private func terminalState(moves: [String], lastMove: String) -> BackendState {
+    BackendState(
+        fen: "7k/8/8/8/8/8/8/6RK b - - 0 1",
+        sideToMove: .black,
+        squares: [
+            BackendPiece(square: "g1", index: 6, piece: "R", color: .white, kind: .rook),
+            BackendPiece(square: "h1", index: 7, piece: "K", color: .white, kind: .king),
+            BackendPiece(square: "h8", index: 63, piece: "k", color: .black, kind: .king),
+        ],
+        legalMoves: [],
+        legalDestinationsByFrom: [:],
+        moves: moves,
+        lastMove: lastMove,
+        halfmoveClock: 0,
+        fullmoveNumber: 1,
+        outcome: BackendOutcome(reason: .checkmate, winner: .white, isDraw: false)
     )
 }

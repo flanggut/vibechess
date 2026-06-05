@@ -130,6 +130,7 @@ final class AppState: ObservableObject {
         boardOrientation = nextHumanColor
         selectedSquare = nil
         lastAppliedMove = nil
+        await requestAIMoveIfNeeded()
     }
 
     func makeSelectedMove(to destinationSquare: String) async {
@@ -154,6 +155,7 @@ final class AppState: ObservableObject {
             return
         }
         selectedSquare = nil
+        await requestAIMoveIfNeeded()
     }
 
     func requestAIMove(aiConfig requestedAIConfig: BackendAIConfig? = nil) async {
@@ -162,13 +164,7 @@ final class AppState: ObservableObject {
         }
         defer { finishBackendOperation() }
 
-        let config = requestedAIConfig ?? aiConfig
-        let request = BackendRequest(id: nextRequestID(), cmd: .aiMove, ai: config)
-        guard await sendAndApply(request) != nil else {
-            return
-        }
-        aiConfig = config
-        selectedSquare = nil
+        await requestAIMoveOnce(aiConfig: requestedAIConfig ?? aiConfig)
     }
 
     func undo(plies: Int = 2) async {
@@ -201,6 +197,29 @@ final class AppState: ObservableObject {
     private func nextRequestID() -> BackendMessageID {
         defer { nextID += 1 }
         return .int(nextID)
+    }
+
+    private func requestAIMoveIfNeeded() async {
+        guard shouldRequestAIMove(for: backendState) else {
+            return
+        }
+        await requestAIMoveOnce(aiConfig: aiConfig)
+    }
+
+    private func requestAIMoveOnce(aiConfig config: BackendAIConfig) async {
+        let request = BackendRequest(id: nextRequestID(), cmd: .aiMove, ai: config)
+        guard await sendAndApply(request) != nil else {
+            return
+        }
+        aiConfig = config
+        selectedSquare = nil
+    }
+
+    private func shouldRequestAIMove(for state: BackendState?) -> Bool {
+        guard let state else {
+            return false
+        }
+        return state.outcome == nil && state.sideToMove != humanColor
     }
 
     private func sendAndApply(_ request: BackendRequest) async -> BackendResponse? {

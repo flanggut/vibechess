@@ -272,10 +272,11 @@ Use stable string codes so Swift can present friendly messages:
    - Acceptance: user can configure Random/MCTS/neural path, start/reset, see moves as UCI strings, see outcome/draw status, and manually flip orientation.
    - Completed: added SwiftUI controls, status/error presentation, UCI move history, root view composition, and focused presentation tests.
 
-11. **Wire human-vs-AI flow**
+11. **[Done] Wire human-vs-AI flow**
    - Files: `swift/Sources/TinyChessMacApp/AppState.swift`, `BackendClient.swift`, UI files.
    - Changes: after a successful human `makeMove`, if game is ongoing, invoke `aiMove` in a background task; if human selected Black, invoke `aiMove` after `newGame`; block duplicate input while thinking.
    - Acceptance: manual smoke can play at least 10 plies against Random and 4 plies against MCTS without UI freeze.
+   - Completed: wired `AppState` to automatically request AI replies after human moves and opening AI moves for Black-human games, with focused mocked-backend tests for flow and input blocking.
 
 12. **Add undo/reset behavior**
    - Files: Python `src/tinychess/protocols/gui.py`; Swift `AppState.swift`, `ControlsView.swift`.
