@@ -14,7 +14,14 @@ import numpy.typing as npt
 
 import tinychess
 from tinychess.ai.mcts import MCTSPlayer
-from tinychess.ai.neural_mcts import NeuralInference, NeuralMCTSConfig, NeuralMCTSPlayer
+from tinychess.ai.neural_mcts import (
+    NeuralInference,
+    NeuralMCTSConfig,
+    NeuralMCTSInferenceRequest,
+    NeuralMCTSPlayer,
+    NeuralMCTSResult,
+    NeuralMCTSSearchSession,
+)
 from tinychess.ai.search_config import MCTSConfig
 from tinychess.engine.game import Game, determine_outcome
 from tinychess.engine.move import Move
@@ -29,7 +36,7 @@ from tinychess.nn.encode import (
     legal_move_mask_from_legal_moves_np,
     move_to_action_index,
 )
-from tinychess.nn.model import InferenceResult, LegalPolicyBatchResult, PolicyValueInference
+from tinychess.nn.model import PolicyValueInference
 from tinychess.nn.self_play_profile import (
     ProfileStats as SelfPlayProfileStats,
 )
@@ -338,51 +345,10 @@ class _BatchedGameState:
 
 
 @dataclass(slots=True)
-class _PrefetchedRootInference:
-    base: PolicyValueInference
-    root_game: Game
-    root_result: InferenceResult
-    consumed: bool = False
-
-    def predict(self, game: Game, *, mask_legal_moves: bool = True) -> InferenceResult:
-        if not self.consumed and mask_legal_moves and game == self.root_game:
-            self.consumed = True
-            return self.root_result
-        return self.base.predict(game, mask_legal_moves=mask_legal_moves)
-
-    def predict_with_legal_moves(
-        self,
-        game: Game,
-        legal_moves: tuple[Move, ...],
-    ) -> InferenceResult:
-        if not self.consumed and game == self.root_game:
-            self.consumed = True
-            return self.root_result
-        return self.base.predict_with_legal_moves(game, legal_moves)
-
-    def predict_legal_batch(
-        self,
-        games: list[Game] | tuple[Game, ...],
-        legal_moves: list[tuple[Move, ...]] | tuple[tuple[Move, ...], ...],
-    ) -> LegalPolicyBatchResult:
-        if not self.consumed and len(games) == 1 and games[0] == self.root_game:
-            self.consumed = True
-            result = self.root_result
-            legal = tuple(legal_moves[0])
-            if result.legal_policy is None or result.legal_moves != legal:
-                return self.base.predict_legal_batch(games, legal_moves)
-            return LegalPolicyBatchResult(
-                values=(result.value,),
-                legal_moves=(legal,),
-                legal_action_indices=(result.legal_action_indices,),
-                legal_policies=(result.legal_policy,),
-            )
-        return self.base.predict_legal_batch(games, legal_moves)
-
-
-def _root_prefetch_would_be_consumed(player: NeuralMCTSPlayer, game: Game) -> bool:
-    reusable_root = player._adopt_descendant_root(game)
-    return reusable_root is None or not reusable_root.is_expanded
+class _CentralSearch:
+    state: _BatchedGameState
+    legal: tuple[Move, ...]
+    session: NeuralMCTSSearchSession
 
 
 def _record_batched_decision(
@@ -404,6 +370,68 @@ def _record_batched_decision(
     record_counter("self_play.plies")
     state.game_sides.append(state.game.board.side_to_move)
     state.game = state.game.play_known_legal(selected_move)
+
+
+def _run_central_neural_searches(
+    inference: PolicyValueInference,
+    decisions: list[tuple[_BatchedGameState, tuple[Move, ...]]],
+    *,
+    batch_size: int,
+) -> list[tuple[_BatchedGameState, tuple[Move, ...], NeuralMCTSResult]]:
+    """Run one neural MCTS search per decision with deterministic cross-game batching."""
+    searches = [
+        _CentralSearch(
+            state=state,
+            legal=legal,
+            session=NeuralMCTSSearchSession(
+                state.player,
+                state.game,
+                session_id=state.game_index,
+            ),
+        )
+        for state, legal in sorted(decisions, key=lambda item: item[0].game_index)
+    ]
+    results: dict[int, NeuralMCTSResult] = {}
+    pending: dict[int, NeuralMCTSInferenceRequest] = {}
+
+    with profile_scope("self_play.central_inference_queue", sessions=len(searches)):
+        while len(results) < len(searches):
+            progressed = False
+            if pending:
+                batch_indexes = sorted(pending)[:batch_size]
+                requests = [pending.pop(index) for index in batch_indexes]
+                games = tuple(request.game for request in requests)
+                legal_by_game = tuple(request.legal_moves for request in requests)
+                with profile_scope(
+                    "self_play.central_predict_legal_batch",
+                    batch_size=len(requests),
+                ):
+                    batch = inference.predict_legal_batch(games, legal_by_game)
+                for row_index, search_index in enumerate(batch_indexes):
+                    searches[search_index].session.resume(batch.result_at(row_index))
+                progressed = True
+            else:
+                for search_index, search in enumerate(searches):
+                    if search_index in results or search.session.pending_request is not None:
+                        continue
+                    with profile_scope(
+                        "self_play.central_session_advance",
+                        game_index=search.state.game_index,
+                    ):
+                        advanced = search.session.advance()
+                    progressed = True
+                    if isinstance(advanced, NeuralMCTSResult):
+                        results[search_index] = advanced
+                    else:
+                        pending[search_index] = advanced
+
+            if not progressed:
+                raise RuntimeError("central neural inference queue made no progress")
+
+    return [
+        (search.state, search.legal, results[search_index])
+        for search_index, search in enumerate(searches)
+    ]
 
 
 def _generate_batched_neural_self_play_dataset(
@@ -451,48 +479,18 @@ def _generate_batched_neural_self_play_dataset(
                 if not decisions:
                     break
 
-                batched_decisions: list[tuple[_BatchedGameState, tuple[Move, ...]]] = []
-                serial_decisions: list[tuple[_BatchedGameState, tuple[Move, ...]]] = []
-                for state, legal in decisions:
-                    if _root_prefetch_would_be_consumed(state.player, state.game):
-                        batched_decisions.append((state, legal))
-                    else:
-                        serial_decisions.append((state, legal))
-
-                for state, legal in serial_decisions:
+                central_results = _run_central_neural_searches(
+                    inference,
+                    decisions,
+                    batch_size=config.batch_size,
+                )
+                for state, legal, result in central_results:
                     with profile_scope(
                         "self_play.ply_decision",
                         game_index=state.game_index,
                         ply_index=ply_index,
                     ):
-                        result = state.player.search(state.game)
                         _record_batched_decision(state, legal, result.move, result.visit_counts)
-
-                if batched_decisions:
-                    games = tuple(state.game for state, _legal in batched_decisions)
-                    legal_by_game = tuple(legal for _state, legal in batched_decisions)
-                    batch = inference.predict_batch(
-                        games,
-                        legal_moves=legal_by_game,
-                        mask_legal_moves=True,
-                    )
-                    for batch_index, (state, legal) in enumerate(batched_decisions):
-                        with profile_scope(
-                            "self_play.ply_decision",
-                            game_index=state.game_index,
-                            ply_index=ply_index,
-                        ):
-                            old_inference = state.player.inference
-                            state.player.inference = _PrefetchedRootInference(
-                                inference,
-                                state.game,
-                                batch.result_at(batch_index),
-                            )
-                            try:
-                                result = state.player.search(state.game)
-                            finally:
-                                state.player.inference = old_inference
-                            _record_batched_decision(state, legal, result.move, result.visit_counts)
 
             for state in states:
                 with profile_scope("self_play.game", game_index=state.game_index):

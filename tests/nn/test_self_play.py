@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,8 @@ from tinychess.nn.encode import (
 )
 from tinychess.nn.model import (
     InferenceResult,
+    LegalPolicyBatchResult,
+    MLXArray,
     PolicyValueConfig,
     PolicyValueInference,
     PolicyValueNet,
@@ -68,6 +71,7 @@ class CountingPolicyValueInference(PolicyValueInference):
         super().__init__(model)
         self.batch_calls = 0
         self.legal_batch_calls = 0
+        self.legal_batch_sizes: list[int] = []
 
     def predict_batch(
         self,
@@ -87,7 +91,69 @@ class CountingPolicyValueInference(PolicyValueInference):
 
     def predict_legal_batch(self, games: Any, legal_moves: Any) -> Any:
         self.legal_batch_calls += 1
+        self.legal_batch_sizes.append(len(games))
         return super().predict_legal_batch(games, legal_moves)
+
+
+class DeterministicPolicyValueInference(PolicyValueInference):
+    """Policy/value inference with identical single-row and batched legal results."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            PolicyValueNet(
+                PolicyValueConfig(
+                    residual_channels=4,
+                    residual_blocks=0,
+                    policy_channels=1,
+                    value_channels=1,
+                    value_hidden_dim=4,
+                )
+            )
+        )
+
+    def predict_with_legal_moves(
+        self,
+        game: Game,
+        legal_moves: tuple[Move, ...],
+    ) -> InferenceResult:
+        legal = tuple(legal_moves)
+        legal_policy = self._legal_policy(legal)
+        policy = mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32)
+        mx.eval(policy, legal_policy)
+        return InferenceResult(
+            policy_logits=policy,
+            policy=policy,
+            value=0.0,
+            legal_moves=legal,
+            legal_action_indices=tuple(move_to_action_index(move, game.board) for move in legal),
+            legal_policy=legal_policy,
+        )
+
+    def predict_legal_batch(
+        self,
+        games: Sequence[Game],
+        legal_moves: Sequence[Sequence[Move]],
+    ) -> LegalPolicyBatchResult:
+        games_tuple = tuple(games)
+        legal_tuple = tuple(tuple(row) for row in legal_moves)
+        policies = tuple(self._legal_policy(legal) for legal in legal_tuple)
+        mx.eval(*policies)
+        return LegalPolicyBatchResult(
+            values=tuple(0.0 for _game in games_tuple),
+            legal_moves=legal_tuple,
+            legal_action_indices=tuple(
+                tuple(move_to_action_index(move, game.board) for move in legal)
+                for game, legal in zip(games_tuple, legal_tuple, strict=True)
+            ),
+            legal_policies=policies,
+        )
+
+    @staticmethod
+    def _legal_policy(legal_moves: tuple[Move, ...]) -> MLXArray:
+        if not legal_moves:
+            return mx.zeros((0,), dtype=mx.float32)
+        weights = [1.0 / len(legal_moves)] * len(legal_moves)
+        return mx.array(weights, dtype=mx.float32)
 
 
 def test_generate_self_play_dataset_completes_smoke_game() -> None:
@@ -146,7 +212,9 @@ def test_batched_neural_self_play_preserves_schema_and_legal_targets() -> None:
         ),
     )
 
-    assert inference.batch_calls >= 1
+    assert inference.batch_calls == 0
+    assert inference.legal_batch_calls >= 1
+    assert 2 in inference.legal_batch_sizes
     assert dataset.metadata.schema_version == SELF_PLAY_DATASET_SCHEMA_VERSION
     assert dataset.metadata.generation_settings["batch_size"] == 2
     assert dataset.positions.shape == (4, *TENSOR_SHAPE)
@@ -161,7 +229,7 @@ def test_batched_neural_self_play_preserves_schema_and_legal_targets() -> None:
     assert np.all(dataset.mcts_policies <= dataset.legal_masks)
 
 
-def test_batched_neural_self_play_skips_prefetch_for_expanded_reused_roots() -> None:
+def test_batched_neural_self_play_uses_legal_batch_queue_after_root_expansion() -> None:
     inference = CountingPolicyValueInference(
         PolicyValueNet(
             PolicyValueConfig(
@@ -177,16 +245,19 @@ def test_batched_neural_self_play_skips_prefetch_for_expanded_reused_roots() -> 
     dataset = generate_self_play_dataset(
         inference,
         SelfPlayConfig(
-            games=1,
-            max_plies=2,
-            mcts=NeuralMCTSConfig(simulations=2, temperature=0.0, seed=19),
+            games=2,
+            max_plies=1,
+            mcts=NeuralMCTSConfig(simulations=3, temperature=0.0, seed=19),
             seed=19,
             batch_size=2,
         ),
     )
 
     assert dataset.metadata.sample_count == 2
-    assert inference.batch_calls == 1
+    assert inference.batch_calls == 0
+    assert inference.legal_batch_calls > 1
+    assert inference.legal_batch_sizes[0] == 2
+    assert 2 in inference.legal_batch_sizes[1:]
 
 
 def test_batched_neural_self_play_is_reproducible_for_fixed_seed() -> None:
@@ -216,6 +287,35 @@ def test_batched_neural_self_play_is_reproducible_for_fixed_seed() -> None:
     np.testing.assert_array_equal(first.outcomes, second.outcomes)
     assert [record.moves_uci for record in first.games] == [
         record.moves_uci for record in second.games
+    ]
+
+
+def test_central_neural_self_play_matches_serial_with_deterministic_inference() -> None:
+    base_config = SelfPlayConfig(
+        games=2,
+        max_plies=2,
+        mcts=NeuralMCTSConfig(simulations=3, temperature=0.0, seed=37),
+        seed=37,
+    )
+
+    serial = generate_self_play_dataset(
+        DeterministicPolicyValueInference(),
+        base_config,
+    )
+    central = generate_self_play_dataset(
+        DeterministicPolicyValueInference(),
+        replace(base_config, batch_size=2),
+    )
+
+    np.testing.assert_array_equal(serial.positions, central.positions)
+    np.testing.assert_array_equal(serial.legal_masks, central.legal_masks)
+    np.testing.assert_array_equal(serial.mcts_policies, central.mcts_policies)
+    np.testing.assert_array_equal(serial.outcomes, central.outcomes)
+    assert [record.moves_uci for record in serial.games] == [
+        record.moves_uci for record in central.games
+    ]
+    assert [record.final_fen for record in serial.games] == [
+        record.final_fen for record in central.games
     ]
 
 

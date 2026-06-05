@@ -157,15 +157,17 @@ This replaces the current root-prefetch-only batching path for neural self-play 
    - Acceptance: New unit test can run one session to completion with single-request batches and produce the same `move`, `visit_counts`, `simulations`, and `nodes` as `NeuralMCTSPlayer.search` for fixed seed and fake inference.
    - Completed: added session/request primitives with single-pending-request semantics plus focused parity, resume-state, and node-budget tests.
 
-11. **Implement deterministic central inference coordinator**
+11. **[Done] Implement deterministic central inference coordinator**
    - File: `src/tinychess/nn/self_play.py`
    - Changes: Add coordinator logic that advances sessions round-robin in stable game order, batches pending requests with `PolicyValueInference.predict_legal_batch`, and resumes sessions with `LegalPolicyResult` rows.
    - Acceptance: A test with `CountingPolicyValueInference`, `games=2`, `simulations>=3`, and `batch_size=2` observes `legal_batch_calls > 1` and at least one batch of size 2 beyond root expansion.
+   - Completed: added a stable game-order central neural search coordinator that advances `NeuralMCTSSearchSession` instances, batches pending legal inference requests, and resumes each session with its matching batch row.
 
-12. **Replace root-prefetch batched self-play path**
+12. **[Done] Replace root-prefetch batched self-play path**
    - File: `src/tinychess/nn/self_play.py`
    - Changes: Update `_generate_batched_neural_self_play_dataset` to use the central coordinator instead of `_PrefetchedRootInference`/root-only `predict_batch`. Remove or retire `_PrefetchedRootInference` once tests no longer need it.
    - Acceptance: Existing dataset shape/schema tests pass; new equivalence tests show batched central queue and serial generation match for fixed seeds on small deterministic runs.
+   - Completed: replaced root-prefetch batching with the central coordinator, removed the prefetch wrapper, and added focused batching/equivalence tests.
 
 13. **Add central queue configuration metadata**
    - File: `src/tinychess/nn/self_play.py`
