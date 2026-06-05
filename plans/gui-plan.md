@@ -260,10 +260,11 @@ Use stable string codes so Swift can present friendly messages:
    - Acceptance: unit tests or manual smoke verify state transitions from mocked backend responses; UI does not issue moves while `thinking` is true.
    - Completed: added `AppState` with a mockable backend seam and focused tests for state transitions, selection, backend errors, AI/undo request seams, and input blocking while thinking.
 
-9. **Implement board UI with Unicode pieces**
+9. **[Done] Implement board UI with Unicode pieces**
    - Files: `swift/Sources/TinyChessMacApp/BoardView.swift`, `swift/Sources/TinyChessMacApp/SquareView.swift`
    - Changes: render 8x8 board with orientation flip, Unicode chess glyphs from FEN symbols, selected-square highlight, legal destination highlights, and last-move highlight. Use click source/destination input only; no drag/drop for MVP.
    - Acceptance: starting position displays correctly for White and Black orientation; legal destinations highlight after selecting a piece; last move remains highlighted.
+   - Completed: added SwiftUI board/square rendering driven by AppState plus focused tests for orientation, square color parity, last-move parsing, and Unicode FEN glyph mapping.
 
 10. **Implement controls, move list, and status**
    - Files: `swift/Sources/TinyChessMacApp/ControlsView.swift`, `swift/Sources/TinyChessMacApp/MoveListView.swift`, root content view if separate.
