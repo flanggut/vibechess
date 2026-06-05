@@ -1,14 +1,43 @@
-# Swift Backend Plan
+# Swift Backend and macOS App
 
-Swift acceleration is planned but only the Swift Package Manager bootstrap is implemented.
+The Swift workspace now contains two intentionally separate pieces:
+
+- `TinyChessMacApp`: a local-first SwiftUI macOS app for human-vs-AI play.
+- `TinyChessCore`: placeholder scaffolding for future Swift acceleration work.
+
+The Python engine remains the correctness reference. The Swift app talks to
+`uv run tinychess gui-server` over the GUI JSON-lines protocol and does not
+implement chess rules or AI itself.
 
 ## Timing
 
-Swift implementation work beyond the package skeleton should not begin until:
+Swift acceleration implementation beyond the GUI frontend and package scaffolding
+should not begin until:
 
 - The Python reference engine is correct enough to produce trusted fixtures.
 - External perft references have validated the Python engine.
 - Benchmarks show a concrete bottleneck that Swift is likely to improve.
+
+## Native macOS GUI
+
+The GUI is available as the `TinyChessMacApp` SwiftPM executable target. Run it
+from the repository checkout so the default backend command can locate `uv` and
+the Python package:
+
+```bash
+uv sync --dev
+cd swift
+swift run TinyChessMacApp
+```
+
+The app renders backend-provided board state, supports click source/destination
+moves, legal-destination and last-move highlighting, human color selection,
+board flipping, start/reset, undo-last-full-move, UCI move history, status/error
+display, and Random/MCTS/optional-neural AI configuration. Neural play requires
+a local checkpoint path.
+
+Packaging note: this is not yet a distributable `.app` bundle. Bundling or
+locating the Python backend, codesigning, and notarization are deferred.
 
 ## Candidate Acceleration Areas
 
@@ -31,12 +60,17 @@ Swift implementations must be validated against:
 
 ## Current Status
 
-WP18 is implemented as a minimal Swift Package Manager workspace under `swift/`:
+The Swift workspace under `swift/` includes:
 
-- `Package.swift` defines the `TinyChessCore` library and `TinyChessCoreTests` test target.
-- `Sources/TinyChessCore/` exposes bootstrap metadata only; chess logic remains in Python.
-- `Tests/TinyChessCoreTests/` verifies the skeleton package compiles and exports expected metadata.
-- `swift/README.md` documents the Swift build and test commands.
+- `Package.swift` products for the `TinyChessCore` library and
+  `TinyChessMacApp` executable app target.
+- `Sources/TinyChessMacApp/` with SwiftUI app state, backend client/protocol
+  DTOs, board rendering, controls, and move-list views.
+- `Tests/TinyChessMacAppTests/` covering the app-state, backend-client,
+  protocol-model, and presentation helper seams.
+- `Sources/TinyChessCore/` and `Tests/TinyChessCoreTests/` as acceleration
+  bootstrap scaffolding only.
+- `swift/README.md` documenting local app/backend workflow and packaging status.
 
 Run Swift checks from the package directory:
 
@@ -44,9 +78,10 @@ Run Swift checks from the package directory:
 cd swift
 swift test
 swift build -c release
+swift run TinyChessMacApp
 ```
 
-Remaining planned work packages:
+Remaining planned acceleration work packages:
 
 - WP19: Swift engine acceleration prototype.
 - WP20: Swift MCTS, batched inference, or Core ML evaluation spike.

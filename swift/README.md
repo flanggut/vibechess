@@ -26,6 +26,10 @@ swift build -c release
 swift run TinyChessMacApp
 ```
 
+When launched with `swift run TinyChessMacApp`, the app opts into normal macOS
+app activation so it appears in the Dock and Cmd-Tab switcher even though it is
+still a SwiftPM executable rather than a bundled `.app`.
+
 For the app to connect with its default development command, run it from a
 checkout where `uv run tinychess gui-server` works. From the repository root,
 initialize Python dependencies first when needed:

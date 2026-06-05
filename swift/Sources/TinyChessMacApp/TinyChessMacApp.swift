@@ -1,7 +1,10 @@
+import AppKit
 import SwiftUI
 
 @main
 struct TinyChessMacApp: App {
+    @NSApplicationDelegateAdaptor(TinyChessApplicationDelegate.self) private var appDelegate
+
     var body: some Scene {
         WindowGroup("tinychess") {
             TinyChessMacRootView()
@@ -43,6 +46,13 @@ struct TinyChessMacRootView: View {
         } catch {
             return AppState(backend: UnavailableBackend(errorDescription: String(describing: error)))
         }
+    }
+}
+
+final class TinyChessApplicationDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
     }
 }
 
