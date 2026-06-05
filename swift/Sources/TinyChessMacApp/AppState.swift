@@ -31,7 +31,7 @@ final class AppState: ObservableObject {
         aiConfig: BackendAIConfig = BackendAIConfig(
             kind: .neural,
             simulations: 200,
-            checkpointPath: "data/checkpoints/strongest"
+            checkpointPath: "../data/checkpoints/strongest"
         ),
         boardOrientation: BackendColor = .white
     ) {
