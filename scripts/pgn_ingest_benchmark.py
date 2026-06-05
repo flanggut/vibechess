@@ -23,10 +23,10 @@ from tinychess.engine.pgn_stream import (
     parse_ingest_pgn_with_trace,
     pgn_has_fen_setup,
 )
+from tinychess.nn.encode import legal_move_mask_from_board_moves_np
 from tinychess.nn.pgn_dataset import (
     SUPPORTED_PGN_RESULTS,
     PgnIngestConfig,
-    _legal_move_mask_np,
     _one_hot_policy,
     _TrainingReplayState,
     ingest_pgn_dataset,
@@ -293,7 +293,7 @@ def _replay_and_encode_game(plies: object, report: PgnIngestBenchmark) -> int:
         report.add_time("encode_positions", time.perf_counter() - start)
 
         start = time.perf_counter()
-        _legal_move_mask_np(ply.board, ply.legal_moves)
+        legal_move_mask_from_board_moves_np(ply.board, ply.legal_moves)
         report.add_time("legal_masks", time.perf_counter() - start)
 
         start = time.perf_counter()

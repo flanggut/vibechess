@@ -8,14 +8,15 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 
 from tinychess.engine.board import Board
-from tinychess.engine.legal_moves import is_in_check
-from tinychess.engine.legal_moves import legal_moves as generate_legal_moves
+from tinychess.engine.legal_moves import is_in_check, legal_moves
 from tinychess.engine.move import Move
 from tinychess.engine.outcome import Outcome, OutcomeReason
 from tinychess.engine.piece import Color, Piece, PieceType
 from tinychess.engine.square import Square, file_index, rank_index
 
 MoveSelector = Callable[[Board, tuple[Move, ...]], Move]
+# Backward-compatible module seam for tests and callers that patch the old name.
+generate_legal_moves = legal_moves
 
 
 def _profile_scope(name: str, **tags: object) -> AbstractContextManager[None]:
@@ -28,6 +29,11 @@ def _record_counter(name: str, amount: int | float = 1, **tags: object) -> None:
     from tinychess.nn.self_play_profile import record_counter
 
     record_counter(name, amount, **tags)
+
+
+def _current_legal_moves(board: Board) -> tuple[Move, ...]:
+    """Return legal moves through the patchable module seam."""
+    return legal_moves(board)
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,7 +111,7 @@ class Game:
     def legal_moves(self) -> tuple[Move, ...]:
         """Return legal moves in the current position."""
         with _profile_scope("game.legal_moves"):
-            return generate_legal_moves(self.board)
+            return legal_moves(self.board)
 
     @property
     def outcome(self) -> Outcome | None:
@@ -175,7 +181,7 @@ def determine_outcome(
         if game.forced_outcome is not None:
             return game.forced_outcome
         board = game.board
-        moves = legal_moves if legal_moves is not None else generate_legal_moves(board)
+        moves = legal_moves if legal_moves is not None else _current_legal_moves(board)
         if not moves:
             if is_in_check(board, board.side_to_move):
                 return Outcome(reason=OutcomeReason.CHECKMATE, winner=board.side_to_move.opposite)
