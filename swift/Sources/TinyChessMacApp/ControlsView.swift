@@ -87,14 +87,14 @@ struct ControlsView: View {
 
     private var aiKindBinding: Binding<BackendPlayerKind> {
         Binding(
-            get: { appState.aiConfig.kind ?? .random },
+            get: { appState.aiConfig.kind ?? .neural },
             set: { kind in updateAIConfig { $0.kind = kind } }
         )
     }
 
     private var simulationsBinding: Binding<Int> {
         Binding(
-            get: { max(1, appState.aiConfig.simulations ?? 25) },
+            get: { max(1, appState.aiConfig.simulations ?? 200) },
             set: { simulations in updateAIConfig { $0.simulations = max(1, simulations) } }
         )
     }

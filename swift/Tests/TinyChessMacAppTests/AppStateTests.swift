@@ -12,6 +12,8 @@ import Testing
     #expect(appState.moveHistory.isEmpty)
     #expect(appState.selectedSquare == nil)
     #expect(appState.humanColor == .white)
+    #expect(appState.aiConfig.kind == .neural)
+    #expect(appState.aiConfig.simulations == 200)
     #expect(appState.boardOrientation == .white)
     #expect(appState.isThinking == false)
     #expect(appState.errorMessage == nil)
