@@ -6,8 +6,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import time
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -23,6 +24,7 @@ from tinychess.nn.self_play import (
     LABEL_SOURCES,
     SelfPlayConfig,
     SelfPlayDataset,
+    SelfPlayProgress,
     generate_self_play_dataset,
     merge_self_play_datasets,
     save_self_play_dataset,
@@ -71,6 +73,84 @@ class ChunkTask:
 class ChunkGenerationResult:
     dataset: SelfPlayDataset
     profile: dict[str, object] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ProgressReporter:
+    enabled: bool
+    total_games: int
+
+    def start(self, args: argparse.Namespace) -> None:
+        self._write(
+            " ".join(
+                [
+                    "starting",
+                    f"games={args.games}",
+                    f"max_plies={args.max_plies}",
+                    f"simulations={args.simulations}",
+                    f"label_source={args.label_source}",
+                    f"workers={args.workers}",
+                    f"batch_size={args.batch_size}",
+                    f"output={args.output}",
+                ]
+            )
+        )
+
+    def game_completed(self, progress: SelfPlayProgress) -> None:
+        update_interval = max(1, (self.total_games + 19) // 20)
+        if (
+            progress.games_completed == progress.total_games
+            or progress.games_completed % update_interval == 0
+        ):
+            self._write(
+                " ".join(
+                    [
+                        f"completed={progress.games_completed}/{progress.total_games}",
+                        f"game_index={progress.game_index}",
+                        f"samples={progress.samples}",
+                        f"plies={progress.plies}",
+                    ]
+                )
+            )
+
+    def chunk_completed(
+        self,
+        *,
+        games_completed: int,
+        total_games: int,
+        start_game: int,
+        games: int,
+        samples: int,
+    ) -> None:
+        self._write(
+            " ".join(
+                [
+                    f"chunk_completed={games_completed}/{total_games}",
+                    f"start_game={start_game}",
+                    f"games={games}",
+                    f"samples={samples}",
+                ]
+            )
+        )
+
+    def saving(self, output: Path) -> None:
+        self._write(f"saving output={output}")
+
+    def done(self, dataset: SelfPlayDataset) -> None:
+        self._write(
+            " ".join(
+                [
+                    "done",
+                    f"games={dataset.metadata.game_count}",
+                    f"samples={dataset.metadata.sample_count}",
+                    f"schema={dataset.metadata.schema_version}",
+                ]
+            )
+        )
+
+    def _write(self, message: str) -> None:
+        if self.enabled:
+            print(f"self-play: {message}", file=sys.stderr, flush=True)
 
 
 def _build_inference(args: GenerationArgs) -> PolicyValueInference:
@@ -149,6 +229,14 @@ def _generate_chunk(task: ChunkTask) -> ChunkGenerationResult:
             },
         )
         return ChunkGenerationResult(dataset, profile)
+
+
+def _progress_enabled(mode: str) -> bool:
+    if mode == "always":
+        return True
+    if mode == "never":
+        return False
+    return sys.stderr.isatty()
 
 
 def _profile_level() -> str:
@@ -268,6 +356,12 @@ def main() -> int:
         default=1,
         help="number of worker processes for parallel self-play generation",
     )
+    parser.add_argument(
+        "--progress",
+        choices=("auto", "always", "never"),
+        default="auto",
+        help="progress output mode; auto writes to stderr only when stderr is a TTY",
+    )
     args = parser.parse_args()
 
     if args.workers < 1:
@@ -300,17 +394,27 @@ def main() -> int:
     full_config = _self_play_config(generation_args, games=args.games, seed=args.seed)
 
     profile_level = _profile_level()
+    progress_reporter = _ProgressReporter(
+        enabled=_progress_enabled(args.progress),
+        total_games=args.games,
+    )
     worker_reports: list[dict[str, object]] = []
     derived_profile: dict[str, object] = {}
     with self_play_profile(profile_level) as main_profiler, profile_scope("self_play.main"):
         with profile_scope("self_play.setup"):
-            pass
+            progress_reporter.start(args)
         chunk_results: list[ChunkGenerationResult] = []
         if args.workers == 1 or args.games == 1:
             inference = None
             if generation_args.label_source == LABEL_SOURCE_NEURAL:
                 inference = _build_inference(generation_args)
-            dataset = generate_self_play_dataset(inference, config=full_config)
+            dataset = generate_self_play_dataset(
+                inference,
+                config=full_config,
+                progress=(
+                    progress_reporter.game_completed if progress_reporter.enabled else None
+                ),
+            )
         else:
             workers = min(args.workers, args.games)
             chunks = _split_games(args.games, workers)
@@ -325,30 +429,49 @@ def main() -> int:
                     checkpoint=Path(temp_checkpoint.name),
                 )
             pool_start_ns = time.perf_counter_ns()
+            completed_games = 0
+            chunk_results_by_start: list[tuple[int, ChunkGenerationResult]] = []
             try:
                 with (
                     profile_scope("worker.pool_elapsed", workers=workers),
                     ProcessPoolExecutor(max_workers=workers) as executor,
                 ):
-                    chunk_results = list(
-                        executor.map(
+                    futures = {
+                        executor.submit(
                             _generate_chunk,
-                            (
-                                ChunkTask(
-                                    generation_args=generation_args,
-                                    worker_id=worker_id,
-                                    start_game=start_game,
-                                    games=games,
-                                    parent_pool_start_ns=pool_start_ns,
-                                    profile_level=profile_level,
-                                )
-                                for worker_id, (start_game, games) in enumerate(chunks)
+                            ChunkTask(
+                                generation_args=generation_args,
+                                worker_id=worker_id,
+                                start_game=start_game,
+                                games=games,
+                                parent_pool_start_ns=pool_start_ns,
+                                profile_level=profile_level,
                             ),
+                        ): (start_game, games)
+                        for worker_id, (start_game, games) in enumerate(chunks)
+                    }
+                    for future in as_completed(futures):
+                        start_game, games = futures[future]
+                        result = future.result()
+                        chunk_results_by_start.append((start_game, result))
+                        completed_games += games
+                        progress_reporter.chunk_completed(
+                            games_completed=completed_games,
+                            total_games=args.games,
+                            start_game=start_game,
+                            games=games,
+                            samples=result.dataset.metadata.sample_count,
                         )
-                    )
             finally:
                 if temp_checkpoint is not None:
                     temp_checkpoint.cleanup()
+            chunk_results = [
+                result
+                for _start_game, result in sorted(
+                    chunk_results_by_start,
+                    key=lambda item: item[0],
+                )
+            ]
             worker_reports = [
                 result.profile for result in chunk_results if result.profile is not None
             ]
@@ -375,6 +498,7 @@ def main() -> int:
                 config=full_config,
                 generation_settings_extra=parallel_settings,
             )
+        progress_reporter.saving(args.output)
         save_self_play_dataset(dataset, args.output)
         if main_profiler.enabled:
             main_profiler.stats.add_counter(
@@ -388,6 +512,7 @@ def main() -> int:
                 worker_profiles=worker_reports,
                 derived=derived_profile,
             )
+        progress_reporter.done(dataset)
     print(
         " ".join(
             [

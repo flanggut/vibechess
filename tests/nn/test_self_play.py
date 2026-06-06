@@ -45,6 +45,7 @@ from tinychess.nn.self_play import (
     SELF_PLAY_DATASET_SCHEMA_VERSION,
     SelfPlayConfig,
     SelfPlayMetadata,
+    SelfPlayProgress,
     generate_self_play_dataset,
     load_self_play_dataset,
     merge_self_play_datasets,
@@ -192,6 +193,29 @@ def test_generate_self_play_dataset_completes_smoke_game() -> None:
     assert len(dataset.games[0].moves_uci) == 4
 
 
+def test_generate_self_play_dataset_reports_serial_progress() -> None:
+    events: list[SelfPlayProgress] = []
+
+    dataset = generate_self_play_dataset(
+        FakeInference(),
+        SelfPlayConfig(
+            games=2,
+            max_plies=1,
+            mcts=NeuralMCTSConfig(simulations=1, temperature=0.0, seed=13),
+            seed=13,
+        ),
+        progress=events.append,
+    )
+
+    assert len(events) == 2
+    assert [event.games_completed for event in events] == [1, 2]
+    assert [event.total_games for event in events] == [2, 2]
+    assert [event.samples for event in events] == [1, 2]
+    assert [event.plies for event in events] == [1, 2]
+    assert [event.game_index for event in events] == [0, 1]
+    assert dataset.metadata.sample_count == 2
+
+
 def test_batched_neural_self_play_preserves_schema_and_legal_targets() -> None:
     inference = CountingPolicyValueInference(
         PolicyValueNet(
@@ -236,6 +260,41 @@ def test_batched_neural_self_play_preserves_schema_and_legal_targets() -> None:
     assert np.allclose(dataset.mcts_policies.sum(axis=1), 1.0)
     assert np.all(dataset.mcts_policies >= 0.0)
     assert np.all(dataset.mcts_policies <= dataset.legal_masks)
+
+
+def test_batched_neural_self_play_reports_progress() -> None:
+    events: list[SelfPlayProgress] = []
+    inference = CountingPolicyValueInference(
+        PolicyValueNet(
+            PolicyValueConfig(
+                residual_channels=4,
+                residual_blocks=0,
+                policy_channels=1,
+                value_channels=1,
+                value_hidden_dim=4,
+            )
+        )
+    )
+
+    dataset = generate_self_play_dataset(
+        inference,
+        SelfPlayConfig(
+            games=2,
+            max_plies=1,
+            mcts=NeuralMCTSConfig(simulations=1, temperature=0.0, seed=23),
+            seed=23,
+            batch_size=2,
+        ),
+        progress=events.append,
+    )
+
+    assert len(events) == 2
+    assert [event.games_completed for event in events] == [1, 2]
+    assert [event.total_games for event in events] == [2, 2]
+    assert [event.samples for event in events] == [1, 2]
+    assert [event.plies for event in events] == [1, 2]
+    assert [event.game_index for event in events] == [0, 1]
+    assert dataset.metadata.sample_count == 2
 
 
 def test_batched_neural_self_play_uses_legal_batch_queue_after_root_expansion() -> None:
@@ -688,9 +747,80 @@ def test_self_play_script_creates_documented_files(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert "games=1" in result.stdout
     assert "samples=1" in result.stdout
+    assert "self-play:" not in result.stderr
     assert (output / DEFAULT_DATASET_FILENAME).is_file()
     assert (output / DEFAULT_METADATA_FILENAME).is_file()
     assert (output / DEFAULT_GAMES_FILENAME).is_file()
+
+
+def test_self_play_script_progress_always_writes_stderr_only(tmp_path: Path) -> None:
+    output = tmp_path / "script-progress-output"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/self_play.py",
+            "--games",
+            "3",
+            "--max-plies",
+            "1",
+            "--simulations",
+            "1",
+            "--progress",
+            "always",
+            "--output",
+            str(output),
+        ],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    stdout_lines = result.stdout.strip().splitlines()
+    assert len(stdout_lines) == 1
+    assert stdout_lines[0].startswith(f"output={output}")
+    assert "games=3" in stdout_lines[0]
+    assert "samples=3" in stdout_lines[0]
+    assert "self-play:" not in result.stdout
+    assert "self-play: starting" in result.stderr
+    assert "self-play: completed=3/3" in result.stderr
+    assert "self-play: saving" in result.stderr
+    assert "self-play: done" in result.stderr
+
+
+def test_self_play_script_progress_never_suppresses_stderr_progress(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "script-progress-never-output"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/self_play.py",
+            "--games",
+            "1",
+            "--max-plies",
+            "1",
+            "--simulations",
+            "1",
+            "--progress",
+            "never",
+            "--output",
+            str(output),
+        ],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "games=1" in result.stdout
+    assert "samples=1" in result.stdout
+    assert "self-play:" not in result.stdout
+    assert "self-play:" not in result.stderr
 
 
 def test_self_play_script_accepts_batch_size(tmp_path: Path) -> None:
@@ -745,6 +875,8 @@ def test_self_play_script_help_describes_central_batching() -> None:
     assert "independent neural self-play games/searches" in result.stdout
     assert "not within-tree" in result.stdout
     assert "leaf parallelism" in result.stdout
+    assert "--progress" in result.stdout
+    assert "auto" in result.stdout
 
 
 def test_self_play_script_rejects_removed_parallel_batch_flag(tmp_path: Path) -> None:
@@ -914,6 +1046,44 @@ def test_self_play_script_can_generate_in_parallel(tmp_path: Path) -> None:
     parallel_settings = dataset.metadata.generation_settings["parallel"]
     assert isinstance(parallel_settings, dict)
     assert parallel_settings["workers"] == 2
+
+
+def test_self_play_script_parallel_progress_reports_parent_chunks(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "parallel-progress-output"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/self_play.py",
+            "--games",
+            "2",
+            "--max-plies",
+            "1",
+            "--simulations",
+            "1",
+            "--workers",
+            "2",
+            "--progress",
+            "always",
+            "--output",
+            str(output),
+        ],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "games=2" in result.stdout
+    assert "samples=2" in result.stdout
+    assert "self-play:" not in result.stdout
+    assert "self-play: chunk_completed=" in result.stderr
+    assert "self-play: chunk_completed=2/2" in result.stderr
+    dataset = load_self_play_dataset(output)
+    assert [record.game_index for record in dataset.games] == [0, 1]
 
 
 def test_self_play_script_writes_profile_for_parallel_workers(tmp_path: Path) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -113,6 +114,17 @@ class SelfPlayConfig:
             "batching_mode": resolved_batching_mode,
             "inference_batch_size": resolved_inference_batch_size,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class SelfPlayProgress:
+    """Progress event emitted after one self-play game is completed."""
+
+    games_completed: int
+    total_games: int
+    samples: int
+    plies: int
+    game_index: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,6 +293,8 @@ def self_play_profile(
 def generate_self_play_dataset(
     inference: NeuralInference | None,
     config: SelfPlayConfig | None = None,
+    *,
+    progress: Callable[[SelfPlayProgress], None] | None = None,
 ) -> SelfPlayDataset:
     """Generate a small self-play dataset using neural or classical MCTS labels."""
     resolved = SelfPlayConfig() if config is None else config
@@ -296,19 +310,26 @@ def generate_self_play_dataset(
             and resolved.label_source == LABEL_SOURCE_NEURAL
             and isinstance(inference, PolicyValueInference)
         ):
-            return _generate_batched_neural_self_play_dataset(inference, resolved)
-        return _generate_serial_self_play_dataset(inference, resolved)
+            return _generate_batched_neural_self_play_dataset(
+                inference,
+                resolved,
+                progress=progress,
+            )
+        return _generate_serial_self_play_dataset(inference, resolved, progress=progress)
 
 
 def _generate_serial_self_play_dataset(
     inference: NeuralInference | None,
     config: SelfPlayConfig,
+    *,
+    progress: Callable[[SelfPlayProgress], None] | None = None,
 ) -> SelfPlayDataset:
     positions: list[npt.NDArray[np.float32]] = []
     legal_masks: list[npt.NDArray[np.float32]] = []
     policies: list[npt.NDArray[np.float32]] = []
     outcome_values: list[float] = []
     game_records: list[SelfPlayGameRecord] = []
+    completed_plies = 0
 
     with profile_scope("self_play.serial_loop"):
         for game_index in range(config.games):
@@ -349,8 +370,20 @@ def _generate_serial_self_play_dataset(
                 with profile_scope("record.outcome_values"):
                     outcome_values.extend(_outcome_values(game, game_sides))
                 with profile_scope("record.game_record"):
-                    game_records.append(_game_record(game_index, game))
+                    game_record = _game_record(game_index, game)
+                    game_records.append(game_record)
+                completed_plies += game_record.plies
                 record_counter("self_play.games_completed")
+                if progress is not None:
+                    progress(
+                        SelfPlayProgress(
+                            games_completed=len(game_records),
+                            total_games=config.games,
+                            samples=len(positions),
+                            plies=completed_plies,
+                            game_index=game_index,
+                        )
+                    )
 
     return _self_play_dataset_from_samples(
         config,
@@ -468,12 +501,15 @@ def _run_central_neural_searches(
 def _generate_batched_neural_self_play_dataset(
     inference: PolicyValueInference,
     config: SelfPlayConfig,
+    *,
+    progress: Callable[[SelfPlayProgress], None] | None = None,
 ) -> SelfPlayDataset:
     positions: list[npt.NDArray[np.float32]] = []
     legal_masks: list[npt.NDArray[np.float32]] = []
     policies: list[npt.NDArray[np.float32]] = []
     outcome_values: list[float] = []
     game_records: list[SelfPlayGameRecord] = []
+    completed_plies = 0
 
     with profile_scope("self_play.batched_loop"):
         for start_game in range(0, config.games, config.batch_size):
@@ -533,8 +569,20 @@ def _generate_batched_neural_self_play_dataset(
                     with profile_scope("record.outcome_values"):
                         outcome_values.extend(_outcome_values(state.game, state.game_sides))
                     with profile_scope("record.game_record"):
-                        game_records.append(_game_record(state.game_index, state.game))
+                        game_record = _game_record(state.game_index, state.game)
+                        game_records.append(game_record)
+                    completed_plies += game_record.plies
                     record_counter("self_play.games_completed")
+                    if progress is not None:
+                        progress(
+                            SelfPlayProgress(
+                                games_completed=len(game_records),
+                                total_games=config.games,
+                                samples=len(positions),
+                                plies=completed_plies,
+                                game_index=state.game_index,
+                            )
+                        )
 
     return _self_play_dataset_from_samples(
         config,
@@ -1022,6 +1070,7 @@ __all__ = [
     "SelfPlayGameRecord",
     "SelfPlayMetadata",
     "SelfPlayProfileStats",
+    "SelfPlayProgress",
     "generate_self_play_dataset",
     "load_self_play_dataset",
     "merge_self_play_datasets",
