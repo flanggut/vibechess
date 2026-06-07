@@ -255,6 +255,9 @@ def test_evaluate_script_smoke(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert output.is_file()
+    assert result.stderr.strip().splitlines()[-1].startswith(
+        "evaluation_summary promoted=true random_games=1 random_score_rate="
+    )
     report = json.loads(output.read_text())
     assert set(report["matches"]) == {"random"}
     assert report["promotion"]["promoted"] is True
@@ -315,6 +318,9 @@ def test_evaluate_script_parallel_smoke_stdout_json(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
+    assert result.stderr.strip().splitlines()[-1].startswith(
+        "evaluation_summary promoted=true random_games=2 random_score_rate="
+    )
     stdout_report = json.loads(result.stdout)
     file_report = json.loads(output.read_text())
     assert stdout_report == file_report
