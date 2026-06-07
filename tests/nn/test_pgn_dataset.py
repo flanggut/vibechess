@@ -178,6 +178,38 @@ def test_training_replay_state_matches_game_play_for_promotion() -> None:
     assert np.array_equal(state.encode_position(), encode_game_np(game))
 
 
+def test_training_replay_state_matches_game_play_for_en_passant() -> None:
+    game = Game.new()
+    for notation in ("e2e4", "a7a6", "e4e5", "d7d5"):
+        game = game.play(Move.from_uci(notation))
+    state = _TrainingReplayState.from_game(game)
+    move = Move.from_uci("e5d6")
+
+    state.advance(move)
+    game = game.play(move)
+
+    assert state.to_fen() == game.to_fen()
+    assert state.moves == list(game.moves)
+    assert state.to_outcome_game().outcome == game.outcome
+    assert np.array_equal(state.encode_position(), encode_game_np(game))
+
+
+def test_training_replay_state_matches_game_play_for_black_quiet_fullmove_increment() -> None:
+    game = Game.from_fen("r3k3/8/8/8/8/8/8/4K3 b q - 7 12")
+    state = _TrainingReplayState.from_game(game)
+    move = Move.from_uci("a8a7")
+
+    state.advance(move)
+    game = game.play(move)
+
+    assert state.to_fen() == game.to_fen()
+    assert state.halfmove_clock == 8
+    assert state.fullmove_number == 13
+    assert state.moves == list(game.moves)
+    assert state.to_outcome_game().outcome == game.outcome
+    assert np.array_equal(state.encode_position(), encode_game_np(game))
+
+
 def test_shard_builder_rejects_bad_trace_without_partial_samples(tmp_path: Path) -> None:
     from tinychess.nn.pgn_dataset import _ShardBuilder
 
