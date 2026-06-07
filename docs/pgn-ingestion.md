@@ -32,7 +32,7 @@ data/selfplay/pgn-elite/
     └── ...
 ```
 
-Each shard is compatible with `tinychess.nn.self_play.load_self_play_dataset`.
+Each shard is compatible with `tinychess.nn.self_play_dataset.load_self_play_dataset`; the older `tinychess.nn.self_play.load_self_play_dataset` import path remains a compatibility re-export.
 `manifest.json` lists all shard directories for shard-wise training. Import writes
 NumPy-native tensors directly while preserving the dense self-play shard schema.
 During import, the strict/sanitized PGN parser exposes per-ply boards and legal

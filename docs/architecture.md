@@ -62,6 +62,7 @@ src/tinychess/
 │   ├── model.py
 │   ├── pgn_dataset.py
 │   ├── self_play.py
+│   ├── self_play_dataset.py
 │   ├── self_play_profile.py  # compatibility re-export for tinychess.profiling
 │   └── train.py
 ├── protocols/
@@ -140,7 +141,7 @@ Protocol support currently includes two separate frontends:
 
 The AI layer owns the `Player` protocol, `RandomPlayer`, `MCTSPlayer`, neural PUCT MCTS, search configuration, and the WP16 smoke evaluation harness. These players interact with positions through public `Game.legal_moves` and `Game.play()` APIs rather than mutating engine internals. The GUI backend reuses these players for `aiMove`: random and classical MCTS work without external assets, while neural MCTS remains optional and requires a local checkpoint path. The evaluation harness runs small player/checkpoint matches from fresh games, compares checkpoints against random and classical MCTS baselines, and records early promotion decisions as progress validation rather than evidence of competitive strength.
 
-The NN layer keeps encoder/action-space definitions in `tinychess.nn.encode`, model architecture and checkpoint metadata configuration in `tinychess.nn.model`, and policy/value result DTOs plus `PolicyValueInference` in `tinychess.nn.inference`. Historical imports of inference symbols from `tinychess.nn.model` and top-level `tinychess.nn` remain compatible, but internal callers should prefer `tinychess.nn.inference` for inference wrappers. This split does not change the MLX model architecture, tensor shapes, 4672-action policy space, value range, or checkpoint metadata.
+The NN layer keeps encoder/action-space definitions in `tinychess.nn.encode`, model architecture and checkpoint metadata configuration in `tinychess.nn.model`, and policy/value result DTOs plus `PolicyValueInference` in `tinychess.nn.inference`. Self-play game generation stays in `tinychess.nn.self_play`, while self-play dataset constants, record/metadata DTOs, save/load/merge helpers, and validation live in `tinychess.nn.self_play_dataset`; historical dataset IO imports from `tinychess.nn.self_play` remain compatible. Historical imports of inference symbols from `tinychess.nn.model` and top-level `tinychess.nn` also remain compatible, but internal callers should prefer `tinychess.nn.inference` for inference wrappers and `tinychess.nn.self_play_dataset` for dataset IO. These splits do not change the MLX model architecture, tensor shapes, 4672-action policy space, value range, checkpoint metadata, or self-play/PGN dataset file schemas.
 
 Profiling instrumentation lives at `tinychess.profiling` so engine and AI hot paths can record timings, counters, and distributions without importing the neural-network package. The historical `tinychess.nn.self_play_profile` module is a compatibility re-export only; engine and AI code should not depend on `tinychess.nn` for profiling.
 

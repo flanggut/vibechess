@@ -25,8 +25,8 @@ from tinychess.nn.encode import (
     move_to_action_index,
 )
 from tinychess.nn.model import PolicyValueConfig, PolicyValueNet
-from tinychess.nn.self_play import (
-    SelfPlayConfig,
+from tinychess.nn.self_play import SelfPlayConfig
+from tinychess.nn.self_play_dataset import (
     SelfPlayDataset,
     SelfPlayGameRecord,
     SelfPlayMetadata,

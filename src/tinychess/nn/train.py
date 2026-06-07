@@ -20,7 +20,7 @@ from tinychess.nn.encode import ACTION_SPACE_SIZE, TENSOR_SHAPE
 from tinychess.nn.model import PolicyValueConfig, PolicyValueNet
 
 if TYPE_CHECKING:
-    from tinychess.nn.self_play import SelfPlayDataset
+    from tinychess.nn.self_play_dataset import SelfPlayDataset
 
 MLXArray: TypeAlias = Any
 nn: Any = _nn
@@ -311,7 +311,7 @@ def train_from_directory(
 ) -> TrainingResult:
     """Load a dataset directory or PGN shard manifest and train a model."""
     from tinychess.nn.pgn_dataset import DEFAULT_MANIFEST_FILENAME
-    from tinychess.nn.self_play import load_self_play_dataset
+    from tinychess.nn.self_play_dataset import load_self_play_dataset
 
     input_dir = Path(dataset_dir)
     if (input_dir / DEFAULT_MANIFEST_FILENAME).is_file():
@@ -355,7 +355,7 @@ def train_from_sharded_directory(
     top-level ``epoch_metrics.jsonl``.
     """
     from tinychess.nn.pgn_dataset import shard_directories
-    from tinychess.nn.self_play import load_self_play_dataset
+    from tinychess.nn.self_play_dataset import load_self_play_dataset
 
     if initial_step < 0:
         raise ValueError("initial_step must be non-negative")

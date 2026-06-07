@@ -24,12 +24,14 @@ from tinychess.nn.self_play import (
     LABEL_SOURCE_NEURAL,
     LABEL_SOURCES,
     SelfPlayConfig,
-    SelfPlayDataset,
     SelfPlayProgress,
     generate_self_play_dataset,
+    self_play_profile,
+)
+from tinychess.nn.self_play_dataset import (
+    SelfPlayDataset,
     merge_self_play_datasets,
     save_self_play_dataset,
-    self_play_profile,
 )
 from tinychess.nn.self_play_profile import (
     ProfileStats,

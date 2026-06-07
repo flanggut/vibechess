@@ -219,7 +219,8 @@ chosen benchmark suite; it is not a full application profile.
 from tinychess.ai import MCTSConfig, MCTSPlayer, MatchConfig, RandomPlayer, random_player_spec, run_match, play_game
 from tinychess.engine import Board, Game, legal_moves, parse_fen, parse_pgn, perft, random_move_selector, simulate_game
 from tinychess.nn import ACTION_SPACE_SIZE, PolicyValueInference, PolicyValueNet, encode_game, legal_move_mask
-from tinychess.nn.self_play import SelfPlayConfig, generate_self_play_dataset, save_self_play_dataset
+from tinychess.nn.self_play import SelfPlayConfig, generate_self_play_dataset
+from tinychess.nn.self_play_dataset import save_self_play_dataset
 from tinychess.nn.train import TrainingConfig, train_model
 
 board = Board.starting_position()
