@@ -142,8 +142,10 @@ class Board:
     def apply_move(self, move: Move) -> Board:
         """Return the board after applying a pseudo-legal move.
 
-        This method is intentionally small and rule-focused for WP03 legal move
-        generation and perft. It does not track game history, clocks, or outcomes.
+        This method is intentionally small and rule-focused for legal move
+        generation and perft. It validates basic API preconditions only; it does
+        not validate full legal move membership, king safety, history, clocks, or
+        outcomes.
         """
         with _profile_scope("board.apply_move"):
             _record_counter("board.apply_move.calls")
@@ -156,6 +158,10 @@ class Board:
                 raise ValueError(msg)
 
             captured_piece = self.piece_at(move.to_square)
+            if captured_piece is not None and captured_piece.color is moving_piece.color:
+                msg = "cannot capture own piece"
+                raise ValueError(msg)
+
             squares = list(self.squares)
             squares[int(move.from_square)] = None
 
@@ -173,6 +179,9 @@ class Board:
                     raise ValueError(msg)
                 if move.promotion not in _PROMOTION_PIECES:
                     msg = "promotion piece must be queen, rook, bishop, or knight"
+                    raise ValueError(msg)
+                if not _is_valid_promotion_move(move, moving_piece.color):
+                    msg = "promotion move must advance a pawn to the final rank"
                     raise ValueError(msg)
                 placed_piece = Piece(moving_piece.color, move.promotion)
             squares[int(move.to_square)] = placed_piece
@@ -286,6 +295,15 @@ def board_from_ascii(
 _PROMOTION_PIECES = frozenset(
     {PieceType.QUEEN, PieceType.ROOK, PieceType.BISHOP, PieceType.KNIGHT}
 )
+
+
+def _is_valid_promotion_move(move: Move, color: Color) -> bool:
+    source_rank = int(move.from_square) // 8
+    target_rank = int(move.to_square) // 8
+    distance = int(move.to_square) - int(move.from_square)
+    if color is Color.WHITE:
+        return source_rank == 6 and target_rank == 7 and distance in {7, 8, 9}
+    return source_rank == 1 and target_rank == 0 and distance in {-7, -8, -9}
 
 
 def _is_en_passant_capture(board: Board, move: Move, moving_piece: Piece) -> bool:

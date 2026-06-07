@@ -193,6 +193,46 @@ def test_apply_move_rejects_invalid_promotion_piece() -> None:
         board.apply_move(Move(parse_square("a7"), parse_square("a8"), PieceType.KING))
 
 
+def test_apply_move_rejects_own_piece_target() -> None:
+    board = Board.starting_position()
+
+    with pytest.raises(ValueError, match="own piece"):
+        board.apply_move(Move.from_uci("e1e2"))
+
+
+@pytest.mark.parametrize("uci", ["e2e4q", "e7e6q", "a8h8q"])
+def test_apply_move_rejects_invalid_white_promotion_rank_or_direction(uci: str) -> None:
+    board = board_from_ascii("P3k3/4P3/8/8/8/8/4P3/4K3", side_to_move=Color.WHITE)
+
+    with pytest.raises(ValueError, match="promotion"):
+        board.apply_move(Move.from_uci(uci))
+
+
+@pytest.mark.parametrize("uci", ["e7e5q", "e2e3q", "a1h1q"])
+def test_apply_move_rejects_invalid_black_promotion_rank_or_direction(uci: str) -> None:
+    board = board_from_ascii(
+        "4k3/4p3/8/8/8/8/4p3/p3K3",
+        side_to_move=Color.BLACK,
+    )
+
+    with pytest.raises(ValueError, match="promotion"):
+        board.apply_move(Move.from_uci(uci))
+
+
+def test_apply_move_accepts_legal_white_and_black_promotions() -> None:
+    white_board = board_from_ascii("1r2k3/P7/8/8/8/8/8/4K3", side_to_move=Color.WHITE)
+    after_white = white_board.apply_move(Move.from_uci("a7b8q"))
+    assert after_white.piece_at("b8") == Piece(Color.WHITE, PieceType.QUEEN)
+    assert after_white.piece_at("a7") is None
+    assert after_white.side_to_move is Color.BLACK
+
+    black_board = board_from_ascii("4k3/8/8/8/8/8/p7/4K3", side_to_move=Color.BLACK)
+    after_black = black_board.apply_move(Move.from_uci("a2a1q"))
+    assert after_black.piece_at("a1") == Piece(Color.BLACK, PieceType.QUEEN)
+    assert after_black.piece_at("a2") is None
+    assert after_black.side_to_move is Color.WHITE
+
+
 def test_legal_moves_filter_moves_that_leave_king_in_check() -> None:
     board = board_from_ascii("k3r3/8/8/8/8/8/4R3/4K3", side_to_move=Color.WHITE)
 
