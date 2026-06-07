@@ -145,6 +145,52 @@ def test_parse_pgn_with_trace_matches_normal_parse_and_replayed_positions() -> N
     assert game.to_fen() == parsed.final_game.to_fen()
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        """[Event "TraceCastle"]
+[Result "*"]
+
+1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. O-O *
+""",
+        """[Event "TraceEnPassant"]
+[Result "*"]
+
+1. e4 a6 2. e5 d5 3. exd6 *
+""",
+        """[Event "TracePromotion"]
+[SetUp "1"]
+[FEN "4k3/P7/8/8/8/8/8/4K3 w - - 0 1"]
+[Result "*"]
+
+1. a8=Q+ *
+""",
+        """[Event "TraceBlackQuiet"]
+[SetUp "1"]
+[FEN "r3k3/8/8/8/8/8/8/4K3 b q - 7 12"]
+[Result "*"]
+
+12... Ra7 *
+""",
+    ],
+)
+def test_parse_pgn_trace_special_moves_preserves_pre_move_state(text: str) -> None:
+    traced = parse_pgn_with_trace(text)
+    reference = traced.game.initial_game
+
+    assert len(traced.plies) == len(traced.game.moves)
+    for ply, move in zip(traced.plies, traced.game.moves, strict=True):
+        assert ply.board == reference.board
+        assert ply.halfmove_clock == reference.halfmove_clock
+        assert ply.fullmove_number == reference.fullmove_number
+        assert ply.move == move
+        assert move in ply.legal_moves
+        reference = reference.play(move)
+
+    assert traced.game.final_game.to_fen() == reference.to_fen()
+    assert traced.game.final_game.outcome == reference.outcome
+
+
 def test_parse_pgn_with_trace_preserves_fen_clocks() -> None:
     text = """[Event "TraceFen"]
 [SetUp "1"]

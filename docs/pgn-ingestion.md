@@ -37,9 +37,10 @@ Each shard is compatible with `tinychess.nn.self_play.load_self_play_dataset`.
 NumPy-native tensors directly while preserving the dense self-play shard schema.
 During import, the strict/sanitized PGN parser exposes per-ply boards and legal
 moves so tensor encoding can reuse parser-computed legality instead of replaying
-legal generation a second time. The parser advances through PGNs with a private
-no-history state so each ply needs one full legal-move tuple for SAN resolution
-and downstream dense masks, rather than replaying through `Game.play()`.
+legal generation a second time. Parser advancement and ingestion replay use the
+shared `tinychess.engine.transition` helpers with no-history state, so each ply
+needs one full legal-move tuple for SAN resolution and downstream dense masks,
+rather than replaying through `Game.play()`.
 
 ## Labels
 
@@ -79,11 +80,11 @@ The dry-run report breaks time down by record streaming, FEN tag screening,
 sanitization/parsing, parser trace validation, board encoding, legal-mask
 creation, policy allocation, and move application. The `parse_sanitize` phase
 includes sanitizer work plus PGN parser/SAN-resolution time; parser advancement
-reuses the SAN legal tuple through a no-history state, so parsing performs one
-full legal-move tuple generation per ply. Checking `+`/`#` SAN suffixes may still
-run a `has_legal_move()` response search without materializing a second legal
-move tuple. `validate_trace` is only the cheap consistency check before reusing
-parser trace data.
+reuses the SAN legal tuple through shared transition-backed no-history state, so
+parsing performs one full legal-move tuple generation per ply. Checking `+`/`#`
+SAN suffixes may still run a `has_legal_move()` response search without
+materializing a second legal move tuple. `validate_trace` is only the cheap
+consistency check before reusing parser trace data.
 Dry-run mode intentionally excludes dense NPZ compression, manifest writing, and
 `games.jsonl` output.
 

@@ -23,8 +23,8 @@ from tinychess.engine.pgn_stream import (
     parse_ingest_pgn_with_trace,
     pgn_has_fen_setup,
 )
-from tinychess.engine.piece import Color, Piece, PieceType
-from tinychess.engine.square import Square
+from tinychess.engine.piece import Color
+from tinychess.engine.transition import PositionKey, TransitionState, advance_known_legal_state
 from tinychess.nn.encode import (
     ACTION_SPACE_SIZE,
     ACTION_SPACE_VERSION,
@@ -344,7 +344,7 @@ class _TrainingReplayState:
     halfmove_clock: int
     fullmove_number: int
     moves: list[Move]
-    repetition_counts: dict[_PositionKey, int]
+    repetition_counts: dict[PositionKey, int]
 
     @classmethod
     def from_game(cls, game: Game) -> _TrainingReplayState:
@@ -364,19 +364,19 @@ class _TrainingReplayState:
         )
 
     def advance(self, move: Move) -> None:
-        moving_piece = self.board.piece_at(move.from_square)
-        if moving_piece is None:
-            raise ValueError(f"cannot move from empty square {move.from_square}")
-        is_capture = _is_capture(self.board, move, moving_piece)
-        previous_side = self.board.side_to_move
-        next_board = self.board.apply_move(move)
-        next_key = _position_key(next_board)
-        self.repetition_counts[next_key] = self.repetition_counts.get(next_key, 0) + 1
-        self.halfmove_clock = (
-            0 if moving_piece.kind is PieceType.PAWN or is_capture else self.halfmove_clock + 1
+        result = advance_known_legal_state(
+            TransitionState(
+                board=self.board,
+                halfmove_clock=self.halfmove_clock,
+                fullmove_number=self.fullmove_number,
+                repetition_counts=self.repetition_counts,
+            ),
+            move,
         )
-        self.fullmove_number += 1 if previous_side is Color.BLACK else 0
-        self.board = next_board
+        self.board = result.board
+        self.halfmove_clock = result.halfmove_clock
+        self.fullmove_number = result.fullmove_number
+        self.repetition_counts = result.repetition_counts
         self.moves.append(move)
 
     def to_outcome_game(self) -> Game:
@@ -424,23 +424,6 @@ def _winner(result: str) -> Color | None:
     if result == "0-1":
         return Color.BLACK
     return None
-
-
-_PositionKey = tuple[tuple[Piece | None, ...], Color, frozenset[str], Square | None]
-
-
-def _position_key(board: Board) -> _PositionKey:
-    return (board.squares, board.side_to_move, board.castling_rights, board.en_passant_target)
-
-
-def _is_capture(board: Board, move: Move, moving_piece: Piece) -> bool:
-    if board.piece_at(move.to_square) is not None:
-        return True
-    return (
-        moving_piece.kind is PieceType.PAWN
-        and board.en_passant_target == move.to_square
-        and abs(int(move.to_square) - int(move.from_square)) in {7, 9}
-    )
 
 
 def _git_commit() -> str | None:

@@ -116,7 +116,7 @@ The engine currently owns:
 - Minimal `Board.apply_move()` for legal move generation and perft.
 - `Game` snapshots with immutable position/move history and copied repetition state.
 - Halfmove and fullmove counters at game level.
-- Engine-owned transition primitives in `tinychess.engine.transition` for shared position keys, capture detection, known-legal state advancement, and pragmatic outcome evaluation. These helpers are an internal engine boundary for `Game` and search-state parity, not a protocol expansion, and are intentionally not re-exported from `tinychess.engine.__init__` yet.
+- Engine-owned transition primitives in `tinychess.engine.transition` for shared position keys, capture detection, known-legal state advancement, and pragmatic outcome evaluation. These helpers are an internal engine boundary for `Game`, search-state, bounded PGN parser, and PGN ingestion replay parity, not a protocol expansion, and are intentionally not re-exported from `tinychess.engine.__init__` yet.
 - Checkmate, stalemate, and pragmatic draw outcomes.
 - Complete-game simulation with caller-provided move selectors.
 
