@@ -32,6 +32,7 @@ Implemented work packages:
 src/tinychess/
 ├── __init__.py
 ├── cli.py
+├── profiling.py
 ├── engine/
 │   ├── __init__.py
 │   ├── board.py
@@ -58,6 +59,7 @@ src/tinychess/
 │   ├── model.py
 │   ├── pgn_dataset.py
 │   ├── self_play.py
+│   ├── self_play_profile.py  # compatibility re-export for tinychess.profiling
 │   └── train.py
 ├── protocols/
 │   ├── __init__.py
@@ -133,6 +135,8 @@ Protocol support currently includes two separate frontends:
   bounded UCI surface.
 
 The AI layer owns the `Player` protocol, `RandomPlayer`, `MCTSPlayer`, neural PUCT MCTS, search configuration, and the WP16 smoke evaluation harness. These players interact with positions through public `Game.legal_moves` and `Game.play()` APIs rather than mutating engine internals. The GUI backend reuses these players for `aiMove`: random and classical MCTS work without external assets, while neural MCTS remains optional and requires a local checkpoint path. The evaluation harness runs small player/checkpoint matches from fresh games, compares checkpoints against random and classical MCTS baselines, and records early promotion decisions as progress validation rather than evidence of competitive strength.
+
+Profiling instrumentation lives at `tinychess.profiling` so engine and AI hot paths can record timings, counters, and distributions without importing the neural-network package. The historical `tinychess.nn.self_play_profile` module is a compatibility re-export only; engine and AI code should not depend on `tinychess.nn` for profiling.
 
 The native macOS app is a SwiftUI frontend, not a Swift chess engine. It maps
 squares, renders Unicode pieces, displays state and controls, and sends

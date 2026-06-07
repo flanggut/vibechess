@@ -38,10 +38,10 @@ from tinychess.nn.encode import (
     move_to_action_index,
 )
 from tinychess.nn.model import PolicyValueInference
-from tinychess.nn.self_play_profile import (
+from tinychess.profiling import (
     ProfileStats as SelfPlayProfileStats,
 )
-from tinychess.nn.self_play_profile import (
+from tinychess.profiling import (
     activate_self_play_profile,
     profile_scope,
     record_counter,
@@ -278,7 +278,7 @@ class SelfPlayDataset:
 
 
 # Compatibility wrapper for older callers that imported the benchmark profile API
-# from this module. The implementation lives in tinychess.nn.self_play_profile and
+# from this module. The implementation lives in tinychess.profiling and
 # no longer monkeypatches engine/model classes.
 def self_play_profile(
     level: str | None = "detailed",

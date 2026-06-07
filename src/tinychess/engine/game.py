@@ -20,13 +20,13 @@ generate_legal_moves = legal_moves
 
 
 def _profile_scope(name: str, **tags: object) -> AbstractContextManager[None]:
-    from tinychess.nn.self_play_profile import profile_scope
+    from tinychess.profiling import profile_scope
 
     return profile_scope(name, **tags)
 
 
 def _record_counter(name: str, amount: int | float = 1, **tags: object) -> None:
-    from tinychess.nn.self_play_profile import record_counter
+    from tinychess.profiling import record_counter
 
     record_counter(name, amount, **tags)
 

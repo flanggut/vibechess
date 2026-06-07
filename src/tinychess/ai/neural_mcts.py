@@ -24,7 +24,7 @@ from tinychess.nn.model import (
     LegalPolicyResult,
     PolicyValueInference,
 )
-from tinychess.nn.self_play_profile import profile_scope, record_counter, record_distribution
+from tinychess.profiling import profile_scope, record_counter, record_distribution
 
 # Kept as a module attribute for Work Item 5.1 self-play profiling monkeypatches.
 determine_outcome = _game_determine_outcome

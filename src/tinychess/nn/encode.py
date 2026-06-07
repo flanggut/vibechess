@@ -19,7 +19,7 @@ from tinychess.engine.game import Game
 from tinychess.engine.move import Move
 from tinychess.engine.piece import Color, PieceType
 from tinychess.engine.square import BOARD_SIZE, Square, file_index, rank_index, validate_square
-from tinychess.nn.self_play_profile import profile_scope, record_counter
+from tinychess.profiling import profile_scope, record_counter
 
 ACTION_SPACE_VERSION = "az-8x8x73-v1"
 ENCODER_VERSION = "tinychess-board-v1"

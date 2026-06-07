@@ -3,13 +3,22 @@ from __future__ import annotations
 from contextlib import ExitStack
 from typing import cast
 
-from tinychess.nn.self_play_profile import (
+from tinychess.profiling import (
     ProfileStats,
     activate_self_play_profile,
     active_profiler,
     record_counter,
     record_distribution,
 )
+
+
+def test_legacy_self_play_profile_import_path_reexports_canonical_api() -> None:
+    from tinychess.nn import self_play_profile as legacy_module
+
+    assert legacy_module.ProfileStats is ProfileStats
+    assert legacy_module.activate_self_play_profile is activate_self_play_profile
+    assert legacy_module.record_counter is record_counter
+    assert legacy_module.record_distribution is record_distribution
 
 
 class FakeClock:

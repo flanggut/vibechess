@@ -23,7 +23,7 @@ from tinychess.nn.encode import (
     tensor_shape,
     to_mlx,
 )
-from tinychess.nn.self_play_profile import profile_scope, record_counter, record_distribution
+from tinychess.profiling import profile_scope, record_counter, record_distribution
 
 MLXArray: TypeAlias = Any
 nn: Any = _nn

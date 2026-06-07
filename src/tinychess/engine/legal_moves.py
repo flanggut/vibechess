@@ -12,19 +12,19 @@ from tinychess.engine.square import Square, file_index, make_square, rank_index,
 
 
 def _profile_scope(name: str, **tags: object) -> AbstractContextManager[None]:
-    from tinychess.nn.self_play_profile import profile_scope
+    from tinychess.profiling import profile_scope
 
     return profile_scope(name, **tags)
 
 
 def _record_counter(name: str, amount: int | float = 1, **tags: object) -> None:
-    from tinychess.nn.self_play_profile import record_counter
+    from tinychess.profiling import record_counter
 
     record_counter(name, amount, **tags)
 
 
 def _record_distribution(name: str, value: int | float, *, unit: str, **tags: object) -> None:
-    from tinychess.nn.self_play_profile import record_distribution
+    from tinychess.profiling import record_distribution
 
     record_distribution(name, value, unit=unit, **tags)
 
