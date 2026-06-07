@@ -9,7 +9,8 @@ import time
 import mlx.core as mx
 
 from tinychess.engine import Game
-from tinychess.nn import PolicyValueConfig, PolicyValueInference, PolicyValueNet
+from tinychess.nn.inference import PolicyValueInference
+from tinychess.nn.model import PolicyValueConfig, PolicyValueNet
 
 
 def main() -> int:

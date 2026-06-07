@@ -81,6 +81,23 @@ def fixed_inference(logits: Any, *, value: float = 0.125) -> PolicyValueInferenc
     return PolicyValueInference(cast(PolicyValueNet, FixedOutputModel(logits, value=value)))
 
 
+def test_inference_import_paths_are_compatible() -> None:
+    from tinychess import nn as nn_package
+    from tinychess.nn import inference as inference_module
+    from tinychess.nn import model as model_module
+
+    assert model_module.PolicyValueInference is inference_module.PolicyValueInference
+    assert model_module.InferenceResult is inference_module.InferenceResult
+    assert model_module.BatchInferenceResult is inference_module.BatchInferenceResult
+    assert model_module.LegalPolicyResult is inference_module.LegalPolicyResult
+    assert model_module.LegalPolicyBatchResult is inference_module.LegalPolicyBatchResult
+    assert nn_package.PolicyValueInference is inference_module.PolicyValueInference
+    assert nn_package.InferenceResult is inference_module.InferenceResult
+    assert nn_package.BatchInferenceResult is inference_module.BatchInferenceResult
+    assert nn_package.LegalPolicyResult is inference_module.LegalPolicyResult
+    assert nn_package.LegalPolicyBatchResult is inference_module.LegalPolicyBatchResult
+
+
 def test_policy_value_model_forward_shapes_and_value_range() -> None:
     model = PolicyValueNet(tiny_config())
     output = model(encode_game(Game.new()))

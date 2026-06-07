@@ -21,12 +21,9 @@ from tinychess.engine import (
     random_move_selector,
     simulate_game,
 )
-from tinychess.nn import (
-    PolicyValueConfig,
-    PolicyValueInference,
-    PolicyValueNet,
-    encode_game,
-)
+from tinychess.nn.encode import encode_game
+from tinychess.nn.inference import PolicyValueInference
+from tinychess.nn.model import PolicyValueConfig, PolicyValueNet
 
 ReportFormat = Literal["markdown", "json"]
 
@@ -108,9 +105,7 @@ def benchmark_complete_games(
         game = simulate_game(random_move_selector(seed + index), max_plies=max_plies)
         total_plies += len(game.moves)
         reason = (
-            game.outcome.reason.value
-            if game.outcome is not None
-            else OutcomeReason.MAX_PLIES.value
+            game.outcome.reason.value if game.outcome is not None else OutcomeReason.MAX_PLIES.value
         )
         outcomes[reason] = outcomes.get(reason, 0) + 1
     elapsed = time.perf_counter() - start

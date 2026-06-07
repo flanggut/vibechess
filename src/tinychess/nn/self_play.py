@@ -37,7 +37,7 @@ from tinychess.nn.encode import (
     legal_move_mask_from_legal_moves_np,
     move_to_action_index,
 )
-from tinychess.nn.model import PolicyValueInference
+from tinychess.nn.inference import PolicyValueInference
 from tinychess.profiling import (
     ProfileStats as SelfPlayProfileStats,
 )
