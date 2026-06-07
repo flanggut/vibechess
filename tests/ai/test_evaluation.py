@@ -21,6 +21,7 @@ from tinychess.ai.evaluation import (
     run_match,
     write_evaluation_report,
 )
+from tinychess.ai.mcts import MCTSPlayer
 from tinychess.engine.game import Game
 from tinychess.engine.move import Move
 from tinychess.nn.checkpoint import CheckpointMetadata, save_checkpoint
@@ -60,6 +61,17 @@ def test_run_match_records_legal_outcomes_and_alternates_colors() -> None:
     assert all(record.plies == 2 for record in result.records)
     assert all(record.final_fen for record in result.records)
     assert all(len(record.moves_uci) == 2 for record in result.records)
+
+
+def test_seeded_player_specs_vary_seed_by_game_index() -> None:
+    random_spec = random_player_spec(seed=10)
+    mcts_spec = mcts_player_spec(config=MCTSConfig(simulations=1, seed=20))
+
+    random_player = cast(RandomPlayer, random_spec.create(3))
+    mcts_player = cast(MCTSPlayer, mcts_spec.create(3))
+
+    assert random_player.select_move(Game.new()) == RandomPlayer(seed=13).select_move(Game.new())
+    assert mcts_player.config.seed == 23
 
 
 def test_baseline_specs_compare_random_and_classical_mcts() -> None:

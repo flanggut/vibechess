@@ -6,7 +6,7 @@ import json
 import math
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from tinychess.ai.mcts import MCTSPlayer
@@ -19,6 +19,7 @@ from tinychess.nn.checkpoint import load_checkpoint
 from tinychess.nn.model import PolicyValueInference
 
 PlayerFactory = Callable[[], Player]
+PlayerGameFactory = Callable[[int], Player]
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +32,13 @@ class PlayerSpec:
 
     name: str
     factory: PlayerFactory
+    game_factory: PlayerGameFactory | None = None
+
+    def create(self, game_index: int) -> Player:
+        """Create a player for one match game, allowing specs to vary per-game state."""
+        if self.game_factory is not None:
+            return self.game_factory(game_index)
+        return self.factory()
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,8 +136,8 @@ def _run_match_records(
     records: list[MatchGameRecord] = []
     for game_index in range(start_game, start_game + games):
         a_is_white = (game_index % 2 == 0) or not config.alternate_colors
-        white = player_a.factory() if a_is_white else player_b.factory()
-        black = player_b.factory() if a_is_white else player_a.factory()
+        white = player_a.create(game_index) if a_is_white else player_b.create(game_index)
+        black = player_b.create(game_index) if a_is_white else player_a.create(game_index)
         game = play_game(white, black, game=Game.new(), max_plies=config.max_plies)
         score = _score_for_player_a(game, player_a_is_white=a_is_white)
         outcome = game.outcome
@@ -276,7 +284,14 @@ def checkpoint_player_spec(
         loaded = load_checkpoint(path)
         return NeuralMCTSPlayer(PolicyValueInference(loaded.model), config=search_config)
 
-    return PlayerSpec(name=player_name, factory=factory)
+    def game_factory(game_index: int) -> Player:
+        loaded = load_checkpoint(path)
+        return NeuralMCTSPlayer(
+            PolicyValueInference(loaded.model),
+            config=_neural_config_for_game(search_config, game_index),
+        )
+
+    return PlayerSpec(name=player_name, factory=factory, game_factory=game_factory)
 
 
 def _checkpoint_player_spec_reusing_loaded_checkpoint(
@@ -293,7 +308,13 @@ def _checkpoint_player_spec_reusing_loaded_checkpoint(
     def factory() -> Player:
         return NeuralMCTSPlayer(inference, config=search_config)
 
-    return PlayerSpec(name=name, factory=factory)
+    def game_factory(game_index: int) -> Player:
+        return NeuralMCTSPlayer(
+            inference,
+            config=_neural_config_for_game(search_config, game_index),
+        )
+
+    return PlayerSpec(name=name, factory=factory, game_factory=game_factory)
 
 
 def random_player_spec(*, seed: int | None = None, name: str = "random") -> PlayerSpec:
@@ -302,7 +323,10 @@ def random_player_spec(*, seed: int | None = None, name: str = "random") -> Play
     def factory() -> Player:
         return RandomPlayer(seed=seed)
 
-    return PlayerSpec(name=name, factory=factory)
+    def game_factory(game_index: int) -> Player:
+        return RandomPlayer(seed=_seed_for_game(seed, game_index))
+
+    return PlayerSpec(name=name, factory=factory, game_factory=game_factory)
 
 
 def mcts_player_spec(
@@ -316,7 +340,10 @@ def mcts_player_spec(
     def factory() -> Player:
         return MCTSPlayer(search_config)
 
-    return PlayerSpec(name=name, factory=factory)
+    def game_factory(game_index: int) -> Player:
+        return MCTSPlayer(_mcts_config_for_game(search_config, game_index))
+
+    return PlayerSpec(name=name, factory=factory, game_factory=game_factory)
 
 
 @dataclass(frozen=True, slots=True)
@@ -422,6 +449,20 @@ def _baseline_spec(
     if baseline == "mcts":
         return mcts_player_spec(config=mcts_config)
     raise ValueError(f"unsupported baseline {baseline!r}; expected random or mcts")
+
+
+def _neural_config_for_game(config: NeuralMCTSConfig, game_index: int) -> NeuralMCTSConfig:
+    return replace(config, seed=_seed_for_game(config.seed, game_index))
+
+
+def _mcts_config_for_game(config: MCTSConfig, game_index: int) -> MCTSConfig:
+    return replace(config, seed=_seed_for_game(config.seed, game_index))
+
+
+def _seed_for_game(seed: int | None, game_index: int) -> int | None:
+    if seed is None:
+        return None
+    return seed + game_index
 
 
 def evaluate_checkpoint_against_baselines(
