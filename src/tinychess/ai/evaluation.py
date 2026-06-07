@@ -326,6 +326,12 @@ class _EvaluationChunk:
     games: int
 
 
+@dataclass(frozen=True, slots=True)
+class _MatchChunk:
+    start_game: int
+    games: int
+
+
 def _validate_baselines(baselines: Sequence[str]) -> None:
     for baseline in baselines:
         if baseline not in {"random", "mcts"}:
@@ -375,16 +381,22 @@ def _evaluation_chunks(
     chunk_size = max(1, math.ceil(total_games / effective_workers))
     chunks: list[_EvaluationChunk] = []
     for baseline in baselines:
-        for start_game in range(0, games_per_baseline, chunk_size):
-            chunk_games = min(chunk_size, games_per_baseline - start_game)
+        for chunk in _match_chunks(games_per_baseline, chunk_size=chunk_size):
             chunks.append(
                 _EvaluationChunk(
                     baseline=baseline,
-                    start_game=start_game,
-                    games=chunk_games,
+                    start_game=chunk.start_game,
+                    games=chunk.games,
                 )
             )
     return chunks
+
+
+def _match_chunks(games: int, *, chunk_size: int) -> list[_MatchChunk]:
+    return [
+        _MatchChunk(start_game=start_game, games=min(chunk_size, games - start_game))
+        for start_game in range(0, games, chunk_size)
+    ]
 
 
 def _run_evaluation_chunk(
@@ -422,6 +434,123 @@ def _baseline_spec(
     if baseline == "mcts":
         return mcts_player_spec(config=mcts_config)
     raise ValueError(f"unsupported baseline {baseline!r}; expected random or mcts")
+
+
+def _resolved_neural_config(config: NeuralMCTSConfig | None) -> NeuralMCTSConfig:
+    return NeuralMCTSConfig(simulations=1) if config is None else config
+
+
+def _run_parallel_checkpoint_match(
+    checkpoint_dir: Path,
+    opponent_checkpoint_dir: Path,
+    *,
+    match_config: MatchConfig,
+    neural_config: NeuralMCTSConfig,
+    opponent_neural_config: NeuralMCTSConfig,
+    workers: int,
+) -> MatchResult:
+    effective_workers = min(workers, match_config.games)
+    chunk_size = max(1, math.ceil(match_config.games / effective_workers))
+    chunks = _match_chunks(match_config.games, chunk_size=chunk_size)
+    records: list[MatchGameRecord] = []
+    with ProcessPoolExecutor(max_workers=effective_workers) as executor:
+        for chunk_records in executor.map(
+            _run_checkpoint_match_chunk,
+            chunks,
+            [checkpoint_dir] * len(chunks),
+            [opponent_checkpoint_dir] * len(chunks),
+            [match_config] * len(chunks),
+            [neural_config] * len(chunks),
+            [opponent_neural_config] * len(chunks),
+        ):
+            records.extend(chunk_records)
+    return _match_result_from_records("checkpoint", "opponent_checkpoint", records)
+
+
+def _run_checkpoint_match_chunk(
+    chunk: _MatchChunk,
+    checkpoint_dir: Path,
+    opponent_checkpoint_dir: Path,
+    match_config: MatchConfig,
+    neural_config: NeuralMCTSConfig,
+    opponent_neural_config: NeuralMCTSConfig,
+) -> list[MatchGameRecord]:
+    checkpoint = _checkpoint_player_spec_reusing_loaded_checkpoint(
+        checkpoint_dir,
+        name="checkpoint",
+        config=neural_config,
+    )
+    opponent = _checkpoint_player_spec_reusing_loaded_checkpoint(
+        opponent_checkpoint_dir,
+        name="opponent_checkpoint",
+        config=opponent_neural_config,
+    )
+    return _run_match_records(
+        checkpoint,
+        opponent,
+        match_config,
+        start_game=chunk.start_game,
+        games=chunk.games,
+    )
+
+
+def evaluate_checkpoints_head_to_head(
+    checkpoint_dir: str | Path,
+    opponent_checkpoint_dir: str | Path,
+    *,
+    match_config: MatchConfig | None = None,
+    neural_config: NeuralMCTSConfig | None = None,
+    opponent_neural_config: NeuralMCTSConfig | None = None,
+    workers: int = 1,
+) -> dict[str, object]:
+    """Compare two checkpoint-backed neural-MCTS players without baselines.
+
+    This evaluator is for direct checkpoint-versus-checkpoint matches. It does
+    not run random/classical-MCTS baselines and does not produce promotion
+    criteria or promotion decisions.
+    """
+    if workers < 1:
+        raise ValueError(f"workers must be at least 1, got {workers}")
+    resolved_match_config = MatchConfig() if match_config is None else match_config
+    resolved_neural_config = _resolved_neural_config(neural_config)
+    resolved_opponent_config = (
+        resolved_neural_config if opponent_neural_config is None else opponent_neural_config
+    )
+    checkpoint_path = Path(checkpoint_dir)
+    opponent_path = Path(opponent_checkpoint_dir)
+
+    if workers == 1 or resolved_match_config.games <= 1:
+        checkpoint = checkpoint_player_spec(
+            checkpoint_path,
+            name="checkpoint",
+            config=resolved_neural_config,
+        )
+        opponent = checkpoint_player_spec(
+            opponent_path,
+            name="opponent_checkpoint",
+            config=resolved_opponent_config,
+        )
+        result = run_match(checkpoint, opponent, resolved_match_config)
+    else:
+        result = _run_parallel_checkpoint_match(
+            checkpoint_path,
+            opponent_path,
+            match_config=resolved_match_config,
+            neural_config=resolved_neural_config,
+            opponent_neural_config=resolved_opponent_config,
+            workers=workers,
+        )
+
+    return {
+        "mode": "neural_vs_neural",
+        "checkpoint": str(checkpoint_path),
+        "opponent_checkpoint": str(opponent_path),
+        "neural_configs": {
+            "checkpoint": asdict(resolved_neural_config),
+            "opponent": asdict(resolved_opponent_config),
+        },
+        "match": result.to_dict(),
+    }
 
 
 def evaluate_checkpoint_against_baselines(
@@ -499,6 +628,7 @@ __all__ = [
     "assess_promotion",
     "checkpoint_player_spec",
     "evaluate_checkpoint_against_baselines",
+    "evaluate_checkpoints_head_to_head",
     "mcts_player_spec",
     "random_player_spec",
     "run_match",

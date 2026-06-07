@@ -16,6 +16,7 @@ from tinychess.ai.evaluation import (
     PromotionCriteria,
     assess_promotion,
     evaluate_checkpoint_against_baselines,
+    evaluate_checkpoints_head_to_head,
     mcts_player_spec,
     random_player_spec,
     run_match,
@@ -43,6 +44,12 @@ def tiny_model_config() -> PolicyValueConfig:
         value_channels=1,
         value_hidden_dim=8,
     )
+
+
+def save_tiny_checkpoint(checkpoint_dir: Path) -> None:
+    model = PolicyValueNet(tiny_model_config())
+    mx.eval(model.parameters())
+    save_checkpoint(model, checkpoint_dir, metadata=CheckpointMetadata.initial(model.config))
 
 
 def test_run_match_records_legal_outcomes_and_alternates_colors() -> None:
@@ -208,6 +215,62 @@ def test_checkpoint_evaluation_parallel_merges_ordered_records(tmp_path: Path) -
     assert promotion["promoted"] is True
 
 
+def test_checkpoint_head_to_head_report_skips_baselines_and_orders_parallel_records(
+    tmp_path: Path,
+) -> None:
+    checkpoint_dir = tmp_path / "checkpoint"
+    opponent_dir = tmp_path / "opponent"
+    save_tiny_checkpoint(checkpoint_dir)
+    save_tiny_checkpoint(opponent_dir)
+
+    report = evaluate_checkpoints_head_to_head(
+        checkpoint_dir,
+        opponent_dir,
+        match_config=MatchConfig(games=3, max_plies=1),
+        neural_config=NeuralMCTSConfig(simulations=1, node_budget=5, temperature=0.0, seed=7),
+        opponent_neural_config=NeuralMCTSConfig(
+            simulations=1,
+            node_budget=6,
+            temperature=0.25,
+            seed=8,
+        ),
+        workers=2,
+    )
+
+    assert report["mode"] == "neural_vs_neural"
+    assert report["checkpoint"] == str(checkpoint_dir)
+    assert report["opponent_checkpoint"] == str(opponent_dir)
+    assert "promotion" not in report
+    assert "criteria" not in report
+    assert "matches" not in report
+    neural_configs = cast(dict[str, dict[str, object]], report["neural_configs"])
+    assert neural_configs["checkpoint"]["node_budget"] == 5
+    assert neural_configs["opponent"]["node_budget"] == 6
+    match = cast(dict[str, Any], report["match"])
+    assert match["player_a"] == "checkpoint"
+    assert match["player_b"] == "opponent_checkpoint"
+    records = cast(list[dict[str, Any]], match["records"])
+    assert [record["game_index"] for record in records] == [0, 1, 2]
+    assert [record["player_a_color"] for record in records] == ["white", "black", "white"]
+
+
+def test_checkpoint_head_to_head_api_defaults_opponent_config_to_main(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "checkpoint"
+    opponent_dir = tmp_path / "opponent"
+    save_tiny_checkpoint(checkpoint_dir)
+    save_tiny_checkpoint(opponent_dir)
+
+    report = evaluate_checkpoints_head_to_head(
+        checkpoint_dir,
+        opponent_dir,
+        match_config=MatchConfig(games=1, max_plies=0),
+        neural_config=NeuralMCTSConfig(simulations=2, node_budget=5, temperature=0.25, seed=0),
+    )
+
+    neural_configs = cast(dict[str, dict[str, object]], report["neural_configs"])
+    assert neural_configs["opponent"] == neural_configs["checkpoint"]
+
+
 def test_evaluate_script_smoke(tmp_path: Path) -> None:
     checkpoint_dir = tmp_path / "checkpoint"
     output = tmp_path / "report.json"
@@ -265,6 +328,150 @@ def test_evaluate_script_rejects_invalid_workers(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "--workers must be at least 1" in result.stderr
+
+
+def test_evaluate_script_neural_vs_neural_smoke_defaults_opponent_settings(
+    tmp_path: Path,
+) -> None:
+    checkpoint_dir = tmp_path / "checkpoint"
+    opponent_dir = tmp_path / "opponent"
+    output = tmp_path / "head-to-head-report.json"
+    save_tiny_checkpoint(checkpoint_dir)
+    save_tiny_checkpoint(opponent_dir)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/evaluate.py",
+            "--checkpoint",
+            str(checkpoint_dir),
+            "--opponent-checkpoint",
+            str(opponent_dir),
+            "--games",
+            "1",
+            "--max-plies",
+            "1",
+            "--neural-simulations",
+            "1",
+            "--neural-node-budget",
+            "5",
+            "--neural-temperature",
+            "0.25",
+            "--seed",
+            "13",
+            "--output",
+            str(output),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    stdout_report = json.loads(result.stdout)
+    file_report = json.loads(output.read_text())
+    assert stdout_report == file_report
+    assert stdout_report["mode"] == "neural_vs_neural"
+    assert "promotion" not in stdout_report
+    assert "criteria" not in stdout_report
+    assert "matches" not in stdout_report
+    neural_configs = stdout_report["neural_configs"]
+    assert neural_configs["checkpoint"] == neural_configs["opponent"]
+    assert neural_configs["opponent"]["simulations"] == 1
+    assert neural_configs["opponent"]["node_budget"] == 5
+    assert neural_configs["opponent"]["temperature"] == 0.25
+    assert neural_configs["opponent"]["seed"] == 13
+
+
+def test_evaluate_script_neural_vs_neural_overrides_opponent_settings(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "checkpoint"
+    opponent_dir = tmp_path / "opponent"
+    save_tiny_checkpoint(checkpoint_dir)
+    save_tiny_checkpoint(opponent_dir)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/evaluate.py",
+            "--checkpoint",
+            str(checkpoint_dir),
+            "--opponent-checkpoint",
+            str(opponent_dir),
+            "--games",
+            "1",
+            "--max-plies",
+            "1",
+            "--neural-simulations",
+            "2",
+            "--neural-node-budget",
+            "5",
+            "--neural-temperature",
+            "0.25",
+            "--seed",
+            "13",
+            "--opponent-neural-simulations",
+            "1",
+            "--opponent-neural-node-budget",
+            "6",
+            "--opponent-neural-temperature",
+            "0.0",
+            "--opponent-seed",
+            "0",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    neural_configs = report["neural_configs"]
+    assert neural_configs["checkpoint"]["simulations"] == 2
+    assert neural_configs["checkpoint"]["node_budget"] == 5
+    assert neural_configs["checkpoint"]["temperature"] == 0.25
+    assert neural_configs["checkpoint"]["seed"] == 13
+    assert neural_configs["opponent"]["simulations"] == 1
+    assert neural_configs["opponent"]["node_budget"] == 6
+    assert neural_configs["opponent"]["temperature"] == 0.0
+    assert neural_configs["opponent"]["seed"] == 0
+
+
+def test_evaluate_script_rejects_baseline_and_promotion_with_opponent_checkpoint(
+    tmp_path: Path,
+) -> None:
+    base_args = [
+        sys.executable,
+        "scripts/evaluate.py",
+        "--checkpoint",
+        str(tmp_path / "missing-a"),
+        "--opponent-checkpoint",
+        str(tmp_path / "missing-b"),
+    ]
+
+    conflicts = [
+        (["--baseline", "random"], "--baseline cannot be used with --opponent-checkpoint"),
+        (["--mcts-simulations", "7"], "--mcts-simulations cannot be used"),
+        (["--mcts-node-budget", "7"], "--mcts-node-budget cannot be used"),
+        (["--mcts-rollout-plies", "7"], "--mcts-rollout-plies cannot be used"),
+        (["--min-games-per-baseline", "3"], "--min-games-per-baseline cannot be used"),
+        (["--min-score-rate-vs-random", "0.75"], "--min-score-rate-vs-random cannot be used"),
+        (["--min-score-rate-vs-mcts", "0.25"], "--min-score-rate-vs-mcts cannot be used"),
+        (
+            ["--require-promotion"],
+            "--require-promotion cannot be used with --opponent-checkpoint",
+        ),
+    ]
+
+    for flag_args, message in conflicts:
+        result = subprocess.run(
+            [*base_args, *flag_args],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode != 0
+        assert message in result.stderr
 
 
 def test_evaluate_script_parallel_smoke_stdout_json(tmp_path: Path) -> None:

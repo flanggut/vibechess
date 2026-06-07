@@ -109,6 +109,8 @@ uv run python scripts/self_play.py --games 16 --max-plies 8 --simulations 1 --wo
 uv run python scripts/pgn_ingest.py --input ~/data/chess/lichess_elite_2025-11.pgn --output data/selfplay/pgn-smoke --max-games 10 --shard-samples 128
 uv run python scripts/train.py --dataset data/selfplay/smoke --output data/checkpoints/train-smoke --epochs 1 --batch-size 2
 uv run python scripts/evaluate.py --checkpoint data/checkpoints/train-smoke/checkpoint-final --games 2 --max-plies 40 --neural-simulations 1 --mcts-simulations 1
+# Optional neural-vs-neural mode skips random/MCTS baselines and promotion criteria:
+uv run python scripts/evaluate.py --checkpoint data/checkpoints/train-smoke/checkpoint-final --opponent-checkpoint data/checkpoints/previous/checkpoint-final --games 2 --max-plies 40 --neural-simulations 1
 (cd swift && swift test)
 (cd swift && swift build -c release)
 ```
