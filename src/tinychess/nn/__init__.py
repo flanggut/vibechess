@@ -31,13 +31,15 @@ from tinychess.nn.encode import (
     tensor_shape,
     to_mlx,
 )
-from tinychess.nn.model import (
+from tinychess.nn.inference import (
     BatchInferenceResult,
     InferenceResult,
     LegalPolicyBatchResult,
     LegalPolicyResult,
-    PolicyValueConfig,
     PolicyValueInference,
+)
+from tinychess.nn.model import (
+    PolicyValueConfig,
     PolicyValueNet,
     PolicyValueOutput,
 )

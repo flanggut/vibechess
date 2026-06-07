@@ -19,7 +19,7 @@ from tinychess.engine.move import Move
 from tinychess.engine.outcome import Outcome
 from tinychess.engine.piece import Color
 from tinychess.nn.encode import move_to_action_index
-from tinychess.nn.model import (
+from tinychess.nn.inference import (
     InferenceResult,
     LegalPolicyResult,
     PolicyValueInference,

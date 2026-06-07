@@ -16,7 +16,8 @@ from tempfile import TemporaryDirectory
 from tinychess.ai.neural_mcts import NeuralMCTSConfig
 from tinychess.ai.search_config import MCTSConfig
 from tinychess.nn.checkpoint import load_checkpoint, save_checkpoint
-from tinychess.nn.model import PolicyValueConfig, PolicyValueInference, PolicyValueNet
+from tinychess.nn.inference import PolicyValueInference
+from tinychess.nn.model import PolicyValueConfig, PolicyValueNet
 from tinychess.nn.self_play import (
     DEFAULT_PROFILE_FILENAME,
     LABEL_SOURCE_CLASSICAL,

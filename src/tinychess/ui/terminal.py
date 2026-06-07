@@ -51,7 +51,7 @@ def _create_ai_players(config: PlayConfig, players: dict[str, PlayerKind]) -> di
 
     from tinychess.ai.neural_mcts import NeuralMCTSConfig, NeuralMCTSPlayer
     from tinychess.nn.checkpoint import load_checkpoint
-    from tinychess.nn.model import PolicyValueInference
+    from tinychess.nn.inference import PolicyValueInference
 
     try:
         checkpoint = load_checkpoint(config.ai_checkpoint)

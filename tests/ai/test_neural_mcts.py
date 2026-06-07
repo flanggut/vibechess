@@ -28,16 +28,10 @@ from tinychess.ai.search_state import SearchState
 from tinychess.engine import Game, Move, OutcomeReason
 from tinychess.engine.board import Board, board_from_ascii
 from tinychess.engine.piece import Color
-from tinychess.nn import model as model_module
+from tinychess.nn import inference as inference_module
 from tinychess.nn.encode import ACTION_SPACE_SIZE, move_to_action_index
-from tinychess.nn.model import (
-    InferenceResult,
-    LegalPolicyBatchResult,
-    MLXArray,
-    PolicyValueConfig,
-    PolicyValueInference,
-    PolicyValueNet,
-)
+from tinychess.nn.inference import InferenceResult, LegalPolicyBatchResult, PolicyValueInference
+from tinychess.nn.model import MLXArray, PolicyValueConfig, PolicyValueNet
 
 
 @dataclass(slots=True)
@@ -330,7 +324,7 @@ def test_neural_mcts_uses_policy_value_legal_move_inference_path(
     def fail_legal_move_mask(_game: Game) -> object:
         raise AssertionError("neural MCTS should use cached legal moves instead of legal_move_mask")
 
-    monkeypatch.setattr(model_module, "legal_move_mask", fail_legal_move_mask)
+    monkeypatch.setattr(inference_module, "legal_move_mask", fail_legal_move_mask)
     player = NeuralMCTSPlayer(inference, NeuralMCTSConfig(simulations=1, seed=1))
 
     result = player.search(game)
@@ -658,8 +652,7 @@ def test_select_by_temperature_positive_weights_exclude_zero_visit_children() ->
     }
 
     selections = {
-        _select_by_temperature(root, temperature=1.0, rng=random.Random(seed))
-        for seed in range(10)
+        _select_by_temperature(root, temperature=1.0, rng=random.Random(seed)) for seed in range(10)
     }
 
     assert selections == {visited_move}

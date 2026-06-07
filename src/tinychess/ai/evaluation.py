@@ -16,7 +16,7 @@ from tinychess.ai.search_config import MCTSConfig
 from tinychess.engine.game import Game
 from tinychess.engine.piece import Color
 from tinychess.nn.checkpoint import load_checkpoint
-from tinychess.nn.model import PolicyValueInference
+from tinychess.nn.inference import PolicyValueInference
 
 PlayerFactory = Callable[[], Player]
 PlayerGameFactory = Callable[[int], Player]

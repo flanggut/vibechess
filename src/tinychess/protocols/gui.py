@@ -54,6 +54,7 @@ class SearchResult(Protocol):
         """Return root visit counts keyed by move."""
         ...
 
+
 ERROR_CODES: frozenset[str] = frozenset(
     (
         "invalid_json",
@@ -388,7 +389,7 @@ def _select_neural_ai_move(game: Game, config: GuiAiConfig) -> tuple[Move, dict[
     try:
         from tinychess.ai.neural_mcts import NeuralMCTSConfig, NeuralMCTSPlayer
         from tinychess.nn.checkpoint import load_checkpoint
-        from tinychess.nn.model import PolicyValueInference
+        from tinychess.nn.inference import PolicyValueInference
     except ImportError as exc:
         message = f"neural checkpoint loading unavailable: {exc}"
         raise GuiProtocolError("checkpoint_error", message) from exc
@@ -521,7 +522,6 @@ def parse_ai_config(value: object, *, current: GuiAiConfig | None = None) -> Gui
         temperature=temperature,
         seed=seed,
     )
-
 
 
 def _serialize_squares(game: Game) -> list[dict[str, object]]:
