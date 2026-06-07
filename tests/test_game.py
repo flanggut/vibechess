@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import pytest
 
+import tinychess.engine.game as game_module
 from tinychess.engine import (
     Color,
     Game,
     Move,
+    Outcome,
     OutcomeReason,
     random_move_selector,
     simulate_game,
@@ -153,6 +155,23 @@ def test_game_rejects_play_after_outcome() -> None:
     assert game.outcome is not None
     with pytest.raises(ValueError, match="cannot play move after game outcome"):
         game.play(Move.from_uci("h8g8"))
+
+
+def test_forced_outcome_short_circuits_legal_move_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    forced_outcome = Outcome(OutcomeReason.MAX_PLIES)
+    game = Game(
+        positions=Game.new().positions,
+        forced_outcome=forced_outcome,
+    )
+
+    def fail_legal_generation(_board: object) -> tuple[Move, ...]:
+        raise RuntimeError("legal generation should not run for forced outcomes")
+
+    monkeypatch.setattr(game_module, "legal_moves", fail_legal_generation)
+
+    assert game.outcome == forced_outcome
 
 
 def test_repetition_counts_are_copied_between_game_snapshots() -> None:

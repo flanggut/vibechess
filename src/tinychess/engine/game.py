@@ -7,13 +7,15 @@ from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 
+import tinychess.engine.transition as _transition
 from tinychess.engine.board import Board
-from tinychess.engine.legal_moves import is_in_check, legal_moves
+from tinychess.engine.legal_moves import legal_moves
 from tinychess.engine.move import Move
 from tinychess.engine.outcome import Outcome, OutcomeReason
-from tinychess.engine.piece import Color, Piece, PieceType
-from tinychess.engine.square import Square, file_index, rank_index
+from tinychess.engine.piece import Piece
+from tinychess.engine.square import Square
 
+PositionKey = _transition.PositionKey
 MoveSelector = Callable[[Board, tuple[Move, ...]], Move]
 # Backward-compatible module seam for tests and callers that patch the old name.
 generate_legal_moves = legal_moves
@@ -58,13 +60,13 @@ class Game:
             msg = "game must contain at least one board position"
             raise ValueError(msg)
         if not self.repetition_counts:
-            object.__setattr__(self, "repetition_counts", {_position_key(self.board): 1})
+            object.__setattr__(self, "repetition_counts", {_transition.position_key(self.board): 1})
 
     @classmethod
     def new(cls, board: Board | None = None) -> Game:
         """Return a new game from ``board`` or the standard starting position."""
         start = Board.starting_position() if board is None else board
-        return cls(positions=(start,), repetition_counts={_position_key(start): 1})
+        return cls(positions=(start,), repetition_counts={_transition.position_key(start): 1})
 
     @classmethod
     def from_fen(cls, fen: str) -> Game:
@@ -76,7 +78,7 @@ class Game:
             positions=(position.board,),
             halfmove_clock=position.halfmove_clock,
             fullmove_number=position.fullmove_number,
-            repetition_counts={_position_key(position.board): 1},
+            repetition_counts={_transition.position_key(position.board): 1},
         )
 
     def to_fen(self) -> str:
@@ -144,30 +146,23 @@ class Game:
         """
         with _profile_scope("game.play_known_legal"):
             _record_counter("game.play_known_legal.calls")
-            board = self.board
-            moving_piece = board.piece_at(move.from_square)
-            if moving_piece is None:  # defensive; legal membership should prevent this
-                msg = f"cannot move from empty square {move.from_square}"
-                raise ValueError(msg)
-            is_capture = _is_capture(board, move, moving_piece)
-            next_board = board.apply_move(move)
-            next_key = _position_key(next_board)
-            next_repetitions = dict(self.repetition_counts)
-            next_repetitions[next_key] = next_repetitions.get(next_key, 0) + 1
-
-            next_halfmove_clock = (
-                0 if moving_piece.kind is PieceType.PAWN or is_capture else self.halfmove_clock + 1
-            )
-            next_fullmove_number = self.fullmove_number + (
-                1 if board.side_to_move is Color.BLACK else 0
+            result = _transition.advance_known_legal_state(
+                _transition.TransitionState(
+                    board=self.board,
+                    halfmove_clock=self.halfmove_clock,
+                    fullmove_number=self.fullmove_number,
+                    repetition_counts=self.repetition_counts,
+                    forced_outcome=self.forced_outcome,
+                ),
+                move,
             )
 
             return Game(
-                positions=(*self.positions, next_board),
+                positions=(*self.positions, result.board),
                 moves=(*self.moves, move),
-                halfmove_clock=next_halfmove_clock,
-                fullmove_number=next_fullmove_number,
-                repetition_counts=dict(next_repetitions),
+                halfmove_clock=result.halfmove_clock,
+                fullmove_number=result.fullmove_number,
+                repetition_counts=dict(result.repetition_counts),
                 forced_outcome=None,
             )
 
@@ -182,18 +177,16 @@ def determine_outcome(
             return game.forced_outcome
         board = game.board
         moves = legal_moves if legal_moves is not None else _current_legal_moves(board)
-        if not moves:
-            if is_in_check(board, board.side_to_move):
-                return Outcome(reason=OutcomeReason.CHECKMATE, winner=board.side_to_move.opposite)
-            return Outcome(reason=OutcomeReason.STALEMATE)
-
-        if game.halfmove_clock >= 100:
-            return Outcome(reason=OutcomeReason.FIFTY_MOVE)
-        if game.repetition_counts.get(_position_key(board), 0) >= 3:
-            return Outcome(reason=OutcomeReason.REPETITION)
-        if has_insufficient_material(board):
-            return Outcome(reason=OutcomeReason.INSUFFICIENT_MATERIAL)
-        return None
+        return _transition.outcome_for_state(
+            _transition.TransitionState(
+                board=board,
+                halfmove_clock=game.halfmove_clock,
+                fullmove_number=game.fullmove_number,
+                repetition_counts=game.repetition_counts,
+                forced_outcome=game.forced_outcome,
+            ),
+            moves,
+        )
 
 
 def simulate_game(
@@ -231,43 +224,19 @@ def random_move_selector(seed: int | None = None) -> MoveSelector:
 
 def has_insufficient_material(board: Board) -> bool:
     """Return whether material is insufficient for a pragmatic checkmate possibility."""
-    pieces = tuple(piece for _square, piece in board.occupied_squares())
-    non_kings = [piece for piece in pieces if piece.kind is not PieceType.KING]
-    if not non_kings:
-        return True
-    if any(piece.kind in {PieceType.PAWN, PieceType.ROOK, PieceType.QUEEN} for piece in non_kings):
-        return False
-    if len(non_kings) == 1:
-        return non_kings[0].kind in {PieceType.BISHOP, PieceType.KNIGHT}
-    if all(piece.kind is PieceType.BISHOP for piece in non_kings):
-        bishop_colors = {
-            _square_color(square)
-            for square, piece in board.occupied_squares()
-            if piece.kind is PieceType.BISHOP
-        }
-        return len(bishop_colors) == 1
-    return False
-
-
-PositionKey = tuple[tuple[Piece | None, ...], Color, frozenset[str], Square | None]
+    return _transition.has_insufficient_material(board)
 
 
 def _position_key(board: Board) -> PositionKey:
-    return (board.squares, board.side_to_move, board.castling_rights, board.en_passant_target)
+    return _transition.position_key(board)
 
 
 def _is_capture(board: Board, move: Move, moving_piece: Piece) -> bool:
-    if board.piece_at(move.to_square) is not None:
-        return True
-    return (
-        moving_piece.kind is PieceType.PAWN
-        and board.en_passant_target == move.to_square
-        and abs(int(move.to_square) - int(move.from_square)) in {7, 9}
-    )
+    return _transition.is_capture(board, move, moving_piece)
 
 
 def _square_color(square: Square) -> int:
-    return (file_index(square) + rank_index(square)) % 2
+    return _transition.square_color(square)
 
 
 def _with_max_plies_draw(game: Game) -> Game:

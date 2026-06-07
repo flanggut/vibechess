@@ -14,18 +14,17 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 
 from tinychess.engine.board import Board
-from tinychess.engine.game import (
-    Game,
-    PositionKey,
-    _is_capture,
-    _position_key,
-    has_insufficient_material,
-)
-from tinychess.engine.legal_moves import is_in_check
+from tinychess.engine.game import Game
 from tinychess.engine.legal_moves import legal_moves as generate_legal_moves
 from tinychess.engine.move import Move
-from tinychess.engine.outcome import Outcome, OutcomeReason
-from tinychess.engine.piece import Color, PieceType
+from tinychess.engine.outcome import Outcome
+from tinychess.engine.transition import (
+    PositionKey,
+    TransitionState,
+    advance_known_legal_state,
+    outcome_for_state,
+    position_key,
+)
 
 
 def _profile_scope(name: str, **tags: object) -> AbstractContextManager[None]:
@@ -66,7 +65,7 @@ class SearchState:
 
     def __post_init__(self) -> None:
         if not self.repetition_counts:
-            object.__setattr__(self, "repetition_counts", {_position_key(self.board): 1})
+            object.__setattr__(self, "repetition_counts", {position_key(self.board): 1})
         if self._base_positions and len(self._base_positions) != len(self._base_moves) + 1:
             msg = "base positions must contain exactly one more entry than base moves"
             raise ValueError(msg)
@@ -136,23 +135,16 @@ class SearchState:
             return self._outcome_with_legal_moves_impl(legal_moves)
 
     def _outcome_with_legal_moves_impl(self, legal_moves: tuple[Move, ...]) -> Outcome | None:
-        if self.forced_outcome is not None:
-            return self.forced_outcome
-        if not legal_moves:
-            if is_in_check(self.board, self.board.side_to_move):
-                return Outcome(
-                    reason=OutcomeReason.CHECKMATE,
-                    winner=self.board.side_to_move.opposite,
-                )
-            return Outcome(reason=OutcomeReason.STALEMATE)
-
-        if self.halfmove_clock >= 100:
-            return Outcome(reason=OutcomeReason.FIFTY_MOVE)
-        if self.repetition_counts.get(_position_key(self.board), 0) >= 3:
-            return Outcome(reason=OutcomeReason.REPETITION)
-        if has_insufficient_material(self.board):
-            return Outcome(reason=OutcomeReason.INSUFFICIENT_MATERIAL)
-        return None
+        return outcome_for_state(
+            TransitionState(
+                board=self.board,
+                halfmove_clock=self.halfmove_clock,
+                fullmove_number=self.fullmove_number,
+                repetition_counts=self.repetition_counts,
+                forced_outcome=self.forced_outcome,
+            ),
+            legal_moves,
+        )
 
     def play_known_legal(self, move: Move) -> SearchState:
         """Return the state after applying a move already known to be legal."""
@@ -161,28 +153,22 @@ class SearchState:
             return self._play_known_legal_impl(move)
 
     def _play_known_legal_impl(self, move: Move) -> SearchState:
-        moving_piece = self.board.piece_at(move.from_square)
-        if moving_piece is None:  # defensive; legal membership should prevent this
-            msg = f"cannot move from empty square {move.from_square}"
-            raise ValueError(msg)
-        is_capture = _is_capture(self.board, move, moving_piece)
-        next_board = self.board.apply_move(move)
-        next_key = _position_key(next_board)
-        next_repetitions = dict(self.repetition_counts)
-        next_repetitions[next_key] = next_repetitions.get(next_key, 0) + 1
-
-        next_halfmove_clock = (
-            0 if moving_piece.kind is PieceType.PAWN or is_capture else self.halfmove_clock + 1
-        )
-        next_fullmove_number = self.fullmove_number + (
-            1 if self.board.side_to_move is Color.BLACK else 0
+        result = advance_known_legal_state(
+            TransitionState(
+                board=self.board,
+                halfmove_clock=self.halfmove_clock,
+                fullmove_number=self.fullmove_number,
+                repetition_counts=self.repetition_counts,
+                forced_outcome=self.forced_outcome,
+            ),
+            move,
         )
 
         return SearchState(
-            board=next_board,
-            halfmove_clock=next_halfmove_clock,
-            fullmove_number=next_fullmove_number,
-            repetition_counts=next_repetitions,
+            board=result.board,
+            halfmove_clock=result.halfmove_clock,
+            fullmove_number=result.fullmove_number,
+            repetition_counts=result.repetition_counts,
             move_path=(*self.move_path, move),
             forced_outcome=None,
             _base_positions=self._base_positions,
