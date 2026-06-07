@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -33,8 +33,7 @@ from tinychess.nn.encode import (
     legal_move_mask_from_board_moves_np,
     move_to_action_index,
 )
-from tinychess.nn.self_play import (
-    SelfPlayConfig,
+from tinychess.nn.self_play_dataset import (
     SelfPlayDataset,
     SelfPlayGameRecord,
     SelfPlayMetadata,
@@ -321,10 +320,8 @@ class _ShardBuilder:
 
 
 def _metadata(config: PgnIngestConfig, *, sample_count: int, game_count: int) -> SelfPlayMetadata:
-    base = SelfPlayMetadata.create(SelfPlayConfig(games=game_count), sample_count=sample_count)
-    return replace(
-        base,
-        generation_settings={
+    return SelfPlayMetadata.create_from_settings(
+        {
             "label_source": PGN_LABEL_SOURCE,
             "input_path": str(config.input_path.expanduser()),
             "max_games": config.max_games,
@@ -332,6 +329,7 @@ def _metadata(config: PgnIngestConfig, *, sample_count: int, game_count: int) ->
             "strict": config.strict,
             "skip_fen": config.skip_fen,
         },
+        sample_count=sample_count,
         game_count=game_count,
     )
 

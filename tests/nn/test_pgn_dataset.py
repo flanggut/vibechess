@@ -40,7 +40,7 @@ from tinychess.nn.pgn_dataset import (
     ingest_pgn_dataset,
     shard_directories,
 )
-from tinychess.nn.self_play import load_self_play_dataset
+from tinychess.nn.self_play_dataset import load_self_play_dataset
 from tinychess.nn.train import TrainingConfig, train_from_directory, train_from_sharded_directory
 
 PGN_TEXT = """[Event "Tiny"]

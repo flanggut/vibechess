@@ -9,7 +9,7 @@ from pathlib import Path
 from tinychess.nn.checkpoint import load_checkpoint
 from tinychess.nn.model import PolicyValueConfig
 from tinychess.nn.pgn_dataset import DEFAULT_MANIFEST_FILENAME
-from tinychess.nn.self_play import load_self_play_dataset
+from tinychess.nn.self_play_dataset import load_self_play_dataset
 from tinychess.nn.train import (
     EpochMetrics,
     TrainingConfig,
