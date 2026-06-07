@@ -30,3 +30,4 @@
 
 - Update docs/tests alongside behavioral changes, especially for protocol boundaries, PGN ingestion, dataset formats, CLI/script usage, and Swift acceleration claims.
 - Prefer narrow, evidence-backed optimizations: include a benchmark or focused test when changing hot paths.
+- Any temporary artifacts from planning or other agent activities should be store in an `artifacts` subfolder.
