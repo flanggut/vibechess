@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import NoReturn
 
@@ -83,7 +85,9 @@ def main() -> None:
     if args.output is not None:
         write_evaluation_report(report, args.output)
     print(json.dumps(report, indent=2))
-    if args.opponent_checkpoint is None:
+    if args.opponent_checkpoint is not None:
+        _print_head_to_head_summary(report)
+    else:
         promotion = report["promotion"]
         if not isinstance(promotion, dict):
             _die("internal error: malformed promotion report")
@@ -232,6 +236,39 @@ def _parse_args() -> argparse.Namespace:
     if parsed.min_score_rate_vs_mcts is None:
         parsed.min_score_rate_vs_mcts = 0.0
     return parsed
+
+
+def _print_head_to_head_summary(report: Mapping[str, object]) -> None:
+    match = report.get("match")
+    if not isinstance(match, Mapping):
+        _die("internal error: malformed neural-vs-neural match report")
+
+    games = match.get("games")
+    player_a_score = match.get("player_a_score")
+    player_b_score = match.get("player_b_score")
+    player_a_score_rate = match.get("player_a_score_rate")
+    player_a_wins = match.get("player_a_wins")
+    player_b_wins = match.get("player_b_wins")
+    draws = match.get("draws")
+    if not (
+        isinstance(games, int)
+        and isinstance(player_a_score, int | float)
+        and isinstance(player_b_score, int | float)
+        and isinstance(player_a_score_rate, int | float)
+        and isinstance(player_a_wins, int)
+        and isinstance(player_b_wins, int)
+        and isinstance(draws, int)
+    ):
+        _die("internal error: malformed neural-vs-neural summary fields")
+
+    print(
+        "Neural-vs-neural summary: "
+        f"checkpoint {player_a_score:g}-{player_b_score:g} opponent_checkpoint "
+        f"over {games} game{'s' if games != 1 else ''} "
+        f"({float(player_a_score_rate):.1%} score rate); "
+        f"wins {player_a_wins}-{player_b_wins}, draws {draws}",
+        file=sys.stderr,
+    )
 
 
 def _die(message: str) -> NoReturn:

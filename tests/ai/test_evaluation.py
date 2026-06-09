@@ -371,6 +371,10 @@ def test_evaluate_script_neural_vs_neural_smoke_defaults_opponent_settings(
     stdout_report = json.loads(result.stdout)
     file_report = json.loads(output.read_text())
     assert stdout_report == file_report
+    assert result.stderr.strip() == (
+        "Neural-vs-neural summary: checkpoint 0.5-0.5 opponent_checkpoint "
+        "over 1 game (50.0% score rate); wins 0-0, draws 1"
+    )
     assert stdout_report["mode"] == "neural_vs_neural"
     assert "promotion" not in stdout_report
     assert "criteria" not in stdout_report
