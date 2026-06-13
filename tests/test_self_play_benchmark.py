@@ -83,7 +83,7 @@ def test_self_play_benchmark_json_smoke_removes_outputs(tmp_path: Path) -> None:
     assert repeat["output_bytes"] == data["output_bytes"]
     assert repeat["profile"]["stats"]["timers"]["game_legal_moves"]["calls"] > 0
     assert "scripts/self_play.py" in repeat["command"]
-    assert "schema=vibechess-selfplay-v1" in repeat["stdout"]
+    assert "schema=vibechess-selfplay-v2" in repeat["stdout"]
     assert not output_root.exists()
 
 

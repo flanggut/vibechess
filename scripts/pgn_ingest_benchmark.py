@@ -27,7 +27,7 @@ from vibechess.nn.encode import legal_move_mask_from_board_moves_np
 from vibechess.nn.pgn_dataset import (
     SUPPORTED_PGN_RESULTS,
     PgnIngestConfig,
-    _one_hot_policy,
+    _one_hot_policy_row,
     _TrainingReplayState,
     ingest_pgn_dataset,
 )
@@ -202,7 +202,7 @@ def benchmark_pgn_ingest_full_write(
     """Run the real PGN importer and measure shard writing/compression costs.
 
     Unlike ``benchmark_pgn_ingest``, this mode calls ``ingest_pgn_dataset`` and
-    therefore includes dense NPZ creation, compression, manifest writing, and
+    therefore includes sparse NPZ creation, compression, manifest writing, and
     games.jsonl output. If ``max_records`` is set, the benchmark first copies at
     most that many raw PGN records into a temporary fixture file so the importer
     can run unchanged while still honoring the record limit.
@@ -297,7 +297,7 @@ def _replay_and_encode_game(plies: object, report: PgnIngestBenchmark) -> int:
         report.add_time("legal_masks", time.perf_counter() - start)
 
         start = time.perf_counter()
-        _one_hot_policy(ply.board, ply.move)
+        _one_hot_policy_row(ply.board, ply.move)
         report.add_time("one_hot_policies", time.perf_counter() - start)
 
         start = time.perf_counter()

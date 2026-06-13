@@ -26,7 +26,6 @@ from vibechess.engine.pgn_stream import (
 from vibechess.engine.piece import Color
 from vibechess.engine.transition import PositionKey, TransitionState, advance_known_legal_state
 from vibechess.nn.encode import (
-    ACTION_SPACE_SIZE,
     ACTION_SPACE_VERSION,
     ENCODER_VERSION,
     encode_board_np,
@@ -37,6 +36,7 @@ from vibechess.nn.self_play_dataset import (
     SelfPlayDataset,
     SelfPlayGameRecord,
     SelfPlayMetadata,
+    SparsePolicyTargets,
     save_self_play_dataset,
 )
 
@@ -44,6 +44,7 @@ PGN_DATASET_MANIFEST_SCHEMA_VERSION = "vibechess-pgn-manifest-v1"
 DEFAULT_MANIFEST_FILENAME = "manifest.json"
 PGN_LABEL_SOURCE = "pgn"
 SUPPORTED_PGN_RESULTS = frozenset({"1-0", "0-1", "1/2-1/2"})
+PolicyTargetRow = tuple[npt.NDArray[np.int32], npt.NDArray[np.float32]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,7 +257,7 @@ class _ShardBuilder:
         self.config = config
         self.positions: list[npt.NDArray[np.float32]] = []
         self.legal_masks: list[npt.NDArray[np.float32]] = []
-        self.policies: list[npt.NDArray[np.float32]] = []
+        self.policies: list[PolicyTargetRow] = []
         self.outcomes: list[float] = []
         self.games: list[SelfPlayGameRecord] = []
 
@@ -272,14 +273,14 @@ class _ShardBuilder:
         sides: list[Color] = []
         positions: list[npt.NDArray[np.float32]] = []
         legal_masks: list[npt.NDArray[np.float32]] = []
-        policies: list[npt.NDArray[np.float32]] = []
+        policies: list[PolicyTargetRow] = []
         for ply in traced.plies:
             _validate_trace_matches_state(state, ply)
             if ply.move not in ply.legal_moves:
                 raise ValueError("PGN trace move is not legal in parser-provided legal moves")
             positions.append(state.encode_position())
             legal_masks.append(legal_move_mask_from_board_moves_np(ply.board, ply.legal_moves))
-            policies.append(_one_hot_policy(ply.board, ply.move))
+            policies.append(_one_hot_policy_row(ply.board, ply.move))
             sides.append(ply.board.side_to_move)
             state.advance(ply.move)
         added_samples = len(positions)
@@ -300,7 +301,7 @@ class _ShardBuilder:
         dataset = SelfPlayDataset(
             positions=np.stack(self.positions).astype(np.float32, copy=False),
             legal_masks=np.stack(self.legal_masks).astype(np.float32, copy=False),
-            mcts_policies=np.stack(self.policies).astype(np.float32, copy=False),
+            policy_targets=SparsePolicyTargets.from_rows(self.policies),
             outcomes=np.asarray(self.outcomes, dtype=np.float32),
             metadata=_metadata(
                 self.config,
@@ -403,10 +404,11 @@ def _validate_trace_matches_state(state: _TrainingReplayState, ply: PgnParsedPly
         raise ValueError("PGN trace fullmove number does not match replayed game state")
 
 
-def _one_hot_policy(board: Board, move: Move) -> npt.NDArray[np.float32]:
-    policy = np.zeros((ACTION_SPACE_SIZE,), dtype=np.float32)
-    policy[move_to_action_index(move, board)] = 1.0
-    return policy
+def _one_hot_policy_row(board: Board, move: Move) -> PolicyTargetRow:
+    return (
+        np.asarray([move_to_action_index(move, board)], dtype=np.int32),
+        np.asarray([1.0], dtype=np.float32),
+    )
 
 
 def _result_values(result: str, sides: list[Color]) -> list[float]:

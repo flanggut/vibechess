@@ -39,6 +39,7 @@ from vibechess.nn.self_play_dataset import (
     SelfPlayDataset,
     SelfPlayGameRecord,
     SelfPlayMetadata,
+    SparsePolicyTargets,
     _outcome_values,
     load_self_play_dataset,
     merge_self_play_datasets,
@@ -55,6 +56,7 @@ from vibechess.profiling import (
 )
 
 DEFAULT_PROFILE_FILENAME = "profile.json"
+PolicyTargetRow = tuple[npt.NDArray[np.int32], npt.NDArray[np.float32]]
 LABEL_SOURCE_NEURAL = "neural"
 LABEL_SOURCE_CLASSICAL = "classical"
 LABEL_SOURCES = (LABEL_SOURCE_NEURAL, LABEL_SOURCE_CLASSICAL)
@@ -178,7 +180,7 @@ def _generate_serial_self_play_dataset(
 ) -> SelfPlayDataset:
     positions: list[npt.NDArray[np.float32]] = []
     legal_masks: list[npt.NDArray[np.float32]] = []
-    policies: list[npt.NDArray[np.float32]] = []
+    policies: list[PolicyTargetRow] = []
     outcome_values: list[float] = []
     game_records: list[SelfPlayGameRecord] = []
     completed_plies = 0
@@ -212,7 +214,9 @@ def _generate_serial_self_play_dataset(
                         with profile_scope("record.legal_mask_np"):
                             legal_masks.append(legal_move_mask_from_legal_moves_np(game, legal))
                         with profile_scope("record.policy_target"):
-                            policies.append(_policy_target(game, result.visit_counts, result.move))
+                            policies.append(
+                                _policy_target_row(game, result.visit_counts, result.move)
+                            )
                         record_counter("self_play.samples")
                         record_counter("self_play.plies")
                         game_sides.append(game.board.side_to_move)
@@ -257,7 +261,7 @@ class _BatchedGameState:
     game_sides: list[Color] = field(default_factory=list)
     positions: list[npt.NDArray[np.float32]] = field(default_factory=list)
     legal_masks: list[npt.NDArray[np.float32]] = field(default_factory=list)
-    policies: list[npt.NDArray[np.float32]] = field(default_factory=list)
+    policies: list[PolicyTargetRow] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -281,7 +285,7 @@ def _record_batched_decision(
     with profile_scope("record.legal_mask_np"):
         state.legal_masks.append(legal_move_mask_from_legal_moves_np(state.game, legal))
     with profile_scope("record.policy_target"):
-        state.policies.append(_policy_target(state.game, visit_counts, selected_move))
+        state.policies.append(_policy_target_row(state.game, visit_counts, selected_move))
     record_counter("self_play.samples")
     record_counter("self_play.plies")
     state.game_sides.append(state.game.board.side_to_move)
@@ -358,7 +362,7 @@ def _generate_batched_neural_self_play_dataset(
 ) -> SelfPlayDataset:
     positions: list[npt.NDArray[np.float32]] = []
     legal_masks: list[npt.NDArray[np.float32]] = []
-    policies: list[npt.NDArray[np.float32]] = []
+    policies: list[PolicyTargetRow] = []
     outcome_values: list[float] = []
     game_records: list[SelfPlayGameRecord] = []
     completed_plies = 0
@@ -455,7 +459,7 @@ def _self_play_dataset_from_samples(
     inference_batch_size: int,
     positions: list[npt.NDArray[np.float32]],
     legal_masks: list[npt.NDArray[np.float32]],
-    policies: list[npt.NDArray[np.float32]],
+    policies: list[PolicyTargetRow],
     outcome_values: list[float],
     game_records: list[SelfPlayGameRecord],
 ) -> SelfPlayDataset:
@@ -471,12 +475,12 @@ def _self_play_dataset_from_samples(
         stacked_positions = _stack_or_empty(positions, TENSOR_SHAPE)
     with profile_scope("dataset.stack_legal_masks"):
         stacked_legal_masks = _stack_or_empty(legal_masks, (ACTION_SPACE_SIZE,))
-    with profile_scope("dataset.stack_policies"):
-        stacked_policies = _stack_or_empty(policies, (ACTION_SPACE_SIZE,))
+    with profile_scope("dataset.build_sparse_policies"):
+        policy_targets = SparsePolicyTargets.from_rows(policies)
     return SelfPlayDataset(
         positions=stacked_positions,
         legal_masks=stacked_legal_masks,
-        mcts_policies=stacked_policies,
+        policy_targets=policy_targets,
         outcomes=outcomes,
         metadata=metadata,
         games=game_records,
@@ -509,19 +513,29 @@ def _classical_mcts_config_for_game(
     return replace(config.classical_mcts, seed=config.seed + game_index)
 
 
-def _policy_target(
+def _policy_target_row(
     game: Game,
     visit_counts: dict[Any, int],
     selected_move: Any,
-) -> npt.NDArray[np.float32]:
-    policy = np.zeros((ACTION_SPACE_SIZE,), dtype=np.float32)
+) -> PolicyTargetRow:
     total = sum(max(0, visits) for visits in visit_counts.values())
     if total > 0:
+        indices: list[int] = []
+        probabilities: list[float] = []
         for move, visits in visit_counts.items():
-            policy[move_to_action_index(move, game.board)] = max(0, visits) / total
-    else:
-        policy[move_to_action_index(selected_move, game.board)] = 1.0
-    return policy
+            positive_visits = max(0, visits)
+            if positive_visits == 0:
+                continue
+            indices.append(move_to_action_index(move, game.board))
+            probabilities.append(positive_visits / total)
+        return (
+            np.asarray(indices, dtype=np.int32),
+            np.asarray(probabilities, dtype=np.float32),
+        )
+    return (
+        np.asarray([move_to_action_index(selected_move, game.board)], dtype=np.int32),
+        np.asarray([1.0], dtype=np.float32),
+    )
 
 
 

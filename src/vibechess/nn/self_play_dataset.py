@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -30,10 +30,132 @@ from vibechess.profiling import profile_scope
 if TYPE_CHECKING:
     from vibechess.nn.self_play import SelfPlayConfig
 
-SELF_PLAY_DATASET_SCHEMA_VERSION = "vibechess-selfplay-v1"
+SELF_PLAY_DATASET_SCHEMA_VERSION_V1 = "vibechess-selfplay-v1"
+SELF_PLAY_DATASET_SCHEMA_VERSION = "vibechess-selfplay-v2"
+POLICY_TARGET_FORMAT_DENSE = "dense_mcts_policies"
+POLICY_TARGET_FORMAT_SPARSE_CSR = "sparse_csr"
 DEFAULT_DATASET_FILENAME = "samples.npz"
 DEFAULT_METADATA_FILENAME = "metadata.json"
 DEFAULT_GAMES_FILENAME = "games.jsonl"
+
+
+@dataclass(frozen=True, slots=True)
+class SparsePolicyTargets:
+    """CSR-style sparse policy targets for fixed-size action-space rows."""
+
+    offsets: npt.NDArray[np.int64]
+    indices: npt.NDArray[np.int32]
+    probabilities: npt.NDArray[np.float32]
+
+    def __post_init__(self) -> None:
+        offsets = np.asarray(self.offsets, dtype=np.int64)
+        indices = np.asarray(self.indices, dtype=np.int32)
+        probabilities = np.asarray(self.probabilities, dtype=np.float32)
+        object.__setattr__(self, "offsets", offsets)
+        object.__setattr__(self, "indices", indices)
+        object.__setattr__(self, "probabilities", probabilities)
+        _validate_sparse_storage_shapes(self)
+
+    @property
+    def sample_count(self) -> int:
+        """Return the number of policy rows."""
+        return int(self.offsets.shape[0] - 1)
+
+    @classmethod
+    def from_rows(
+        cls,
+        rows: list[tuple[npt.NDArray[np.int32], npt.NDArray[np.float32]]],
+    ) -> SparsePolicyTargets:
+        """Build sparse targets from per-row action indices and probabilities."""
+        offsets = np.zeros((len(rows) + 1,), dtype=np.int64)
+        row_indices: list[npt.NDArray[np.int32]] = []
+        row_probabilities: list[npt.NDArray[np.float32]] = []
+        total = 0
+        for row_number, (indices, probabilities) in enumerate(rows):
+            row_index_array = np.asarray(indices, dtype=np.int32)
+            row_probability_array = np.asarray(probabilities, dtype=np.float32)
+            if row_index_array.ndim != 1:
+                raise ValueError("sparse policy row indices must be one-dimensional")
+            if row_probability_array.ndim != 1:
+                raise ValueError("sparse policy row probabilities must be one-dimensional")
+            if row_index_array.shape[0] != row_probability_array.shape[0]:
+                raise ValueError(
+                    f"sparse policy row {row_number} index/probability length mismatch"
+                )
+            row_indices.append(row_index_array)
+            row_probabilities.append(row_probability_array)
+            total += int(row_index_array.shape[0])
+            offsets[row_number + 1] = total
+        if row_indices:
+            indices_array = np.concatenate(row_indices).astype(np.int32, copy=False)
+            probabilities_array = np.concatenate(row_probabilities).astype(np.float32, copy=False)
+        else:
+            indices_array = np.zeros((0,), dtype=np.int32)
+            probabilities_array = np.zeros((0,), dtype=np.float32)
+        return cls(offsets=offsets, indices=indices_array, probabilities=probabilities_array)
+
+    @classmethod
+    def from_dense(cls, policies: npt.NDArray[np.float32]) -> SparsePolicyTargets:
+        """Convert dense ``[N, ACTION_SPACE_SIZE]`` policy targets to sparse rows."""
+        dense = np.asarray(policies, dtype=np.float32)
+        if dense.ndim != 2 or dense.shape[1] != ACTION_SPACE_SIZE:
+            raise ValueError(f"mcts_policies shape mismatch: {dense.shape}")
+        rows: list[tuple[npt.NDArray[np.int32], npt.NDArray[np.float32]]] = []
+        for row in dense:
+            indices = np.flatnonzero(row > 0.0).astype(np.int32, copy=False)
+            rows.append((indices, row[indices].astype(np.float32, copy=False)))
+        return cls.from_rows(rows)
+
+    @classmethod
+    def concatenate(cls, targets: list[SparsePolicyTargets]) -> SparsePolicyTargets:
+        """Concatenate multiple sparse policy target matrices without densifying."""
+        if not targets:
+            return cls.from_rows([])
+        total_rows = sum(target.sample_count for target in targets)
+        offsets = np.zeros((total_rows + 1,), dtype=np.int64)
+        indices: list[npt.NDArray[np.int32]] = []
+        probabilities: list[npt.NDArray[np.float32]] = []
+        row_cursor = 0
+        nnz_cursor = 0
+        for target in targets:
+            row_count = target.sample_count
+            row_lengths = np.diff(target.offsets)
+            offsets[row_cursor + 1 : row_cursor + row_count + 1] = nnz_cursor + np.cumsum(
+                row_lengths,
+                dtype=np.int64,
+            )
+            row_cursor += row_count
+            nnz_cursor += int(target.indices.shape[0])
+            indices.append(target.indices)
+            probabilities.append(target.probabilities)
+        if indices:
+            indices_array = np.concatenate(indices).astype(np.int32, copy=False)
+            probabilities_array = np.concatenate(probabilities).astype(np.float32, copy=False)
+        else:
+            indices_array = np.zeros((0,), dtype=np.int32)
+            probabilities_array = np.zeros((0,), dtype=np.float32)
+        return cls(offsets=offsets, indices=indices_array, probabilities=probabilities_array)
+
+    def row(self, index: int) -> tuple[npt.NDArray[np.int32], npt.NDArray[np.float32]]:
+        """Return sparse action indices and probabilities for one row."""
+        if index < 0 or index >= self.sample_count:
+            raise IndexError("sparse policy row index out of range")
+        start = int(self.offsets[index])
+        end = int(self.offsets[index + 1])
+        return self.indices[start:end], self.probabilities[start:end]
+
+    def dense_rows(self, row_indices: npt.NDArray[np.int64]) -> npt.NDArray[np.float32]:
+        """Densify selected rows for batch training or compatibility checks."""
+        requested = np.asarray(row_indices, dtype=np.int64)
+        dense = np.zeros((requested.shape[0], ACTION_SPACE_SIZE), dtype=np.float32)
+        for output_index, source_index in enumerate(requested):
+            indices, probabilities = self.row(int(source_index))
+            dense[output_index, indices] = probabilities
+        return dense
+
+    def to_dense(self) -> npt.NDArray[np.float32]:
+        """Densify all sparse policy target rows."""
+        return self.dense_rows(np.arange(self.sample_count, dtype=np.int64))
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,9 +184,7 @@ class SelfPlayGameRecord:
     def from_dict(cls, data: dict[str, object]) -> SelfPlayGameRecord:
         """Parse a game record from JSON data."""
         moves = data.get("moves_uci")
-        if not isinstance(moves, list) or not all(
-            isinstance(move, str) for move in moves
-        ):
+        if not isinstance(moves, list) or not all(isinstance(move, str) for move in moves):
             raise TypeError("game record field 'moves_uci' must be a list of strings")
         winner = data.get("winner")
         if winner is not None and not isinstance(winner, str):
@@ -93,6 +213,7 @@ class SelfPlayMetadata:
     generation_settings: dict[str, object]
     sample_count: int
     game_count: int
+    policy_target_format: str = POLICY_TARGET_FORMAT_SPARSE_CSR
 
     @classmethod
     def create(
@@ -156,19 +277,26 @@ class SelfPlayMetadata:
             "generation_settings": self.generation_settings,
             "sample_count": self.sample_count,
             "game_count": self.game_count,
+            "policy_target_format": self.policy_target_format,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> SelfPlayMetadata:
         """Parse and validate dataset metadata."""
         schema_version = _expect_str(data, "schema_version")
-        if schema_version != SELF_PLAY_DATASET_SCHEMA_VERSION:
+        if schema_version == SELF_PLAY_DATASET_SCHEMA_VERSION_V1:
+            policy_target_format = data.get("policy_target_format", POLICY_TARGET_FORMAT_DENSE)
+            if policy_target_format != POLICY_TARGET_FORMAT_DENSE:
+                raise ValueError(f"unsupported v1 policy target format: {policy_target_format}")
+        elif schema_version == SELF_PLAY_DATASET_SCHEMA_VERSION:
+            policy_target_format = _expect_str(data, "policy_target_format")
+            if policy_target_format != POLICY_TARGET_FORMAT_SPARSE_CSR:
+                raise ValueError(f"unsupported v2 policy target format: {policy_target_format}")
+        else:
             raise ValueError(f"unsupported self-play dataset schema: {schema_version}")
         action_space_version = _expect_str(data, "action_space_version")
         if action_space_version != ACTION_SPACE_VERSION:
-            raise ValueError(
-                f"unsupported action space version: {action_space_version}"
-            )
+            raise ValueError(f"unsupported action space version: {action_space_version}")
         encoder_version = _expect_str(data, "encoder_version")
         if encoder_version != ENCODER_VERSION:
             raise ValueError(f"unsupported encoder version: {encoder_version}")
@@ -180,9 +308,7 @@ class SelfPlayMetadata:
             raise TypeError("metadata field 'git_commit' must be a string or null")
         model_checkpoint_id = data.get("model_checkpoint_id")
         if model_checkpoint_id is not None and not isinstance(model_checkpoint_id, str):
-            raise TypeError(
-                "metadata field 'model_checkpoint_id' must be a string or null"
-            )
+            raise TypeError("metadata field 'model_checkpoint_id' must be a string or null")
         return cls(
             schema_version=schema_version,
             generated_at=_expect_str(data, "generated_at"),
@@ -194,19 +320,65 @@ class SelfPlayMetadata:
             generation_settings=dict(settings),
             sample_count=_expect_int(data, "sample_count"),
             game_count=_expect_int(data, "game_count"),
+            policy_target_format=policy_target_format,
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class SelfPlayDataset:
     """In-memory self-play samples plus metadata."""
 
     positions: npt.NDArray[np.float32]
     legal_masks: npt.NDArray[np.float32]
-    mcts_policies: npt.NDArray[np.float32]
+    policy_targets: SparsePolicyTargets
     outcomes: npt.NDArray[np.float32]
     metadata: SelfPlayMetadata
     games: list[SelfPlayGameRecord]
+    _mcts_policies_cache: npt.NDArray[np.float32] | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    def __init__(
+        self,
+        *,
+        positions: npt.NDArray[np.float32],
+        legal_masks: npt.NDArray[np.float32],
+        outcomes: npt.NDArray[np.float32],
+        metadata: SelfPlayMetadata,
+        games: list[SelfPlayGameRecord],
+        mcts_policies: npt.NDArray[np.float32] | None = None,
+        policy_targets: SparsePolicyTargets | None = None,
+    ) -> None:
+        """Create a dataset from sparse targets or legacy dense MCTS policies."""
+        if (mcts_policies is None) == (policy_targets is None):
+            raise ValueError("provide exactly one of mcts_policies or policy_targets")
+        dense_cache: npt.NDArray[np.float32] | None = None
+        if policy_targets is None:
+            if mcts_policies is None:  # pragma: no cover - narrowed above
+                raise ValueError("mcts_policies are required")
+            dense_cache = np.asarray(mcts_policies, dtype=np.float32)
+            policy_targets = SparsePolicyTargets.from_dense(dense_cache)
+        if metadata.sample_count != policy_targets.sample_count:
+            raise ValueError("policy target sample count does not match dataset metadata")
+        object.__setattr__(self, "positions", np.asarray(positions, dtype=np.float32))
+        object.__setattr__(self, "legal_masks", np.asarray(legal_masks, dtype=np.float32))
+        object.__setattr__(self, "policy_targets", policy_targets)
+        object.__setattr__(self, "outcomes", np.asarray(outcomes, dtype=np.float32))
+        object.__setattr__(self, "metadata", metadata)
+        object.__setattr__(self, "games", games)
+        object.__setattr__(self, "_mcts_policies_cache", dense_cache)
+
+    @property
+    def mcts_policies(self) -> npt.NDArray[np.float32]:
+        """Return dense MCTS policy targets for compatibility with legacy callers."""
+        cached = self._mcts_policies_cache
+        if cached is None:
+            cached = self.policy_targets.to_dense()
+            object.__setattr__(self, "_mcts_policies_cache", cached)
+        return cached
 
 
 def merge_self_play_datasets(
@@ -239,16 +411,17 @@ def _merge_self_play_datasets_impl(
     games: list[SelfPlayGameRecord] = []
     for dataset in datasets:
         _validate_dataset_counts(dataset)
-        if dataset.metadata.schema_version != SELF_PLAY_DATASET_SCHEMA_VERSION:
+        if dataset.metadata.schema_version not in {
+            SELF_PLAY_DATASET_SCHEMA_VERSION_V1,
+            SELF_PLAY_DATASET_SCHEMA_VERSION,
+        }:
             schema = dataset.metadata.schema_version
             raise ValueError(f"unsupported self-play dataset schema: {schema}")
         if dataset.metadata.action_space_version != ACTION_SPACE_VERSION:
             action_space = dataset.metadata.action_space_version
             raise ValueError(f"unsupported action space version: {action_space}")
         if dataset.metadata.encoder_version != ENCODER_VERSION:
-            raise ValueError(
-                f"unsupported encoder version: {dataset.metadata.encoder_version}"
-            )
+            raise ValueError(f"unsupported encoder version: {dataset.metadata.encoder_version}")
         if dataset.metadata.model_checkpoint_id != model_checkpoint_id:
             raise ValueError("cannot merge datasets from different model checkpoints")
         for record in dataset.games:
@@ -256,7 +429,9 @@ def _merge_self_play_datasets_impl(
 
     positions = np.concatenate([dataset.positions for dataset in datasets], axis=0)
     legal_masks = np.concatenate([dataset.legal_masks for dataset in datasets], axis=0)
-    policies = np.concatenate([dataset.mcts_policies for dataset in datasets], axis=0)
+    policy_targets = SparsePolicyTargets.concatenate(
+        [dataset.policy_targets for dataset in datasets]
+    )
     outcomes = np.concatenate([dataset.outcomes for dataset in datasets], axis=0)
 
     if config is None:
@@ -297,7 +472,7 @@ def _merge_self_play_datasets_impl(
     return SelfPlayDataset(
         positions=positions,
         legal_masks=legal_masks,
-        mcts_policies=policies,
+        policy_targets=policy_targets,
         outcomes=outcomes,
         metadata=metadata,
         games=games,
@@ -321,18 +496,25 @@ def save_self_play_dataset(dataset: SelfPlayDataset, directory: str | Path) -> N
     """Write a self-play dataset as compressed NPZ tensors plus JSON/JSONL metadata."""
     output_dir = Path(directory)
     output_dir.mkdir(parents=True, exist_ok=True)
+    metadata = replace(
+        dataset.metadata,
+        schema_version=SELF_PLAY_DATASET_SCHEMA_VERSION,
+        policy_target_format=POLICY_TARGET_FORMAT_SPARSE_CSR,
+    )
     with profile_scope("dataset.save"):
         with profile_scope("dataset.save_npz_compressed"):
             np.savez_compressed(
                 output_dir / DEFAULT_DATASET_FILENAME,
                 positions=dataset.positions,
                 legal_masks=dataset.legal_masks,
-                mcts_policies=dataset.mcts_policies,
+                policy_offsets=dataset.policy_targets.offsets,
+                policy_indices=dataset.policy_targets.indices,
+                policy_probabilities=dataset.policy_targets.probabilities,
                 outcomes=dataset.outcomes,
             )
         with profile_scope("dataset.write_metadata"):
             (output_dir / DEFAULT_METADATA_FILENAME).write_text(
-                json.dumps(dataset.metadata.to_dict(), indent=2, sort_keys=True) + "\n"
+                json.dumps(metadata.to_dict(), indent=2, sort_keys=True) + "\n"
             )
         with profile_scope("dataset.write_games_jsonl"):
             (output_dir / DEFAULT_GAMES_FILENAME).write_text(
@@ -350,23 +532,47 @@ def load_self_play_dataset(directory: str | Path) -> SelfPlayDataset:
     if not isinstance(metadata_data, dict):
         raise TypeError("self-play metadata must be a JSON object")
     metadata = SelfPlayMetadata.from_dict(metadata_data)
+    dense_cache: npt.NDArray[np.float32] | None = None
+    policy_targets: SparsePolicyTargets | None = None
     with np.load(input_dir / DEFAULT_DATASET_FILENAME) as tensors:
         positions = np.asarray(tensors["positions"], dtype=np.float32)
         legal_masks = np.asarray(tensors["legal_masks"], dtype=np.float32)
-        mcts_policies = np.asarray(tensors["mcts_policies"], dtype=np.float32)
         outcomes = np.asarray(tensors["outcomes"], dtype=np.float32)
-    _validate_tensor_shapes(metadata, positions, legal_masks, mcts_policies, outcomes)
+        if metadata.policy_target_format == POLICY_TARGET_FORMAT_DENSE:
+            dense_cache = np.asarray(tensors["mcts_policies"], dtype=np.float32)
+        else:
+            policy_targets = SparsePolicyTargets(
+                offsets=np.asarray(tensors["policy_offsets"], dtype=np.int64),
+                indices=np.asarray(tensors["policy_indices"], dtype=np.int32),
+                probabilities=np.asarray(tensors["policy_probabilities"], dtype=np.float32),
+            )
+    if dense_cache is not None:
+        _validate_dense_policy_shape(metadata, dense_cache)
+        _validate_dense_policy_targets(metadata, dense_cache, legal_masks)
+        policy_targets = SparsePolicyTargets.from_dense(dense_cache)
+    if policy_targets is None:  # pragma: no cover - narrowed by metadata format validation
+        raise ValueError("policy targets were not loaded")
+    _validate_tensor_shapes(metadata, positions, legal_masks, policy_targets, outcomes)
     games = [
         SelfPlayGameRecord.from_dict(record)
         for record in _read_jsonl(input_dir / DEFAULT_GAMES_FILENAME)
     ]
     if len(games) != metadata.game_count:
         raise ValueError("game metadata count does not match dataset metadata")
-    _validate_game_records(metadata, games, positions, legal_masks, mcts_policies, outcomes)
+    _validate_game_records(metadata, games, positions, legal_masks, policy_targets, outcomes)
+    if dense_cache is not None:
+        return SelfPlayDataset(
+            positions=positions,
+            legal_masks=legal_masks,
+            mcts_policies=dense_cache,
+            outcomes=outcomes,
+            metadata=metadata,
+            games=games,
+        )
     return SelfPlayDataset(
         positions=positions,
         legal_masks=legal_masks,
-        mcts_policies=mcts_policies,
+        policy_targets=policy_targets,
         outcomes=outcomes,
         metadata=metadata,
         games=games,
@@ -379,8 +585,8 @@ def _validate_dataset_counts(dataset: SelfPlayDataset) -> None:
         raise ValueError("positions sample count does not match dataset metadata")
     if dataset.legal_masks.shape[0] != expected:
         raise ValueError("legal_masks sample count does not match dataset metadata")
-    if dataset.mcts_policies.shape[0] != expected:
-        raise ValueError("mcts_policies sample count does not match dataset metadata")
+    if dataset.policy_targets.sample_count != expected:
+        raise ValueError("policy target sample count does not match dataset metadata")
     if dataset.outcomes.shape[0] != expected:
         raise ValueError("outcomes sample count does not match dataset metadata")
     if len(dataset.games) != dataset.metadata.game_count:
@@ -398,7 +604,7 @@ def _validate_tensor_shapes(
     metadata: SelfPlayMetadata,
     positions: npt.NDArray[np.float32],
     legal_masks: npt.NDArray[np.float32],
-    mcts_policies: npt.NDArray[np.float32],
+    policy_targets: SparsePolicyTargets,
     outcomes: npt.NDArray[np.float32],
 ) -> None:
     expected = metadata.sample_count
@@ -406,10 +612,57 @@ def _validate_tensor_shapes(
         raise ValueError(f"positions shape mismatch: {positions.shape}")
     if legal_masks.shape != (expected, ACTION_SPACE_SIZE):
         raise ValueError(f"legal_masks shape mismatch: {legal_masks.shape}")
-    if mcts_policies.shape != (expected, ACTION_SPACE_SIZE):
-        raise ValueError(f"mcts_policies shape mismatch: {mcts_policies.shape}")
+    if policy_targets.sample_count != expected:
+        raise ValueError("policy target sample count does not match dataset metadata")
     if outcomes.shape != (expected,):
         raise ValueError(f"outcomes shape mismatch: {outcomes.shape}")
+
+
+def _validate_dense_policy_shape(
+    metadata: SelfPlayMetadata,
+    mcts_policies: npt.NDArray[np.float32],
+) -> None:
+    expected = metadata.sample_count
+    if mcts_policies.shape != (expected, ACTION_SPACE_SIZE):
+        raise ValueError(f"mcts_policies shape mismatch: {mcts_policies.shape}")
+
+
+def _validate_dense_policy_targets(
+    metadata: SelfPlayMetadata,
+    mcts_policies: npt.NDArray[np.float32],
+    legal_masks: npt.NDArray[np.float32],
+) -> None:
+    expected = metadata.sample_count
+    if legal_masks.shape != (expected, ACTION_SPACE_SIZE):
+        raise ValueError(f"legal_masks shape mismatch: {legal_masks.shape}")
+    if not np.all(np.isfinite(mcts_policies)):
+        raise ValueError("mcts_policies contain non-finite values")
+    if np.any(mcts_policies < 0.0):
+        raise ValueError("mcts_policies contain negative values")
+    row_sums = mcts_policies.sum(axis=1)
+    if not np.all(np.isclose(row_sums, 1.0)):
+        raise ValueError("mcts_policies rows must sum to 1.0")
+    if np.any((mcts_policies > 0.0) & (legal_masks <= 0.0)):
+        raise ValueError("mcts_policies assign probability to illegal moves")
+
+
+def _validate_sparse_storage_shapes(policy_targets: SparsePolicyTargets) -> None:
+    if policy_targets.offsets.ndim != 1:
+        raise ValueError("policy_offsets must be one-dimensional")
+    if policy_targets.indices.ndim != 1:
+        raise ValueError("policy_indices must be one-dimensional")
+    if policy_targets.probabilities.ndim != 1:
+        raise ValueError("policy_probabilities must be one-dimensional")
+    if policy_targets.offsets.shape[0] < 1:
+        raise ValueError("policy_offsets must contain at least one element")
+    if policy_targets.offsets[0] != 0:
+        raise ValueError("policy_offsets must start at zero")
+    if np.any(np.diff(policy_targets.offsets) < 0):
+        raise ValueError("policy_offsets must be monotonic")
+    if policy_targets.indices.shape != policy_targets.probabilities.shape:
+        raise ValueError("policy_indices and policy_probabilities length mismatch")
+    if int(policy_targets.offsets[-1]) != int(policy_targets.indices.shape[0]):
+        raise ValueError("policy_offsets final value must match policy index count")
 
 
 def _validate_game_records(
@@ -417,7 +670,7 @@ def _validate_game_records(
     games: list[SelfPlayGameRecord],
     positions: npt.NDArray[np.float32],
     legal_masks: npt.NDArray[np.float32],
-    mcts_policies: npt.NDArray[np.float32],
+    policy_targets: SparsePolicyTargets,
     outcomes: npt.NDArray[np.float32],
 ) -> None:
     sample_index = 0
@@ -438,7 +691,7 @@ def _validate_game_records(
             expected_mask = legal_move_mask_from_legal_moves_np(game, legal)
             if not np.array_equal(legal_masks[sample_index], expected_mask):
                 raise ValueError("legal mask does not match replayed game state")
-            _validate_policy_row(mcts_policies[sample_index], expected_mask)
+            _validate_sparse_policy_row(policy_targets, sample_index, expected_mask)
             move = Move.from_uci(move_uci)
             if move not in legal:
                 raise ValueError(f"illegal move in game record: {move_uci}")
@@ -457,17 +710,23 @@ def _validate_game_records(
         raise ValueError("total game plies does not match metadata sample_count")
 
 
-def _validate_policy_row(
-    policy: npt.NDArray[np.float32],
+def _validate_sparse_policy_row(
+    policy_targets: SparsePolicyTargets,
+    row_index: int,
     legal_mask: npt.NDArray[np.float32],
 ) -> None:
-    if not np.all(np.isfinite(policy)):
+    indices, probabilities = policy_targets.row(row_index)
+    if not np.all(np.isfinite(probabilities)):
         raise ValueError("policy target contains non-finite values")
-    if np.any(policy < 0.0):
+    if np.any(probabilities < 0.0):
         raise ValueError("policy target contains negative values")
-    if not np.isclose(float(policy.sum()), 1.0):
+    if np.any(indices < 0) or np.any(indices >= ACTION_SPACE_SIZE):
+        raise ValueError("policy target contains out-of-range action indices")
+    if np.unique(indices).shape[0] != indices.shape[0]:
+        raise ValueError("policy target contains duplicate action indices")
+    if not np.isclose(float(probabilities.sum()), 1.0):
         raise ValueError("policy target row must sum to 1.0")
-    if np.any((policy > 0.0) & (legal_mask <= 0.0)):
+    if indices.size and np.any(legal_mask[indices] <= 0.0):
         raise ValueError("policy target assigns probability to illegal moves")
 
 
@@ -498,9 +757,7 @@ def _recorded_outcome(record: SelfPlayGameRecord) -> Outcome:
     try:
         reason = OutcomeReason(record.outcome_reason)
     except ValueError as exc:
-        raise ValueError(
-            f"unsupported game outcome reason: {record.outcome_reason}"
-        ) from exc
+        raise ValueError(f"unsupported game outcome reason: {record.outcome_reason}") from exc
     winner = None
     if record.winner is not None:
         try:
@@ -538,7 +795,6 @@ def _git_commit() -> str | None:
     return result.stdout.strip() or None
 
 
-
 def _expect_str(data: dict[str, object], key: str) -> str:
     value = data.get(key)
     if not isinstance(value, str):
@@ -553,15 +809,18 @@ def _expect_int(data: dict[str, object], key: str) -> int:
     return value
 
 
-
 __all__ = [
     "DEFAULT_DATASET_FILENAME",
     "DEFAULT_GAMES_FILENAME",
     "DEFAULT_METADATA_FILENAME",
+    "POLICY_TARGET_FORMAT_DENSE",
+    "POLICY_TARGET_FORMAT_SPARSE_CSR",
     "SELF_PLAY_DATASET_SCHEMA_VERSION",
+    "SELF_PLAY_DATASET_SCHEMA_VERSION_V1",
     "SelfPlayDataset",
     "SelfPlayGameRecord",
     "SelfPlayMetadata",
+    "SparsePolicyTargets",
     "load_self_play_dataset",
     "merge_self_play_datasets",
     "save_self_play_dataset",

@@ -84,6 +84,11 @@ def test_ingest_pgn_dataset_writes_loadable_shards_and_manifest(tmp_path: Path) 
     assert manifest["shard_count"] == 2
     assert "git_commit" in manifest
 
+    with np.load(output_dir / "shard-00000" / "samples.npz") as tensors:
+        assert "mcts_policies" not in tensors.files
+        assert "policy_offsets" in tensors.files
+        assert "policy_indices" in tensors.files
+        assert "policy_probabilities" in tensors.files
     first = load_self_play_dataset(output_dir / "shard-00000")
     second = load_self_play_dataset(output_dir / "shard-00001")
     assert first.metadata.generation_settings["label_source"] == "pgn"

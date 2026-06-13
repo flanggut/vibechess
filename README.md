@@ -77,12 +77,12 @@ Key technical defaults:
   application, AI moves, undo, and reset without expanding UCI semantics.
 - Draw handling is pragmatic for engine/self-play termination; strict claim-vs-automatic FIDE semantics are deferred.
 - Neural policy uses a versioned AlphaZero-style `8 x 8 x 73 = 4672` action space with legal-move masking.
-- Dataset shards use compressed NumPy tensors plus JSON/JSONL metadata and include schema/action-space/encoder provenance.
+- Dataset shards use compressed NumPy tensors plus JSON/JSONL metadata and include schema/action-space/encoder provenance; newly written self-play/PGN shards use v2 sparse CSR policy target arrays while v1 dense `mcts_policies` shards remain loadable.
 - Checkpoints use MLX weights plus sidecar metadata; optimizer state is not currently persisted.
 
 Training data paths:
 
-- Neural or classical MCTS self-play creates existing-format dataset directories under `data/selfplay/`.
+- Neural or classical MCTS self-play creates v2 sparse-policy dataset directories under `data/selfplay/`.
 - PGN ingestion creates a `manifest.json` plus compatible shard directories, allowing supervised policy/value pretraining without loading the full corpus at once.
 
 ## Development setup

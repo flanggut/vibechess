@@ -52,6 +52,7 @@ from vibechess.nn.self_play import (
     save_self_play_dataset,
     self_play_profile,
 )
+from vibechess.nn.self_play_dataset import SELF_PLAY_DATASET_SCHEMA_VERSION_V1
 
 
 @dataclass(slots=True)
@@ -545,6 +546,11 @@ def test_self_play_dataset_writes_and_reads_versioned_files(tmp_path: Path) -> N
     assert (tmp_path / DEFAULT_DATASET_FILENAME).is_file()
     assert (tmp_path / DEFAULT_METADATA_FILENAME).is_file()
     assert (tmp_path / DEFAULT_GAMES_FILENAME).is_file()
+    with np.load(tmp_path / DEFAULT_DATASET_FILENAME) as tensors:
+        assert "mcts_policies" not in tensors.files
+        assert "policy_offsets" in tensors.files
+        assert "policy_indices" in tensors.files
+        assert "policy_probabilities" in tensors.files
     np.testing.assert_array_equal(loaded.positions, dataset.positions)
     np.testing.assert_array_equal(loaded.legal_masks, dataset.legal_masks)
     np.testing.assert_array_equal(loaded.mcts_policies, dataset.mcts_policies)
@@ -592,13 +598,13 @@ def test_load_self_play_dataset_rejects_policy_on_illegal_action(tmp_path: Path)
     )
     save_self_play_dataset(dataset, tmp_path)
     illegal_index = int(np.flatnonzero(dataset.legal_masks[0] == 0.0)[0])
-    corrupted_policy = np.zeros_like(dataset.mcts_policies)
-    corrupted_policy[0, illegal_index] = 1.0
     np.savez_compressed(
         tmp_path / DEFAULT_DATASET_FILENAME,
         positions=dataset.positions,
         legal_masks=dataset.legal_masks,
-        mcts_policies=corrupted_policy,
+        policy_offsets=np.asarray([0, 1], dtype=np.int64),
+        policy_indices=np.asarray([illegal_index], dtype=np.int32),
+        policy_probabilities=np.asarray([1.0], dtype=np.float32),
         outcomes=dataset.outcomes,
     )
 
@@ -676,10 +682,7 @@ def test_merge_self_play_datasets_rejects_malformed_counts() -> None:
         FakeInference(),
         SelfPlayConfig(games=1, max_plies=1, mcts=NeuralMCTSConfig(simulations=1, seed=11)),
     )
-    malformed = replace(
-        dataset,
-        metadata=replace(dataset.metadata, sample_count=dataset.metadata.sample_count + 1),
-    )
+    malformed = replace(dataset, positions=dataset.positions[:0])
 
     try:
         merge_self_play_datasets([malformed])
@@ -912,7 +915,7 @@ def test_historical_metadata_with_opaque_parallel_batch_setting_still_loads() ->
     historical_field = "leaf" + "_parallelism"
     metadata = SelfPlayMetadata.from_dict(
         {
-            "schema_version": SELF_PLAY_DATASET_SCHEMA_VERSION,
+            "schema_version": SELF_PLAY_DATASET_SCHEMA_VERSION_V1,
             "generated_at": "2026-06-05T00:00:00+00:00",
             "engine_version": "0.1.0",
             "git_commit": None,

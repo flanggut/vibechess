@@ -34,12 +34,12 @@ data/selfplay/pgn-elite/
 
 Each shard is compatible with `vibechess.nn.self_play_dataset.load_self_play_dataset`; the older `vibechess.nn.self_play.load_self_play_dataset` import path remains a compatibility re-export.
 `manifest.json` lists all shard directories for shard-wise training. Import writes
-NumPy-native tensors directly while preserving the dense self-play shard schema.
+NumPy-native tensors directly using the shared v2 sparse self-play shard schema.
 During import, the strict/sanitized PGN parser exposes per-ply boards and legal
 moves so tensor encoding can reuse parser-computed legality instead of replaying
 legal generation a second time. Parser advancement and ingestion replay use the
 shared `vibechess.engine.transition` helpers with no-history state, so each ply
-needs one full legal-move tuple for SAN resolution and downstream dense masks,
+needs one full legal-move tuple for SAN resolution and downstream dense legal masks,
 rather than replaying through `Game.play()`.
 
 ## Labels
@@ -48,7 +48,7 @@ For each played PGN move, ingestion stores:
 
 - `positions`: the encoded board before the move.
 - `legal_masks`: legal actions for that position.
-- `mcts_policies`: a one-hot policy target for the played move.
+- `policy_offsets`, `policy_indices`, `policy_probabilities`: sparse one-hot policy targets for the played moves.
 - `outcomes`: the final PGN result from the sample side-to-move perspective.
 
 Soft or weighted policy labels are intentionally deferred.
@@ -85,7 +85,7 @@ parsing performs one full legal-move tuple generation per ply. Checking `+`/`#`
 SAN suffixes may still run a `has_legal_move()` response search without
 materializing a second legal move tuple. `validate_trace` is only the cheap
 consistency check before reusing parser trace data.
-Dry-run mode intentionally excludes dense NPZ compression, manifest writing, and
+Dry-run mode intentionally excludes NPZ compression, manifest writing, and
 `games.jsonl` output.
 
 Use full-write mode when you need authoritative end-to-end import throughput and

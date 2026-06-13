@@ -24,16 +24,23 @@ run-dir/
 └── games.jsonl
 ```
 
-`metadata.json` uses schema `vibechess-selfplay-v1` and includes the engine
+`metadata.json` uses schema `vibechess-selfplay-v2` for newly written datasets and includes the engine
 version, git commit when available, action-space version, encoder version, model
-checkpoint id, generation settings, sample count, and game count.
+checkpoint id, generation settings, sample count, game count, and `policy_target_format`.
+Legacy `vibechess-selfplay-v1` dense-policy datasets remain loadable.
 
 `samples.npz` is a compressed NumPy-compatible tensor batch with:
 
 - `positions`: `[N, 20, 8, 8]` float32 encoded positions.
 - `legal_masks`: `[N, 4672]` float32 legal-action masks.
-- `mcts_policies`: `[N, 4672]` float32 MCTS visit-count policy targets.
+- `policy_offsets`: `[N + 1]` int64 CSR row offsets for sparse policy targets.
+- `policy_indices`: `[nnz]` int32 action indices for nonzero target probabilities.
+- `policy_probabilities`: `[nnz]` float32 nonzero MCTS visit-count policy probabilities.
 - `outcomes`: `[N]` float32 final outcomes from each sample side-to-move perspective.
+
+New v2 shards do not store dense `[N, 4672]` `mcts_policies` arrays on disk. The
+Python loader still accepts v1 shards with dense `mcts_policies` and exposes a
+compatibility `dataset.mcts_policies` property that densifies sparse rows on demand.
 
 `games.jsonl` stores one JSON object per generated game with UCI moves, final
 FEN, outcome reason, winner, and ply count.

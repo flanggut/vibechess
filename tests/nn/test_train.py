@@ -30,6 +30,7 @@ from vibechess.nn.self_play_dataset import (
     SelfPlayDataset,
     SelfPlayGameRecord,
     SelfPlayMetadata,
+    load_self_play_dataset,
     save_self_play_dataset,
 )
 from vibechess.nn.train import (
@@ -160,6 +161,24 @@ def test_train_model_writes_epoch_metrics_and_checkpoint(tmp_path: Path) -> None
     assert (tmp_path / "training.json").is_file()
 
 
+def test_train_model_trains_from_saved_sparse_dataset(tmp_path: Path) -> None:
+    dataset_dir = tmp_path / "dataset"
+    output_dir = tmp_path / "train"
+    save_self_play_dataset(tiny_dataset(sample_count=1), dataset_dir)
+    loaded = load_self_play_dataset(dataset_dir)
+
+    result = train_model(
+        loaded,
+        output_dir,
+        model=PolicyValueNet(tiny_config()),
+        config=TrainingConfig(epochs=1, batch_size=1, learning_rate=1.0e-3),
+    )
+
+    assert result.steps == 1
+    assert result.samples == 1
+    assert (output_dir / "checkpoint-final" / DEFAULT_WEIGHTS_FILENAME).is_file()
+
+
 def test_train_model_reserves_validation_split_and_reports_epoch_losses(tmp_path: Path) -> None:
     dataset = tiny_dataset(sample_count=10)
     callbacks: list[EpochMetrics] = []
@@ -221,11 +240,19 @@ def test_train_model_rejects_empty_dataset(tmp_path: Path) -> None:
 def test_train_model_rejects_illegal_policy_targets(tmp_path: Path) -> None:
     dataset = tiny_dataset(sample_count=1)
     illegal_action = int(np.flatnonzero(dataset.legal_masks[0] == 0.0)[0])
-    dataset.mcts_policies[0, :] = 0.0
-    dataset.mcts_policies[0, illegal_action] = 1.0
+    corrupted_policy = np.zeros_like(dataset.mcts_policies)
+    corrupted_policy[0, illegal_action] = 1.0
+    corrupted = SelfPlayDataset(
+        positions=dataset.positions,
+        legal_masks=dataset.legal_masks,
+        mcts_policies=corrupted_policy,
+        outcomes=dataset.outcomes,
+        metadata=dataset.metadata,
+        games=dataset.games,
+    )
 
     with pytest.raises(ValueError, match="only on legal actions"):
-        train_model(dataset, tmp_path, model=PolicyValueNet(tiny_config()))
+        train_model(corrupted, tmp_path, model=PolicyValueNet(tiny_config()))
 
 
 def test_train_model_continues_checkpoint_step_metadata(tmp_path: Path) -> None:
