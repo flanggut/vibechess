@@ -8,12 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from tinychess.cli import main
-from tinychess.engine.game import Game
-from tinychess.engine.move import Move
-from tinychess.ui import terminal
-from tinychess.ui.render import render_game
-from tinychess.ui.terminal import PlayConfig, parse_legal_uci_move, play_terminal
+from vibechess.cli import main
+from vibechess.engine.game import Game
+from vibechess.engine.move import Move
+from vibechess.ui import terminal
+from vibechess.ui.render import render_game
+from vibechess.ui.terminal import PlayConfig, parse_legal_uci_move, play_terminal
 
 
 class FirstLegalPlayer:
@@ -173,15 +173,15 @@ def test_cli_play_rejects_removed_ai_parallel_batch_option() -> None:
 
 def test_cli_import_does_not_import_neural_modules() -> None:
     modules = [
-        "tinychess.ai.neural_mcts",
-        "tinychess.nn.checkpoint",
-        "tinychess.nn.model",
+        "vibechess.ai.neural_mcts",
+        "vibechess.nn.checkpoint",
+        "vibechess.nn.model",
         "mlx.core",
     ]
     code = (
         "import json\n"
         "import sys\n"
-        "import tinychess.cli\n"
+        "import vibechess.cli\n"
         f"modules = {modules!r}\n"
         "print(json.dumps({name: name in sys.modules for name in modules}, sort_keys=True))\n"
     )

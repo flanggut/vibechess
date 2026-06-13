@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from tinychess.engine.pgn_stream import (
+from vibechess.engine.pgn_stream import (
     iter_pgn_records,
     parse_ingest_pgn,
     parse_ingest_pgn_with_trace,

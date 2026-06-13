@@ -1,4 +1,4 @@
-# TinyChess Swift Workspace
+# VibeChess Swift Workspace
 
 This Swift package contains the native macOS frontend and the placeholder core
 module for future acceleration work. The Python engine remains the correctness
@@ -6,13 +6,13 @@ reference for chess rules, game outcomes, and AI selection.
 
 ## Targets
 
-- `TinyChessCore`: library target reserved for future board, move-generation,
+- `VibeChessCore`: library target reserved for future board, move-generation,
   and search acceleration experiments. It does not currently implement chess
   rules.
-- `TinyChessMacApp`: SwiftUI macOS app for local human-vs-AI play. It renders
+- `VibeChessMacApp`: SwiftUI macOS app for local human-vs-AI play. It renders
   backend state, sends UCI-style move strings, and talks to Python through the
   JSON-lines GUI protocol.
-- `TinyChessCoreTests` and `TinyChessMacAppTests`: smoke/unit tests for the Swift
+- `VibeChessCoreTests` and `VibeChessMacAppTests`: smoke/unit tests for the Swift
   package, protocol DTOs, backend client, app state, and presentation helpers.
 
 ## Local development commands
@@ -23,33 +23,33 @@ Run from this directory:
 swift test
 swift build
 swift build -c release
-swift run TinyChessMacApp
+swift run VibeChessMacApp
 ```
 
-When launched with `swift run TinyChessMacApp`, the app opts into normal macOS
+When launched with `swift run VibeChessMacApp`, the app opts into normal macOS
 app activation so it appears in the Dock and Cmd-Tab switcher even though it is
 still a SwiftPM executable rather than a bundled `.app`.
 
 For the app to connect with its default development command, run it from a
-checkout where `uv run tinychess gui-server` works. From the repository root,
+checkout where `uv run vibechess gui-server` works. From the repository root,
 initialize Python dependencies first when needed:
 
 ```bash
 uv sync --dev
-printf '{"id":1,"cmd":"hello"}\n{"id":2,"cmd":"quit"}\n' | uv run tinychess gui-server
+printf '{"id":1,"cmd":"hello"}\n{"id":2,"cmd":"quit"}\n' | uv run vibechess gui-server
 ```
 
 ## GUI/backend boundary
 
-`TinyChessMacApp` launches the Python backend with:
+`VibeChessMacApp` launches the Python backend with:
 
 ```bash
-uv run tinychess gui-server
+uv run vibechess gui-server
 ```
 
 The backend reads one UTF-8 JSON request per line from stdin and writes one JSON
 response per line to stdout. Stderr is reserved for diagnostics. The protocol
-version is `tinychess-gui-v1`; commands include `hello`, `newGame`, `state`,
+version is `vibechess-gui-v1`; commands include `hello`, `newGame`, `state`,
 `makeMove`, `aiMove`, `undo`, `setAiConfig`, and `quit`.
 
 The state response is the app's source of truth. It includes FEN, occupied
@@ -92,6 +92,6 @@ embedded Python environments, checkpoints, or local smoke outputs.
 
 ## Acceleration boundary
 
-`TinyChessCore` remains separate from the GUI. Future Swift acceleration should be
+`VibeChessCore` remains separate from the GUI. Future Swift acceleration should be
 benchmark-driven and validated against Python-generated fixtures and external
 perft references before replacing any Python correctness path.

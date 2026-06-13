@@ -7,13 +7,13 @@ from io import StringIO
 
 import pytest
 
-from tinychess.ai.mcts import MCTSNode, MCTSPlayer, _static_leaf_value
-from tinychess.ai.player import NoLegalMoveError, RandomPlayer, play_game
-from tinychess.ai.search_config import MCTSConfig
-from tinychess.engine import Game, Move, Outcome, OutcomeReason
-from tinychess.engine.board import board_from_ascii
-from tinychess.engine.piece import Color
-from tinychess.ui.terminal import PlayConfig, play_terminal
+from vibechess.ai.mcts import MCTSNode, MCTSPlayer, _static_leaf_value
+from vibechess.ai.player import NoLegalMoveError, RandomPlayer, play_game
+from vibechess.ai.search_config import MCTSConfig
+from vibechess.engine import Game, Move, Outcome, OutcomeReason
+from vibechess.engine.board import board_from_ascii
+from vibechess.engine.piece import Color
+from vibechess.ui.terminal import PlayConfig, play_terminal
 
 
 def test_mcts_player_selects_legal_move_from_start_position() -> None:

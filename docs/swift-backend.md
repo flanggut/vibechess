@@ -2,11 +2,11 @@
 
 The Swift workspace now contains two intentionally separate pieces:
 
-- `TinyChessMacApp`: a local-first SwiftUI macOS app for human-vs-AI play.
-- `TinyChessCore`: placeholder scaffolding for future Swift acceleration work.
+- `VibeChessMacApp`: a local-first SwiftUI macOS app for human-vs-AI play.
+- `VibeChessCore`: placeholder scaffolding for future Swift acceleration work.
 
 The Python engine remains the correctness reference. The Swift app talks to
-`uv run tinychess gui-server` over the GUI JSON-lines protocol and does not
+`uv run vibechess gui-server` over the GUI JSON-lines protocol and does not
 implement chess rules or AI itself.
 
 ## Timing
@@ -20,14 +20,14 @@ should not begin until:
 
 ## Native macOS GUI
 
-The GUI is available as the `TinyChessMacApp` SwiftPM executable target. Run it
+The GUI is available as the `VibeChessMacApp` SwiftPM executable target. Run it
 from the repository checkout so the default backend command can locate `uv` and
 the Python package:
 
 ```bash
 uv sync --dev
 cd swift
-swift run TinyChessMacApp
+swift run VibeChessMacApp
 ```
 
 The app renders backend-provided board state, supports click source/destination
@@ -62,13 +62,13 @@ Swift implementations must be validated against:
 
 The Swift workspace under `swift/` includes:
 
-- `Package.swift` products for the `TinyChessCore` library and
-  `TinyChessMacApp` executable app target.
-- `Sources/TinyChessMacApp/` with SwiftUI app state, backend client/protocol
+- `Package.swift` products for the `VibeChessCore` library and
+  `VibeChessMacApp` executable app target.
+- `Sources/VibeChessMacApp/` with SwiftUI app state, backend client/protocol
   DTOs, board rendering, controls, and move-list views.
-- `Tests/TinyChessMacAppTests/` covering the app-state, backend-client,
+- `Tests/VibeChessMacAppTests/` covering the app-state, backend-client,
   protocol-model, and presentation helper seams.
-- `Sources/TinyChessCore/` and `Tests/TinyChessCoreTests/` as acceleration
+- `Sources/VibeChessCore/` and `Tests/VibeChessCoreTests/` as acceleration
   bootstrap scaffolding only.
 - `swift/README.md` documenting local app/backend workflow and packaging status.
 
@@ -78,7 +78,7 @@ Run Swift checks from the package directory:
 cd swift
 swift test
 swift build -c release
-swift run TinyChessMacApp
+swift run VibeChessMacApp
 ```
 
 Remaining planned acceleration work packages:

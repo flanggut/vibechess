@@ -2,8 +2,8 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
-from tinychess.engine import Game, Move, parse_square
-from tinychess.nn import (
+from vibechess.engine import Game, Move, parse_square
+from vibechess.nn import (
     ACTION_PLANES,
     ACTION_SPACE_SIZE,
     ACTION_SPACE_VERSION,
@@ -24,7 +24,7 @@ from tinychess.nn import (
     tensor_shape,
     to_mlx,
 )
-from tinychess.nn.encode import legal_move_mask_from_legal_moves
+from vibechess.nn.encode import legal_move_mask_from_legal_moves
 
 
 def move(uci: str) -> Move:
@@ -275,7 +275,7 @@ def test_to_mlx_is_idempotent_for_mlx_arrays_and_converts_array_like_values() ->
 
 def test_action_space_metadata() -> None:
     assert ACTION_SPACE_VERSION == "az-8x8x73-v1"
-    assert ENCODER_VERSION == "tinychess-board-v1"
+    assert ENCODER_VERSION == "vibechess-board-v1"
     assert ACTION_PLANES == 73
     assert ACTION_SPACE_SIZE == 4672
     assert POLICY_SHAPE == (64, 73)

@@ -10,29 +10,29 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
-from tinychess.engine import Game
-from tinychess.engine.outcome import OutcomeReason
-from tinychess.nn.checkpoint import (
+from vibechess.engine import Game
+from vibechess.engine.outcome import OutcomeReason
+from vibechess.nn.checkpoint import (
     DEFAULT_METADATA_FILENAME,
     DEFAULT_WEIGHTS_FILENAME,
     load_checkpoint,
     load_checkpoint_metadata,
 )
-from tinychess.nn.encode import (
+from vibechess.nn.encode import (
     ACTION_SPACE_SIZE,
     encode_game,
     legal_move_mask,
     move_to_action_index,
 )
-from tinychess.nn.model import PolicyValueConfig, PolicyValueNet
-from tinychess.nn.self_play import SelfPlayConfig
-from tinychess.nn.self_play_dataset import (
+from vibechess.nn.model import PolicyValueConfig, PolicyValueNet
+from vibechess.nn.self_play import SelfPlayConfig
+from vibechess.nn.self_play_dataset import (
     SelfPlayDataset,
     SelfPlayGameRecord,
     SelfPlayMetadata,
     save_self_play_dataset,
 )
-from tinychess.nn.train import (
+from vibechess.nn.train import (
     DEFAULT_EPOCH_METRICS_FILENAME,
     EpochMetrics,
     TrainingConfig,

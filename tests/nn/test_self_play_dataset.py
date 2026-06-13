@@ -4,16 +4,16 @@ from pathlib import Path
 
 import numpy as np
 
-import tinychess.nn.self_play as old_self_play
-from tinychess.engine import Game, OutcomeReason
-from tinychess.nn.encode import (
+import vibechess.nn.self_play as old_self_play
+from vibechess.engine import Game, OutcomeReason
+from vibechess.nn.encode import (
     ACTION_SPACE_SIZE,
     encode_game_np,
     legal_move_mask_from_legal_moves_np,
     move_to_action_index,
 )
-from tinychess.nn.self_play import SelfPlayConfig
-from tinychess.nn.self_play_dataset import (
+from vibechess.nn.self_play import SelfPlayConfig
+from vibechess.nn.self_play_dataset import (
     SELF_PLAY_DATASET_SCHEMA_VERSION,
     SelfPlayDataset,
     SelfPlayGameRecord,

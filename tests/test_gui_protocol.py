@@ -4,8 +4,8 @@ import json
 from io import StringIO
 from typing import Any, cast
 
-from tinychess.engine import Game
-from tinychess.protocols.gui import GuiSession, run_gui_loop, serialize_state
+from vibechess.engine import Game
+from vibechess.protocols.gui import GuiSession, run_gui_loop, serialize_state
 
 
 def _request(session: GuiSession, payload: dict[str, object]) -> dict[str, Any]:
@@ -32,7 +32,7 @@ def test_hello_returns_capabilities_and_canonical_start_state() -> None:
 
     assert response["id"] == 1
     assert response["ok"] is True
-    assert response["protocol"] == "tinychess-gui-v1"
+    assert response["protocol"] == "vibechess-gui-v1"
     assert response["capabilities"] == {
         "players": ["random", "mcts", "neural"],
         "supportsUndo": True,

@@ -4,9 +4,9 @@ from io import StringIO
 
 import pytest
 
-from tinychess.cli import main
-from tinychess.engine import Game, Move
-from tinychess.protocols.uci import UciConfig, UciSession, parse_position_command, run_uci_loop
+from vibechess.cli import main
+from vibechess.engine import Game, Move
+from vibechess.protocols.uci import UciConfig, UciSession, parse_position_command, run_uci_loop
 
 
 def _bestmove(text: str) -> str:
@@ -21,7 +21,7 @@ def test_uci_handshake_and_isready() -> None:
     run_uci_loop(stdin=StringIO("uci\nisready\nquit\n"), stdout=output)
 
     text = output.getvalue()
-    assert "id name tinychess" in text
+    assert "id name vibechess" in text
     assert "id author" in text
     assert "uciok" in text
     assert "readyok" in text

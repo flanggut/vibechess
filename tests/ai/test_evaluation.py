@@ -8,8 +8,8 @@ from typing import Any, cast
 
 import mlx.core as mx
 
-from tinychess.ai import MCTSConfig, NeuralMCTSConfig, RandomPlayer
-from tinychess.ai.evaluation import (
+from vibechess.ai import MCTSConfig, NeuralMCTSConfig, RandomPlayer
+from vibechess.ai.evaluation import (
     EARLY_PROMOTION_NOTE,
     MatchConfig,
     PlayerSpec,
@@ -22,10 +22,10 @@ from tinychess.ai.evaluation import (
     run_match,
     write_evaluation_report,
 )
-from tinychess.engine.game import Game
-from tinychess.engine.move import Move
-from tinychess.nn.checkpoint import CheckpointMetadata, save_checkpoint
-from tinychess.nn.model import PolicyValueConfig, PolicyValueNet
+from vibechess.engine.game import Game
+from vibechess.engine.move import Move
+from vibechess.nn.checkpoint import CheckpointMetadata, save_checkpoint
+from vibechess.nn.model import PolicyValueConfig, PolicyValueNet
 
 
 class ScriptedPlayer:

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from tinychess.engine import Board, Color, Move, Piece, PieceType, parse_square, square_name
-from tinychess.engine.board import STARTING_POSITION, board_from_ascii
-from tinychess.engine.square import Square, file_index, make_square, rank_index
+from vibechess.engine import Board, Color, Move, Piece, PieceType, parse_square, square_name
+from vibechess.engine.board import STARTING_POSITION, board_from_ascii
+from vibechess.engine.square import Square, file_index, make_square, rank_index
 
 
 def test_square_indexing_convention() -> None:

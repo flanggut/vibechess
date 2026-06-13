@@ -7,8 +7,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from tinychess.nn.checkpoint import save_checkpoint
-from tinychess.nn.model import PolicyValueConfig, PolicyValueNet
+from vibechess.nn.checkpoint import save_checkpoint
+from vibechess.nn.model import PolicyValueConfig, PolicyValueNet
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -83,7 +83,7 @@ def test_self_play_benchmark_json_smoke_removes_outputs(tmp_path: Path) -> None:
     assert repeat["output_bytes"] == data["output_bytes"]
     assert repeat["profile"]["stats"]["timers"]["game_legal_moves"]["calls"] > 0
     assert "scripts/self_play.py" in repeat["command"]
-    assert "schema=tinychess-selfplay-v1" in repeat["stdout"]
+    assert "schema=vibechess-selfplay-v1" in repeat["stdout"]
     assert not output_root.exists()
 
 
@@ -180,7 +180,7 @@ def test_self_play_benchmark_keep_output_preserves_dataset(tmp_path: Path) -> No
 def test_self_play_benchmark_no_profile_clears_inherited_profile_env(tmp_path: Path) -> None:
     output_root = tmp_path / "benchmark-output"
     env = os.environ.copy()
-    env["TINYCHESS_SELF_PLAY_PROFILE"] = "1"
+    env["VIBECHESS_SELF_PLAY_PROFILE"] = "1"
 
     completed = subprocess.run(
         [

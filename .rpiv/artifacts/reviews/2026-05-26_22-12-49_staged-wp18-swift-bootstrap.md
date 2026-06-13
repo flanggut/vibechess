@@ -1,7 +1,7 @@
 ---
 date: 2026-05-26T22:12:49+0200
 author: Fabian Langguth
-repository: tinychess
+repository: vibechess
 branch: main
 commit: 54bc7c5
 scope: staged
@@ -41,7 +41,7 @@ Swift Package Manager manifest added no external dependencies, no dependency bum
 
 ## Impact
 
-The change introduces a standalone SwiftPM workspace under `swift/` with a `TinyChessCore` library target and XCTest smoke target. There is no Python runtime integration, IPC, auth boundary, route, event, or service wiring.
+The change introduces a standalone SwiftPM workspace under `swift/` with a `VibeChessCore` library target and XCTest smoke target. There is no Python runtime integration, IPC, auth boundary, route, event, or service wiring.
 
 ## Precedents
 
@@ -55,7 +55,7 @@ The change introduces a standalone SwiftPM workspace under `swift/` with a `Tiny
 ## Validation Notes
 
 - `swiftc -parse swift/Package.swift` passed.
-- `swiftc -parse-as-library -emit-module -module-name TinyChessCore swift/Sources/TinyChessCore/TinyChessCore.swift -o /tmp/TinyChessCore.swiftmodule` passed.
+- `swiftc -parse-as-library -emit-module -module-name VibeChessCore swift/Sources/VibeChessCore/VibeChessCore.swift -o /tmp/VibeChessCore.swiftmodule` passed.
 - `uv run pytest` passed: 216 tests.
 - `uv run ruff check .` passed.
 - `uv run mypy` passed.

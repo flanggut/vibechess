@@ -6,7 +6,7 @@ from typing import cast
 
 import pytest
 
-from tinychess.engine import (
+from vibechess.engine import (
     Board,
     Game,
     Move,
@@ -17,11 +17,11 @@ from tinychess.engine import (
     parse_pgn,
     parse_san,
 )
-from tinychess.engine.pgn import parse_pgn_with_trace
+from vibechess.engine.pgn import parse_pgn_with_trace
 
-game_module = importlib.import_module("tinychess.engine.game")
-legal_moves_module = importlib.import_module("tinychess.engine.legal_moves")
-pgn_module = importlib.import_module("tinychess.engine.pgn")
+game_module = importlib.import_module("vibechess.engine.game")
+legal_moves_module = importlib.import_module("vibechess.engine.legal_moves")
+pgn_module = importlib.import_module("vibechess.engine.pgn")
 
 
 def play_uci(*moves: str) -> Game:

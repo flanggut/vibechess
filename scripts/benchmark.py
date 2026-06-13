@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Run the tinychess Python benchmark suite and print a report."""
+"""Run the vibechess Python benchmark suite and print a report."""
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
 
-from tinychess.benchmarks import format_report, run_benchmark_suite
+from vibechess.benchmarks import format_report, run_benchmark_suite
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run the tinychess full benchmark suite.")
+    parser = argparse.ArgumentParser(description="Run the vibechess full benchmark suite.")
     parser.add_argument(
         "--smoke",
         action="store_true",

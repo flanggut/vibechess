@@ -9,13 +9,13 @@ Future work items that are intentionally deferred from the current implementatio
 - Source plan: `plans/gui-plan.md` Task 15.
 - Status: Backlog / deferred until after the local-first GUI MVP is playable and validated.
 - Why deferred:
-  - The current MVP is developer/local first: the SwiftUI app can launch the Python backend with `uv run tinychess gui-server`.
+  - The current MVP is developer/local first: the SwiftUI app can launch the Python backend with `uv run vibechess gui-server`.
   - A distributable macOS `.app` needs packaging, codesigning, notarization, and dependency-bundling decisions that should be made after the app/backend flow is stable.
   - Packaging work should not block core GUI playability, protocol correctness, or Swift UI iteration.
 
 #### Goal
 
-Choose and document a reproducible packaging approach for a native macOS `.app` that includes or locates the Python tinychess GUI backend.
+Choose and document a reproducible packaging approach for a native macOS `.app` that includes or locates the Python vibechess GUI backend.
 
 #### Likely files
 
@@ -30,7 +30,7 @@ Choose and document a reproducible packaging approach for a native macOS `.app` 
   - A bundled/embedded Python environment.
   - A documented external `uv` dependency for developer-only builds.
 - Add an app/backend location strategy:
-  - development mode can use `uv run tinychess gui-server` from a configured repo path;
+  - development mode can use `uv run vibechess gui-server` from a configured repo path;
   - bundled mode should locate the packaged backend relative to the `.app` bundle.
 - Identify the packaging command sequence needed to build the distributable app.
 - Identify codesigning and notarization requirements for macOS distribution.

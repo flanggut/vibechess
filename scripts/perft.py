@@ -6,11 +6,11 @@ from __future__ import annotations
 import argparse
 import time
 
-from tinychess.engine import Board, perft
+from vibechess.engine import Board, perft
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run a tinychess perft benchmark from startpos.")
+    parser = argparse.ArgumentParser(description="Run a vibechess perft benchmark from startpos.")
     parser.add_argument("depth", type=int, nargs="?", default=3)
     args = parser.parse_args()
     if args.depth < 0:

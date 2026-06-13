@@ -3,18 +3,18 @@
 import PackageDescription
 
 let package = Package(
-    name: "TinyChess",
+    name: "VibeChess",
     platforms: [
         .macOS(.v14)
     ],
     products: [
         .library(
-            name: "TinyChessCore",
-            targets: ["TinyChessCore"]
+            name: "VibeChessCore",
+            targets: ["VibeChessCore"]
         ),
         .executable(
-            name: "TinyChessMacApp",
-            targets: ["TinyChessMacApp"]
+            name: "VibeChessMacApp",
+            targets: ["VibeChessMacApp"]
         ),
     ],
     dependencies: [
@@ -22,22 +22,22 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "TinyChessCore"
+            name: "VibeChessCore"
         ),
         .executableTarget(
-            name: "TinyChessMacApp"
+            name: "VibeChessMacApp"
         ),
         .testTarget(
-            name: "TinyChessCoreTests",
+            name: "VibeChessCoreTests",
             dependencies: [
-                "TinyChessCore",
+                "VibeChessCore",
                 .product(name: "Testing", package: "swift-testing"),
             ]
         ),
         .testTarget(
-            name: "TinyChessMacAppTests",
+            name: "VibeChessMacAppTests",
             dependencies: [
-                "TinyChessMacApp",
+                "VibeChessMacApp",
                 .product(name: "Testing", package: "swift-testing"),
             ]
         ),

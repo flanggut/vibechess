@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import ExitStack
 from typing import cast
 
-from tinychess.profiling import (
+from vibechess.profiling import (
     ProfileStats,
     activate_self_play_profile,
     active_profiler,
@@ -13,7 +13,7 @@ from tinychess.profiling import (
 
 
 def test_legacy_self_play_profile_import_path_reexports_canonical_api() -> None:
-    from tinychess.nn import self_play_profile as legacy_module
+    from vibechess.nn import self_play_profile as legacy_module
 
     assert legacy_module.ProfileStats is ProfileStats
     assert legacy_module.activate_self_play_profile is activate_self_play_profile

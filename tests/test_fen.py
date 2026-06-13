@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from tinychess.engine import (
+from vibechess.engine import (
     STARTING_FEN,
     STARTPOS_FEN,
     Board,
@@ -20,8 +20,8 @@ from tinychess.engine import (
     legal_moves,
     parse_fen,
 )
-from tinychess.engine.fen import FenPosition, format_fen
-from tinychess.engine.square import parse_square
+from vibechess.engine.fen import FenPosition, format_fen
+from vibechess.engine.square import parse_square
 
 FIXTURES = Path(__file__).parent / "fixtures" / "fen_positions.json"
 

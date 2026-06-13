@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert PGN games into tinychess training dataset shards."""
+"""Convert PGN games into vibechess training dataset shards."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from tinychess.nn.pgn_dataset import PgnIngestConfig, PgnIngestProgress, ingest_pgn_dataset
+from vibechess.nn.pgn_dataset import PgnIngestConfig, PgnIngestProgress, ingest_pgn_dataset
 
 
 def main() -> int:

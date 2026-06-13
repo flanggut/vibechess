@@ -5,13 +5,13 @@ from __future__ import annotations
 
 import argparse
 
-from tinychess.ai.mcts import MCTSPlayer
-from tinychess.ai.search_config import MCTSConfig
-from tinychess.engine import Game
+from vibechess.ai.mcts import MCTSPlayer
+from vibechess.ai.search_config import MCTSConfig
+from vibechess.engine import Game
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run a tinychess classical MCTS benchmark.")
+    parser = argparse.ArgumentParser(description="Run a vibechess classical MCTS benchmark.")
     parser.add_argument("--simulations", type=int, default=25)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument(

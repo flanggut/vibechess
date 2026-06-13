@@ -10,8 +10,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import NoReturn
 
-from tinychess.ai import MCTSConfig, NeuralMCTSConfig
-from tinychess.ai.evaluation import (
+from vibechess.ai import MCTSConfig, NeuralMCTSConfig
+from vibechess.ai.evaluation import (
     MatchConfig,
     PromotionCriteria,
     evaluate_checkpoint_against_baselines,

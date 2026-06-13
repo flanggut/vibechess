@@ -6,8 +6,8 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
-from tinychess.engine import Game, Move
-from tinychess.nn import (
+from vibechess.engine import Game, Move
+from vibechess.nn import (
     ACTION_SPACE_SIZE,
     ACTION_SPACE_VERSION,
     CHECKPOINT_METADATA_SCHEMA_VERSION,
@@ -82,9 +82,9 @@ def fixed_inference(logits: Any, *, value: float = 0.125) -> PolicyValueInferenc
 
 
 def test_inference_import_paths_are_compatible() -> None:
-    from tinychess import nn as nn_package
-    from tinychess.nn import inference as inference_module
-    from tinychess.nn import model as model_module
+    from vibechess import nn as nn_package
+    from vibechess.nn import inference as inference_module
+    from vibechess.nn import model as model_module
 
     assert model_module.PolicyValueInference is inference_module.PolicyValueInference
     assert model_module.InferenceResult is inference_module.InferenceResult

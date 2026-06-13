@@ -24,7 +24,7 @@ run-dir/
 └── games.jsonl
 ```
 
-`metadata.json` uses schema `tinychess-selfplay-v1` and includes the engine
+`metadata.json` uses schema `vibechess-selfplay-v1` and includes the engine
 version, git commit when available, action-space version, encoder version, model
 checkpoint id, generation settings, sample count, and game count.
 

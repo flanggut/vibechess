@@ -4,7 +4,7 @@ import random
 
 import pytest
 
-from tinychess.engine import (
+from vibechess.engine import (
     Board,
     Color,
     Move,
@@ -14,10 +14,10 @@ from tinychess.engine import (
     perft,
     pseudo_legal_moves,
 )
-from tinychess.engine.board import board_from_ascii
-from tinychess.engine.fen import parse_fen
-from tinychess.engine.legal_moves import has_legal_move, is_in_check
-from tinychess.engine.square import parse_square
+from vibechess.engine.board import board_from_ascii
+from vibechess.engine.fen import parse_fen
+from vibechess.engine.legal_moves import has_legal_move, is_in_check
+from vibechess.engine.square import parse_square
 
 
 def move_set(moves: tuple[Move, ...]) -> set[str]:

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from tinychess.ai.search_state import SearchState
-from tinychess.engine import Game, Move, OutcomeReason
+from vibechess.ai.search_state import SearchState
+from vibechess.engine import Game, Move, OutcomeReason
 
 
 def _assert_play_known_legal_matches_game(game: Game, move_uci: str) -> SearchState:

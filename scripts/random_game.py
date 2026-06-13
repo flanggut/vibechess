@@ -6,11 +6,11 @@ from __future__ import annotations
 import argparse
 import time
 
-from tinychess.engine import OutcomeReason, random_move_selector, simulate_game
+from vibechess.engine import OutcomeReason, random_move_selector, simulate_game
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run a tinychess random-game benchmark.")
+    parser = argparse.ArgumentParser(description="Run a vibechess random-game benchmark.")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-plies", type=int, default=512)
     args = parser.parse_args()

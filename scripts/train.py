@@ -6,11 +6,11 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from tinychess.nn.checkpoint import load_checkpoint
-from tinychess.nn.model import PolicyValueConfig
-from tinychess.nn.pgn_dataset import DEFAULT_MANIFEST_FILENAME
-from tinychess.nn.self_play_dataset import load_self_play_dataset
-from tinychess.nn.train import (
+from vibechess.nn.checkpoint import load_checkpoint
+from vibechess.nn.model import PolicyValueConfig
+from vibechess.nn.pgn_dataset import DEFAULT_MANIFEST_FILENAME
+from vibechess.nn.self_play_dataset import load_self_play_dataset
+from vibechess.nn.train import (
     EpochMetrics,
     TrainingConfig,
     train_from_directory,
@@ -99,7 +99,7 @@ def main() -> None:
         carry_optimizer_state_across_shards=args.carry_optimizer_state_across_shards,
         validation_fraction=args.validation_fraction,
     )
-    notes = "tinychess WP15 training run"
+    notes = "vibechess WP15 training run"
 
     dataset_path = Path(args.dataset)
     is_sharded = (dataset_path / DEFAULT_MANIFEST_FILENAME).is_file()

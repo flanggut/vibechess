@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-import tinychess.engine.game as game_module
-from tinychess.engine import (
+import vibechess.engine.game as game_module
+from vibechess.engine import (
     Color,
     Game,
     Move,
@@ -12,8 +12,8 @@ from tinychess.engine import (
     random_move_selector,
     simulate_game,
 )
-from tinychess.engine.board import board_from_ascii
-from tinychess.engine.game import has_insufficient_material
+from vibechess.engine.board import board_from_ascii
+from vibechess.engine.game import has_insufficient_material
 
 
 def test_game_records_history_and_clocks() -> None:

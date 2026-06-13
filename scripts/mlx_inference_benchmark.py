@@ -8,13 +8,13 @@ import time
 
 import mlx.core as mx
 
-from tinychess.engine import Game
-from tinychess.nn.inference import PolicyValueInference
-from tinychess.nn.model import PolicyValueConfig, PolicyValueNet
+from vibechess.engine import Game
+from vibechess.nn.inference import PolicyValueInference
+from vibechess.nn.model import PolicyValueConfig, PolicyValueNet
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run a tinychess MLX inference benchmark.")
+    parser = argparse.ArgumentParser(description="Run a vibechess MLX inference benchmark.")
     parser.add_argument("--iterations", type=int, default=100)
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--channels", type=int, default=32)

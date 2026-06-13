@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark tinychess self-play generation throughput."""
+"""Benchmark vibechess self-play generation throughput."""
 
 from __future__ import annotations
 
@@ -18,17 +18,17 @@ from statistics import median
 from tempfile import TemporaryDirectory
 from typing import Any, Literal
 
-from tinychess.nn.checkpoint import save_checkpoint
-from tinychess.nn.model import PolicyValueConfig, PolicyValueNet
-from tinychess.nn.self_play_profile import (
+from vibechess.nn.checkpoint import save_checkpoint
+from vibechess.nn.model import PolicyValueConfig, PolicyValueNet
+from vibechess.nn.self_play_profile import (
     ProfileStats,
     profile_limitations,
     stats_from_profile_report,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT_ROOT = Path("/tmp/tinychess-self-play-benchmark")
-SELF_PLAY_PROFILE_ENV = "TINYCHESS_SELF_PLAY_PROFILE"
+DEFAULT_OUTPUT_ROOT = Path("/tmp/vibechess-self-play-benchmark")
+SELF_PLAY_PROFILE_ENV = "VIBECHESS_SELF_PLAY_PROFILE"
 SELF_PLAY_PROFILE_FILENAME = "profile.json"
 ReportFormat = Literal["json", "markdown"]
 ProfileLevel = Literal["none", "summary", "detailed"]
@@ -305,7 +305,7 @@ def _shared_overhead_checkpoint(config: BenchmarkConfig) -> Iterator[Path | None
     ):
         yield None
         return
-    with TemporaryDirectory(prefix="tinychess-profile-overhead-") as temp_dir:
+    with TemporaryDirectory(prefix="vibechess-profile-overhead-") as temp_dir:
         checkpoint_path = Path(temp_dir)
         save_checkpoint(PolicyValueNet(_policy_value_config(config)), checkpoint_path)
         yield checkpoint_path
@@ -427,7 +427,7 @@ def _self_play_command(config: BenchmarkConfig, output_dir: Path) -> list[str]:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Benchmark tinychess self-play generation throughput."
+        description="Benchmark vibechess self-play generation throughput."
     )
     parser.add_argument("--games", type=int, default=10)
     parser.add_argument("--max-plies", type=int, default=192)
@@ -577,7 +577,7 @@ def _report_to_dict(report: BenchmarkReport) -> dict[str, object]:
 
 def _format_markdown(report: BenchmarkReport) -> str:
     lines = [
-        "# tinychess Self-Play Benchmark",
+        "# vibechess Self-Play Benchmark",
         "",
         "## Summary",
         "",

@@ -23,13 +23,13 @@ Implemented work packages:
 - WP15: MLX policy/value training loop, metrics logging, and checkpoint output.
 - WP16: Evaluation harness for checkpoint/player matches against random and classical MCTS baselines with early progress-validation promotion criteria, plus neural checkpoint head-to-head matches without baselines or promotion gates.
 - WP17: Full benchmark suite with Swift acceleration recommendation heuristic.
-- WP18: Swift package bootstrap with `TinyChessCore` and Swift tests.
-- GUI MVP: `tinychess gui-server` plus a SwiftUI `TinyChessMacApp` frontend for human-vs-AI play.
+- WP18: Swift package bootstrap with `VibeChessCore` and Swift tests.
+- GUI MVP: `vibechess gui-server` plus a SwiftUI `VibeChessMacApp` frontend for human-vs-AI play.
 
 ## Package Layout
 
 ```text
-src/tinychess/
+src/vibechess/
 ├── __init__.py
 ├── cli.py
 ├── profiling.py
@@ -63,7 +63,7 @@ src/tinychess/
 │   ├── pgn_dataset.py
 │   ├── self_play.py
 │   ├── self_play_dataset.py
-│   ├── self_play_profile.py  # compatibility re-export for tinychess.profiling
+│   ├── self_play_profile.py  # compatibility re-export for vibechess.profiling
 │   └── train.py
 ├── protocols/
 │   ├── __init__.py
@@ -82,9 +82,9 @@ swift/
 ├── Package.swift
 ├── README.md
 ├── Sources/
-│   ├── TinyChessCore/
-│   │   └── TinyChessCore.swift
-│   └── TinyChessMacApp/
+│   ├── VibeChessCore/
+│   │   └── VibeChessCore.swift
+│   └── VibeChessMacApp/
 │       ├── AppState.swift
 │       ├── BackendClient.swift
 │       ├── BackendModels.swift
@@ -92,17 +92,17 @@ swift/
 │       ├── ControlsView.swift
 │       ├── MoveListView.swift
 │       ├── SquareView.swift
-│       └── TinyChessMacApp.swift
+│       └── VibeChessMacApp.swift
 └── Tests/
-    ├── TinyChessCoreTests/
-    │   └── TinyChessCoreTests.swift
-    └── TinyChessMacAppTests/
+    ├── VibeChessCoreTests/
+    │   └── VibeChessCoreTests.swift
+    └── VibeChessMacAppTests/
         ├── AppStateTests.swift
         ├── BackendClientTests.swift
         ├── BackendModelsTests.swift
         ├── BoardViewTests.swift
         ├── ControlsMoveListTests.swift
-        └── TinyChessMacAppTests.swift
+        └── VibeChessMacAppTests.swift
 ```
 
 ## Engine Boundaries
@@ -118,19 +118,19 @@ The engine currently owns:
 - Minimal `Board.apply_move()` for legal move generation and perft.
 - `Game` snapshots with immutable position/move history and copied repetition state.
 - Halfmove and fullmove counters at game level.
-- Engine-owned transition primitives in `tinychess.engine.transition` for shared position keys, capture detection, known-legal state advancement, and pragmatic outcome evaluation. These helpers are an internal engine boundary for `Game`, search-state, bounded PGN parser, and PGN ingestion replay parity, not a protocol expansion, and are intentionally not re-exported from `tinychess.engine.__init__` yet.
+- Engine-owned transition primitives in `vibechess.engine.transition` for shared position keys, capture detection, known-legal state advancement, and pragmatic outcome evaluation. These helpers are an internal engine boundary for `Game`, search-state, bounded PGN parser, and PGN ingestion replay parity, not a protocol expansion, and are intentionally not re-exported from `vibechess.engine.__init__` yet.
 - Checkmate, stalemate, and pragmatic draw outcomes.
 - Complete-game simulation with caller-provided move selectors.
 
 Protocol support currently includes two separate frontends:
 
-- A bounded synchronous UCI loop in `tinychess.protocols.uci`. It accepts
+- A bounded synchronous UCI loop in `vibechess.protocols.uci`. It accepts
   standard handshake/readiness commands, `ucinewgame`, `position startpos
   [moves ...]`, `position fen ... [moves ...]`, `go`, `stop`, and `quit`. `go`
   returns a random legal `bestmove` or `bestmove 0000` for terminal/no-legal
   positions.
-- A GUI-specific JSON-lines loop in `tinychess.protocols.gui`, exposed through
-  `uv run tinychess gui-server`. It reads one request object per line and writes
+- A GUI-specific JSON-lines loop in `vibechess.protocols.gui`, exposed through
+  `uv run vibechess gui-server`. It reads one request object per line and writes
   one response object per line. Commands include `hello`, `newGame`, `state`,
   `makeMove`, `aiMove`, `undo`, `setAiConfig`, and `quit`. State-bearing
   responses include FEN, occupied squares, side to move, legal moves, legal
@@ -141,20 +141,20 @@ Protocol support currently includes two separate frontends:
 
 The AI layer owns the `Player` protocol, `RandomPlayer`, `MCTSPlayer`, neural PUCT MCTS, search configuration, and the WP16 smoke evaluation harness. These players interact with positions through public `Game.legal_moves` and `Game.play()` APIs rather than mutating engine internals. The GUI backend reuses these players for `aiMove`: random and classical MCTS work without external assets, while neural MCTS remains optional and requires a local checkpoint path. The evaluation harness runs small player/checkpoint matches from fresh games, compares checkpoints against random and classical MCTS baselines, records early promotion decisions as progress validation rather than evidence of competitive strength, and can run direct neural checkpoint head-to-head matches where baselines and promotion criteria are intentionally skipped.
 
-The NN layer keeps encoder/action-space definitions in `tinychess.nn.encode`, model architecture and checkpoint metadata configuration in `tinychess.nn.model`, and policy/value result DTOs plus `PolicyValueInference` in `tinychess.nn.inference`. Self-play game generation stays in `tinychess.nn.self_play`, while self-play dataset constants, record/metadata DTOs, save/load/merge helpers, and validation live in `tinychess.nn.self_play_dataset`; historical dataset IO imports from `tinychess.nn.self_play` remain compatible. Historical imports of inference symbols from `tinychess.nn.model` and top-level `tinychess.nn` also remain compatible, but internal callers should prefer `tinychess.nn.inference` for inference wrappers and `tinychess.nn.self_play_dataset` for dataset IO. These splits do not change the MLX model architecture, tensor shapes, 4672-action policy space, value range, checkpoint metadata, or self-play/PGN dataset file schemas.
+The NN layer keeps encoder/action-space definitions in `vibechess.nn.encode`, model architecture and checkpoint metadata configuration in `vibechess.nn.model`, and policy/value result DTOs plus `PolicyValueInference` in `vibechess.nn.inference`. Self-play game generation stays in `vibechess.nn.self_play`, while self-play dataset constants, record/metadata DTOs, save/load/merge helpers, and validation live in `vibechess.nn.self_play_dataset`; historical dataset IO imports from `vibechess.nn.self_play` remain compatible. Historical imports of inference symbols from `vibechess.nn.model` and top-level `vibechess.nn` also remain compatible, but internal callers should prefer `vibechess.nn.inference` for inference wrappers and `vibechess.nn.self_play_dataset` for dataset IO. These splits do not change the MLX model architecture, tensor shapes, 4672-action policy space, value range, checkpoint metadata, or self-play/PGN dataset file schemas.
 
-Profiling instrumentation lives at `tinychess.profiling` so engine and AI hot paths can record timings, counters, and distributions without importing the neural-network package. The historical `tinychess.nn.self_play_profile` module is a compatibility re-export only; engine and AI code should not depend on `tinychess.nn` for profiling.
+Profiling instrumentation lives at `vibechess.profiling` so engine and AI hot paths can record timings, counters, and distributions without importing the neural-network package. The historical `vibechess.nn.self_play_profile` module is a compatibility re-export only; engine and AI code should not depend on `vibechess.nn` for profiling.
 
 The native macOS app is a SwiftUI frontend, not a Swift chess engine. It maps
 squares, renders Unicode pieces, displays state and controls, and sends
 UCI-style move strings to the backend. Legal move generation, move application,
-outcome detection, undo replay, and AI selection remain in Python. `TinyChessCore`
+outcome detection, undo replay, and AI selection remain in Python. `VibeChessCore`
 continues to be acceleration scaffolding only until future benchmark-driven
 parity work proves a Swift implementation.
 
 Current GUI MVP limitations:
 
-- Local development launch assumes `uv run tinychess gui-server` is available
+- Local development launch assumes `uv run vibechess gui-server` is available
   from the repository checkout.
 - Search is synchronous in the Python backend; the Swift app keeps the UI
   responsive by awaiting backend work outside direct button handlers, but
@@ -184,8 +184,8 @@ uv sync --dev
 uv run pytest
 uv run ruff check .
 uv run mypy
-uv run tinychess --help
-printf '{"id":1,"cmd":"hello"}\n{"id":2,"cmd":"quit"}\n' | uv run tinychess gui-server
+uv run vibechess --help
+printf '{"id":1,"cmd":"hello"}\n{"id":2,"cmd":"quit"}\n' | uv run vibechess gui-server
 ```
 
 A lightweight perft benchmark is available:
@@ -201,5 +201,5 @@ uv run python scripts/train.py --dataset data/selfplay/smoke --output data/check
 uv run python scripts/evaluate.py --checkpoint data/checkpoints/train-smoke/checkpoint-final --games 1 --max-plies 8 --neural-simulations 1
 (cd swift && swift test)
 (cd swift && swift build -c release)
-(cd swift && swift run TinyChessMacApp)  # launches the local-first GUI app
+(cd swift && swift run VibeChessMacApp)  # launches the local-first GUI app
 ```

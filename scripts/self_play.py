@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a small tinychess MCTS self-play dataset."""
+"""Generate a small vibechess MCTS self-play dataset."""
 
 from __future__ import annotations
 
@@ -13,12 +13,12 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from tinychess.ai.neural_mcts import NeuralMCTSConfig
-from tinychess.ai.search_config import MCTSConfig
-from tinychess.nn.checkpoint import load_checkpoint, save_checkpoint
-from tinychess.nn.inference import PolicyValueInference
-from tinychess.nn.model import PolicyValueConfig, PolicyValueNet
-from tinychess.nn.self_play import (
+from vibechess.ai.neural_mcts import NeuralMCTSConfig
+from vibechess.ai.search_config import MCTSConfig
+from vibechess.nn.checkpoint import load_checkpoint, save_checkpoint
+from vibechess.nn.inference import PolicyValueInference
+from vibechess.nn.model import PolicyValueConfig, PolicyValueNet
+from vibechess.nn.self_play import (
     DEFAULT_PROFILE_FILENAME,
     LABEL_SOURCE_CLASSICAL,
     LABEL_SOURCE_NEURAL,
@@ -28,22 +28,22 @@ from tinychess.nn.self_play import (
     generate_self_play_dataset,
     self_play_profile,
 )
-from tinychess.nn.self_play_dataset import (
+from vibechess.nn.self_play_dataset import (
     SelfPlayDataset,
     merge_self_play_datasets,
     save_self_play_dataset,
 )
-from tinychess.nn.self_play_profile import (
+from vibechess.nn.self_play_profile import (
     ProfileStats,
     profile_level_from_env,
     profile_scope,
     stats_from_profile_report,
 )
-from tinychess.nn.self_play_profile import (
+from vibechess.nn.self_play_profile import (
     profile_report as build_profile_report,
 )
 
-PROFILE_ENV_VAR = "TINYCHESS_SELF_PLAY_PROFILE"
+PROFILE_ENV_VAR = "VIBECHESS_SELF_PLAY_PROFILE"
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,7 +273,7 @@ def _write_profile(
 
 def _temporary_checkpoint(args: GenerationArgs) -> TemporaryDirectory[str]:
     with profile_scope("self_play.temp_checkpoint_save"):
-        temp_dir = TemporaryDirectory(prefix="tinychess-self-play-")
+        temp_dir = TemporaryDirectory(prefix="vibechess-self-play-")
         model_config = PolicyValueConfig(
             residual_channels=args.channels,
             residual_blocks=args.blocks,
@@ -319,7 +319,7 @@ def _directory_size(directory: Path) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate tinychess self-play samples.")
+    parser = argparse.ArgumentParser(description="Generate vibechess self-play samples.")
     parser.add_argument("--output", type=Path, default=Path("data/selfplay/smoke"))
     parser.add_argument("--checkpoint", type=Path, default=None)
     parser.add_argument("--checkpoint-id", default=None)

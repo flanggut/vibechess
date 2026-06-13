@@ -12,12 +12,12 @@ from typing import Any
 import mlx.core as mx
 import numpy as np
 
-import tinychess.nn.self_play as self_play
-from tinychess.ai.neural_mcts import NeuralMCTSConfig
-from tinychess.ai.search_config import MCTSConfig
-from tinychess.engine import Game, Move, OutcomeReason
-from tinychess.nn.checkpoint import save_checkpoint
-from tinychess.nn.encode import (
+import vibechess.nn.self_play as self_play
+from vibechess.ai.neural_mcts import NeuralMCTSConfig
+from vibechess.ai.search_config import MCTSConfig
+from vibechess.engine import Game, Move, OutcomeReason
+from vibechess.nn.checkpoint import save_checkpoint
+from vibechess.nn.encode import (
     ACTION_SPACE_SIZE,
     ACTION_SPACE_VERSION,
     ENCODER_VERSION,
@@ -25,7 +25,7 @@ from tinychess.nn.encode import (
     legal_move_mask_from_legal_moves_np,
     move_to_action_index,
 )
-from tinychess.nn.model import (
+from vibechess.nn.model import (
     InferenceResult,
     LegalPolicyBatchResult,
     MLXArray,
@@ -33,7 +33,7 @@ from tinychess.nn.model import (
     PolicyValueInference,
     PolicyValueNet,
 )
-from tinychess.nn.self_play import (
+from vibechess.nn.self_play import (
     BATCHING_MODE_CENTRAL_INFERENCE_QUEUE,
     BATCHING_MODE_SERIAL,
     DEFAULT_DATASET_FILENAME,
@@ -1108,7 +1108,7 @@ def test_self_play_script_writes_profile_for_parallel_workers(tmp_path: Path) ->
         capture_output=True,
         text=True,
         timeout=30,
-        env={**os.environ, "TINYCHESS_SELF_PLAY_PROFILE": "1"},
+        env={**os.environ, "VIBECHESS_SELF_PLAY_PROFILE": "1"},
     )
 
     assert result.returncode == 0, result.stderr

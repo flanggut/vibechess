@@ -8,10 +8,10 @@ from typing import cast
 import mlx.core as mx
 import pytest
 
-import tinychess.ai.search_state as search_state_module
-import tinychess.engine.game as game_module
-from tinychess.ai.mcts import MCTSPlayer
-from tinychess.ai.neural_mcts import (
+import vibechess.ai.search_state as search_state_module
+import vibechess.engine.game as game_module
+from vibechess.ai.mcts import MCTSPlayer
+from vibechess.ai.neural_mcts import (
     NeuralMCTSConfig,
     NeuralMCTSEdge,
     NeuralMCTSInferenceRequest,
@@ -22,16 +22,16 @@ from tinychess.ai.neural_mcts import (
     _legal_priors,
     _select_by_temperature,
 )
-from tinychess.ai.player import NoLegalMoveError, RandomPlayer, play_game
-from tinychess.ai.search_config import MCTSConfig
-from tinychess.ai.search_state import SearchState
-from tinychess.engine import Game, Move, OutcomeReason
-from tinychess.engine.board import Board, board_from_ascii
-from tinychess.engine.piece import Color
-from tinychess.nn import inference as inference_module
-from tinychess.nn.encode import ACTION_SPACE_SIZE, move_to_action_index
-from tinychess.nn.inference import InferenceResult, LegalPolicyBatchResult, PolicyValueInference
-from tinychess.nn.model import MLXArray, PolicyValueConfig, PolicyValueNet
+from vibechess.ai.player import NoLegalMoveError, RandomPlayer, play_game
+from vibechess.ai.search_config import MCTSConfig
+from vibechess.ai.search_state import SearchState
+from vibechess.engine import Game, Move, OutcomeReason
+from vibechess.engine.board import Board, board_from_ascii
+from vibechess.engine.piece import Color
+from vibechess.nn import inference as inference_module
+from vibechess.nn.encode import ACTION_SPACE_SIZE, move_to_action_index
+from vibechess.nn.inference import InferenceResult, LegalPolicyBatchResult, PolicyValueInference
+from vibechess.nn.model import MLXArray, PolicyValueConfig, PolicyValueNet
 
 
 @dataclass(slots=True)

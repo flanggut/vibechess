@@ -1,6 +1,6 @@
 # PGN Dataset Ingestion
 
-Tinychess can convert external PGN game collections into the same policy/value
+Vibechess can convert external PGN game collections into the same policy/value
 NPZ dataset layout used by self-play training. This is intended for supervised
 policy pretraining before iterative self-play.
 
@@ -32,13 +32,13 @@ data/selfplay/pgn-elite/
     └── ...
 ```
 
-Each shard is compatible with `tinychess.nn.self_play_dataset.load_self_play_dataset`; the older `tinychess.nn.self_play.load_self_play_dataset` import path remains a compatibility re-export.
+Each shard is compatible with `vibechess.nn.self_play_dataset.load_self_play_dataset`; the older `vibechess.nn.self_play.load_self_play_dataset` import path remains a compatibility re-export.
 `manifest.json` lists all shard directories for shard-wise training. Import writes
 NumPy-native tensors directly while preserving the dense self-play shard schema.
 During import, the strict/sanitized PGN parser exposes per-ply boards and legal
 moves so tensor encoding can reuse parser-computed legality instead of replaying
 legal generation a second time. Parser advancement and ingestion replay use the
-shared `tinychess.engine.transition` helpers with no-history state, so each ply
+shared `vibechess.engine.transition` helpers with no-history state, so each ply
 needs one full legal-move tuple for SAN resolution and downstream dense masks,
 rather than replaying through `Game.play()`.
 
@@ -96,7 +96,7 @@ uv run python scripts/pgn_ingest_benchmark.py \
   --input lichess_elite_2025-11.pgn \
   --max-records 100 \
   --mode full-write \
-  --dataset-output-dir /tmp/tinychess-pgn-benchmark \
+  --dataset-output-dir /tmp/vibechess-pgn-benchmark \
   --format json
 ```
 

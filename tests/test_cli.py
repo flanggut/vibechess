@@ -4,14 +4,14 @@ import json
 from io import StringIO
 from typing import Any, cast
 
-from tinychess.cli import main
+from vibechess.cli import main
 
 
 def test_cli_help_smoke(capsys) -> None:  # type: ignore[no-untyped-def]
     assert main([]) == 0
 
     captured = capsys.readouterr()
-    assert "tinychess" in captured.out
+    assert "vibechess" in captured.out
     assert "--version" in captured.out
     assert "gui-server" in captured.out
 
@@ -23,7 +23,7 @@ def test_cli_version_smoke(capsys) -> None:  # type: ignore[no-untyped-def]
         assert exc.code == 0
 
     captured = capsys.readouterr()
-    assert "tinychess" in captured.out
+    assert "vibechess" in captured.out
 
 
 def test_gui_server_help_lists_protocol_options(capsys) -> None:  # type: ignore[no-untyped-def]
@@ -50,7 +50,7 @@ def test_gui_server_invalid_default_config_returns_usage_error() -> None:
     )
 
     assert code == 2
-    assert "tinychess gui-server" in stderr.getvalue()
+    assert "vibechess gui-server" in stderr.getvalue()
     assert "simulations" in stderr.getvalue()
 
 
@@ -87,6 +87,6 @@ def test_gui_server_cli_responds_to_hello_state_and_quit() -> None:
     responses = [cast(dict[str, Any], json.loads(line)) for line in stdout.getvalue().splitlines()]
     assert [response["id"] for response in responses] == [1, 2, 3]
     assert all(response["ok"] is True for response in responses)
-    assert responses[0]["protocol"] == "tinychess-gui-v1"
+    assert responses[0]["protocol"] == "vibechess-gui-v1"
     assert responses[1]["state"]["moves"] == []
     assert responses[2]["state"]["sideToMove"] == "white"

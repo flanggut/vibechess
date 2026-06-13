@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "tinychess"
+name = "vibechess"
 version = "0.1.0"
 description = "A small chess engine and neural-MCTS AI for Apple Silicon macOS."
 readme = "README.md"
@@ -29,7 +29,7 @@ dependencies = [
 ]
 
 [project.scripts]
-tinychess = "tinychess.cli:main"
+vibechess = "vibechess.cli:main"
 
 [dependency-groups]
 dev = [

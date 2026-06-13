@@ -9,29 +9,29 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-import tinychess.nn.train as train_module
-from tinychess.engine.game import Game
-from tinychess.engine.legal_moves import legal_moves
-from tinychess.engine.move import Move
-from tinychess.engine.pgn import PgnGameTrace, PgnParsedPly
-from tinychess.engine.pgn_stream import (
+import vibechess.nn.train as train_module
+from vibechess.engine.game import Game
+from vibechess.engine.legal_moves import legal_moves
+from vibechess.engine.move import Move
+from vibechess.engine.pgn import PgnGameTrace, PgnParsedPly
+from vibechess.engine.pgn_stream import (
     iter_pgn_records,
     parse_ingest_pgn,
     parse_ingest_pgn_with_trace,
 )
-from tinychess.engine.piece import Color
-from tinychess.nn.checkpoint import (
+from vibechess.engine.piece import Color
+from vibechess.nn.checkpoint import (
     DEFAULT_WEIGHTS_FILENAME,
     load_checkpoint,
     load_checkpoint_metadata,
 )
-from tinychess.nn.encode import (
+from vibechess.nn.encode import (
     ACTION_SPACE_SIZE,
     encode_game_np,
     legal_move_mask_from_legal_moves_np,
     move_to_action_index,
 )
-from tinychess.nn.pgn_dataset import (
+from vibechess.nn.pgn_dataset import (
     DEFAULT_MANIFEST_FILENAME,
     SUPPORTED_PGN_RESULTS,
     PgnIngestConfig,
@@ -40,8 +40,8 @@ from tinychess.nn.pgn_dataset import (
     ingest_pgn_dataset,
     shard_directories,
 )
-from tinychess.nn.self_play_dataset import load_self_play_dataset
-from tinychess.nn.train import TrainingConfig, train_from_directory, train_from_sharded_directory
+from vibechess.nn.self_play_dataset import load_self_play_dataset
+from vibechess.nn.train import TrainingConfig, train_from_directory, train_from_sharded_directory
 
 PGN_TEXT = """[Event "Tiny"]
 [Result "1-0"]
@@ -211,7 +211,7 @@ def test_training_replay_state_matches_game_play_for_black_quiet_fullmove_increm
 
 
 def test_shard_builder_rejects_bad_trace_without_partial_samples(tmp_path: Path) -> None:
-    from tinychess.nn.pgn_dataset import _ShardBuilder
+    from vibechess.nn.pgn_dataset import _ShardBuilder
 
     traced = parse_ingest_pgn_with_trace(
         """[Event "BadTrace"]

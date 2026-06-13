@@ -4,10 +4,10 @@ import random
 
 import pytest
 
-from tinychess.ai.player import NoLegalMoveError, Player, RandomPlayer, play_game
-from tinychess.engine import Game, Move, OutcomeReason
-from tinychess.engine.board import board_from_ascii
-from tinychess.engine.piece import Color
+from vibechess.ai.player import NoLegalMoveError, Player, RandomPlayer, play_game
+from vibechess.engine import Game, Move, OutcomeReason
+from vibechess.engine.board import board_from_ascii
+from vibechess.engine.piece import Color
 
 
 def test_random_player_conforms_to_player_protocol() -> None:

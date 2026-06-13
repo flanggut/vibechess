@@ -18,7 +18,7 @@ a8 == 56
 h8 == 63
 ```
 
-Helpers live in `tinychess.engine.square`:
+Helpers live in `vibechess.engine.square`:
 
 - `make_square(file_index, rank_index)`
 - `parse_square("e4")`
@@ -58,7 +58,7 @@ Move objects do not perform legality checks themselves.
 
 ## FEN Support
 
-Full six-field FEN parsing and serialization lives in `tinychess.engine.fen` and is exported from `tinychess.engine`:
+Full six-field FEN parsing and serialization lives in `vibechess.engine.fen` and is exported from `vibechess.engine`:
 
 - `STARTING_FEN` / `STANDARD_STARTING_FEN` / `STARTPOS_FEN`
 - `FenPosition(board, halfmove_clock, fullmove_number)`
@@ -73,7 +73,7 @@ Full six-field FEN parsing and serialization lives in `tinychess.engine.fen` and
 
 ## PGN and SAN Support
 
-Bounded PGN parsing/writing and SAN conversion lives in `tinychess.engine.pgn` and is exported from `tinychess.engine`:
+Bounded PGN parsing/writing and SAN conversion lives in `vibechess.engine.pgn` and is exported from `vibechess.engine`:
 
 - `PgnGame(tags, moves, result, initial_game)`
 - `parse_pgn(text)` / `format_pgn(pgn_game)`
@@ -85,7 +85,7 @@ Supported PGN scope is intentionally small: one mainline game, standard tag pair
 
 ## Legal Move Generation
 
-Legal move generation lives in `tinychess.engine.legal_moves` and is exported from `tinychess.engine`:
+Legal move generation lives in `vibechess.engine.legal_moves` and is exported from `vibechess.engine`:
 
 - `pseudo_legal_moves(board)`
 - `legal_moves(board)`
@@ -116,7 +116,7 @@ The current transition strategy is copy-on-apply. This is simple, safe, and suff
 
 ## Game State and Outcomes
 
-`Game` lives in `tinychess.engine.game` and is exported from `tinychess.engine`.
+`Game` lives in `vibechess.engine.game` and is exported from `vibechess.engine`.
 
 It tracks:
 

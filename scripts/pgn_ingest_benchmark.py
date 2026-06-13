@@ -16,15 +16,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from tinychess.engine.game import Game
-from tinychess.engine.pgn import PgnParsedPly
-from tinychess.engine.pgn_stream import (
+from vibechess.engine.game import Game
+from vibechess.engine.pgn import PgnParsedPly
+from vibechess.engine.pgn_stream import (
     iter_pgn_records,
     parse_ingest_pgn_with_trace,
     pgn_has_fen_setup,
 )
-from tinychess.nn.encode import legal_move_mask_from_board_moves_np
-from tinychess.nn.pgn_dataset import (
+from vibechess.nn.encode import legal_move_mask_from_board_moves_np
+from vibechess.nn.pgn_dataset import (
     SUPPORTED_PGN_RESULTS,
     PgnIngestConfig,
     _one_hot_policy,

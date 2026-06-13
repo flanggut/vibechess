@@ -1,5 +1,5 @@
 {
-  "schema_version": "tinychess-checkpoint-v1",
+  "schema_version": "vibechess-checkpoint-v1",
   "model_config": {
     "input_channels": 20,
     "board_size": 8,
@@ -11,8 +11,8 @@
     "action_space_size": 4672
   },
   "action_space_version": "az-8x8x73-v1",
-  "encoder_version": "tinychess-board-v1",
+  "encoder_version": "vibechess-board-v1",
   "training_step": 1625093,
   "optimizer_state_available": false,
-  "notes": "tinychess WP15 training run"
+  "notes": "vibechess WP15 training run"
 }

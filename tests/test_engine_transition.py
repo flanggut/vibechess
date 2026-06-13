@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from tinychess.ai.search_state import SearchState
-from tinychess.engine import Color, Game, Move, Outcome, OutcomeReason, legal_moves
-from tinychess.engine.board import board_from_ascii
-from tinychess.engine.transition import (
+from vibechess.ai.search_state import SearchState
+from vibechess.engine import Color, Game, Move, Outcome, OutcomeReason, legal_moves
+from vibechess.engine.board import board_from_ascii
+from vibechess.engine.transition import (
     TransitionState,
     advance_known_legal_state,
     has_insufficient_material,
@@ -149,7 +149,7 @@ def test_outcome_for_state_returns_forced_outcome_first() -> None:
 
 
 def test_has_insufficient_material_helper_matches_engine_game_compatibility_export() -> None:
-    from tinychess.engine.game import has_insufficient_material as game_has_insufficient_material
+    from vibechess.engine.game import has_insufficient_material as game_has_insufficient_material
 
     board = board_from_ascii("4k3/8/8/8/8/8/8/3BK3")
 

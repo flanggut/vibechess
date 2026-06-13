@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from tinychess.benchmarks import (
+from vibechess.benchmarks import (
     BenchmarkReport,
     BenchmarkResult,
     benchmark_move_generation,
@@ -37,7 +37,7 @@ def test_benchmark_report_formats_markdown_and_json() -> None:
     )
 
     markdown = format_report(report)
-    assert "# tinychess Benchmark Report" in markdown
+    assert "# vibechess Benchmark Report" in markdown
     assert "## example" in markdown
     assert "measure first" in markdown
 
