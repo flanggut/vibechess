@@ -346,11 +346,12 @@ def main() -> int:
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=1,
+        default=8,
         help=(
             "in-process central inference batch size across independent neural "
-            "self-play games/searches; default 1 preserves serial behavior. "
-            "This is not within-tree leaf parallelism, which has been removed."
+            "self-play games/searches; default 8 enables central inference batching. "
+            "Set to 1 for serial behavior. This is not within-tree leaf parallelism, "
+            "which has been removed."
         ),
     )
     parser.add_argument(

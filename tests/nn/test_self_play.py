@@ -876,8 +876,9 @@ def test_self_play_script_help_describes_central_batching() -> None:
     assert result.returncode == 0, result.stderr
     assert "central inference batch size" in result.stdout
     assert "independent neural self-play games/searches" in result.stdout
-    assert "not within-tree" in result.stdout
-    assert "leaf parallelism" in result.stdout
+    assert "default 8" in result.stdout
+    assert "Set to 1 for" in result.stdout
+    assert "not within-tree leaf" in result.stdout
     assert "--progress" in result.stdout
     assert "auto" in result.stdout
 
@@ -1130,7 +1131,9 @@ def test_self_play_script_writes_profile_for_parallel_workers(tmp_path: Path) ->
     assert "dataset.merge" in profile["stats"]["zones"]
     timers = profile["stats"]["timers"]
     assert timers["search"]["completed_simulations"] == 2
-    assert timers["model_single"]["calls"] == 2
+    assert timers["model_single"]["calls"] == 0
+    assert timers["model_legal_batch"]["calls"] == 2
+    assert timers["model_legal_batch"]["positions"] == 2
     assert timers["game_legal_moves"]["calls"] > 0
     dataset = load_self_play_dataset(output)
     assert dataset.metadata.sample_count == 2
