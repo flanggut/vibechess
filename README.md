@@ -109,7 +109,8 @@ loader/writer tests over duplicated prose.
 
 
 Neural self-play can opt into visit-budget-aware tree reuse with
-`scripts/self_play.py --reuse-simulation-budget --min-reuse-simulations N`.
+`scripts/self_play.py --reuse-simulation-budget`; add
+`--min-reuse-simulations N` only when reused roots must receive a fresh visit floor.
 The default is off: enabling it changes policy targets and trajectories, so treat
 datasets generated with the flag as a separate quality/speed experiment.
 

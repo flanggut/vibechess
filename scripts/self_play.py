@@ -65,7 +65,7 @@ class GenerationArgs:
     collection_batch_size: int
     virtual_loss: int
     reuse_simulation_budget: bool = False
-    min_reuse_simulations: int = 16
+    min_reuse_simulations: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -361,7 +361,7 @@ def main() -> int:
     )
     parser.add_argument("--games", type=int, default=1)
     parser.add_argument("--max-plies", type=int, default=16)
-    parser.add_argument("--simulations", type=int, default=2)
+    parser.add_argument("--simulations", type=int, default=200)
     parser.add_argument(
         "--reuse-simulation-budget",
         action="store_true",
@@ -373,10 +373,10 @@ def main() -> int:
     parser.add_argument(
         "--min-reuse-simulations",
         type=int,
-        default=16,
+        default=0,
         help=(
             "minimum new neural MCTS simulations to run after visit-budget-aware "
-            "root reuse"
+            "root reuse; default 0 allows fully reusing an already-searched root"
         ),
     )
     parser.add_argument("--temperature", type=float, default=1.0)
@@ -451,6 +451,16 @@ def main() -> int:
         parser.error("--batch-size must be at least 1")
     if args.active_games is not None and args.active_games < 1:
         parser.error("--active-games must be at least 1")
+    if args.min_reuse_simulations < 0:
+        parser.error("--min-reuse-simulations must be non-negative")
+    if (
+        args.reuse_simulation_budget
+        and args.min_reuse_simulations > args.simulations
+    ):
+        parser.error(
+            "--min-reuse-simulations must be no greater than --simulations "
+            "when --reuse-simulation-budget is enabled"
+        )
     if args.label_source == LABEL_SOURCE_CLASSICAL:
         if args.checkpoint is not None:
             parser.error("--checkpoint is only supported with --label-source neural")

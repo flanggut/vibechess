@@ -1018,6 +1018,31 @@ def test_self_play_script_creates_documented_files(tmp_path: Path) -> None:
     assert (output / DEFAULT_METADATA_FILENAME).is_file()
     assert (output / DEFAULT_GAMES_FILENAME).is_file()
 
+def test_self_play_script_defaults_to_200_simulations(tmp_path: Path) -> None:
+    output = tmp_path / "script-default-simulations-output"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/self_play.py",
+            "--max-plies",
+            "0",
+            "--output",
+            str(output),
+        ],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    dataset = load_self_play_dataset(output)
+    mcts_settings = dataset.metadata.generation_settings["mcts"]
+    assert isinstance(mcts_settings, dict)
+    assert mcts_settings["simulations"] == 200
+
+
 
 def test_self_play_script_progress_always_writes_stderr_only(tmp_path: Path) -> None:
     output = tmp_path / "script-progress-output"
@@ -1142,8 +1167,6 @@ def test_self_play_script_records_reuse_budget_metadata(tmp_path: Path) -> None:
             "--simulations",
             "2",
             "--reuse-simulation-budget",
-            "--min-reuse-simulations",
-            "0",
             "--output",
             str(output),
         ],
@@ -1283,6 +1306,31 @@ def test_self_play_script_rejects_invalid_active_games(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "--active-games must be at least 1" in result.stderr
+
+
+def test_self_play_script_rejects_reuse_floor_above_simulations(tmp_path: Path) -> None:
+    output = tmp_path / "invalid-reuse-floor"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/self_play.py",
+            "--simulations",
+            "2",
+            "--reuse-simulation-budget",
+            "--min-reuse-simulations",
+            "3",
+            "--output",
+            str(output),
+        ],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode != 0
+    assert "--min-reuse-simulations must be no greater than --simulations" in result.stderr
 
 
 def test_self_play_script_rejects_classical_checkpoint_id(tmp_path: Path) -> None:
