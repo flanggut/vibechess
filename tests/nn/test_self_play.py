@@ -1197,6 +1197,7 @@ def test_self_play_script_can_generate_in_parallel(tmp_path: Path) -> None:
     parallel_settings = dataset.metadata.generation_settings["parallel"]
     assert isinstance(parallel_settings, dict)
     assert parallel_settings["workers"] == 2
+    assert not any(path.name.startswith(".parallel-output-shards-") for path in tmp_path.iterdir())
 
 
 def test_self_play_script_parallel_progress_reports_parent_chunks(
@@ -1274,7 +1275,11 @@ def test_self_play_script_writes_profile_for_parallel_workers(tmp_path: Path) ->
         assert worker_profile["metadata"]["worker_id"] in {0, 1}
         assert worker_profile["metadata"]["games"] == 1
         assert "pid" in worker_profile["metadata"]
+        shard_output = Path(worker_profile["metadata"]["shard_output"])
+        assert not shard_output.exists()
     assert "worker.pool_elapsed" in profile["stats"]["zones"]
+    assert "worker.shard_save" in profile["stats"]["zones"]
+    assert "dataset.load_shards" in profile["stats"]["zones"]
     assert "dataset.merge" in profile["stats"]["zones"]
     timers = profile["stats"]["timers"]
     assert timers["search"]["completed_simulations"] == 2

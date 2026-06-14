@@ -30,6 +30,7 @@ from vibechess.nn.self_play import (
 )
 from vibechess.nn.self_play_dataset import (
     SelfPlayDataset,
+    load_self_play_dataset,
     merge_self_play_datasets,
     save_self_play_dataset,
 )
@@ -71,11 +72,14 @@ class ChunkTask:
     games: int
     parent_pool_start_ns: int
     profile_level: str
+    shard_output: Path
 
 
 @dataclass(frozen=True, slots=True)
 class ChunkGenerationResult:
-    dataset: SelfPlayDataset
+    shard_output: Path
+    sample_count: int
+    game_count: int
     profile: dict[str, object] | None = None
 
 
@@ -220,8 +224,17 @@ def _generate_chunk(task: ChunkTask) -> ChunkGenerationResult:
                 seed=task.generation_args.seed + task.start_game,
             )
             dataset = generate_self_play_dataset(inference, config=config)
+        sample_count = dataset.metadata.sample_count
+        game_count = dataset.metadata.game_count
+        plies = sum(record.plies for record in dataset.games)
+        with profile_scope("worker.shard_save", **metadata):
+            save_self_play_dataset(dataset, task.shard_output)
         if not profiler.enabled:
-            return ChunkGenerationResult(dataset)
+            return ChunkGenerationResult(
+                shard_output=task.shard_output,
+                sample_count=sample_count,
+                game_count=game_count,
+            )
         profile = build_profile_report(
             profiler.stats,
             scope="self_play_worker",
@@ -229,11 +242,18 @@ def _generate_chunk(task: ChunkTask) -> ChunkGenerationResult:
             metadata={
                 **metadata,
                 "pid": os.getpid(),
-                "samples": dataset.metadata.sample_count,
-                "plies": sum(record.plies for record in dataset.games),
+                "samples": sample_count,
+                "game_count": game_count,
+                "plies": plies,
+                "shard_output": str(task.shard_output),
             },
         )
-        return ChunkGenerationResult(dataset, profile)
+        return ChunkGenerationResult(
+            shard_output=task.shard_output,
+            sample_count=sample_count,
+            game_count=game_count,
+            profile=profile,
+        )
 
 
 def _progress_enabled(mode: str) -> bool:
@@ -446,76 +466,94 @@ def main() -> int:
                     generation_args,
                     checkpoint=Path(temp_checkpoint.name),
                 )
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            shard_temp = TemporaryDirectory(
+                prefix=f".{args.output.name or 'self-play'}-shards-",
+                dir=str(args.output.parent),
+            )
             pool_start_ns = time.perf_counter_ns()
             completed_games = 0
             chunk_results_by_start: list[tuple[int, ChunkGenerationResult]] = []
             try:
-                with (
-                    profile_scope("worker.pool_elapsed", workers=workers),
-                    ProcessPoolExecutor(max_workers=workers) as executor,
-                ):
-                    futures = {
-                        executor.submit(
-                            _generate_chunk,
-                            ChunkTask(
-                                generation_args=generation_args,
-                                worker_id=worker_id,
+                try:
+                    shard_root = Path(shard_temp.name)
+                    with (
+                        profile_scope("worker.pool_elapsed", workers=workers),
+                        ProcessPoolExecutor(max_workers=workers) as executor,
+                    ):
+                        futures = {
+                            executor.submit(
+                                _generate_chunk,
+                                ChunkTask(
+                                    generation_args=generation_args,
+                                    worker_id=worker_id,
+                                    start_game=start_game,
+                                    games=games,
+                                    parent_pool_start_ns=pool_start_ns,
+                                    profile_level=profile_level,
+                                    shard_output=(
+                                        shard_root
+                                        / f"worker-{worker_id:03d}-start-{start_game:06d}"
+                                    ),
+                                ),
+                            ): (start_game, games)
+                            for worker_id, (start_game, games) in enumerate(chunks)
+                        }
+                        for future in as_completed(futures):
+                            start_game, games = futures[future]
+                            result = future.result()
+                            chunk_results_by_start.append((start_game, result))
+                            completed_games += games
+                            progress_reporter.chunk_completed(
+                                games_completed=completed_games,
+                                total_games=args.games,
                                 start_game=start_game,
                                 games=games,
-                                parent_pool_start_ns=pool_start_ns,
-                                profile_level=profile_level,
-                            ),
-                        ): (start_game, games)
-                        for worker_id, (start_game, games) in enumerate(chunks)
+                                samples=result.sample_count,
+                            )
+                finally:
+                    if temp_checkpoint is not None:
+                        temp_checkpoint.cleanup()
+                chunk_results = [
+                    result
+                    for _start_game, result in sorted(
+                        chunk_results_by_start,
+                        key=lambda item: item[0],
+                    )
+                ]
+                worker_reports = [
+                    result.profile for result in chunk_results if result.profile is not None
+                ]
+                worker_stats = [_profile_from_report(profile) for profile in worker_reports]
+                if main_profiler.enabled:
+                    for stats in worker_stats:
+                        main_profiler.stats.merge(stats)
+                    derived_profile.update(_worker_derived_profile(worker_reports))
+                parallel_settings: dict[str, object] = {
+                    "parallel": {
+                        "workers": workers,
+                        "chunks": [
+                            {
+                                "start_game": start_game,
+                                "games": games,
+                                "seed": args.seed + start_game,
+                            }
+                            for start_game, games in chunks
+                        ],
                     }
-                    for future in as_completed(futures):
-                        start_game, games = futures[future]
-                        result = future.result()
-                        chunk_results_by_start.append((start_game, result))
-                        completed_games += games
-                        progress_reporter.chunk_completed(
-                            games_completed=completed_games,
-                            total_games=args.games,
-                            start_game=start_game,
-                            games=games,
-                            samples=result.dataset.metadata.sample_count,
-                        )
-            finally:
-                if temp_checkpoint is not None:
-                    temp_checkpoint.cleanup()
-            chunk_results = [
-                result
-                for _start_game, result in sorted(
-                    chunk_results_by_start,
-                    key=lambda item: item[0],
-                )
-            ]
-            worker_reports = [
-                result.profile for result in chunk_results if result.profile is not None
-            ]
-            worker_stats = [_profile_from_report(profile) for profile in worker_reports]
-            if main_profiler.enabled:
-                for stats in worker_stats:
-                    main_profiler.stats.merge(stats)
-                derived_profile.update(_worker_derived_profile(worker_reports))
-            parallel_settings: dict[str, object] = {
-                "parallel": {
-                    "workers": workers,
-                    "chunks": [
-                        {
-                            "start_game": start_game,
-                            "games": games,
-                            "seed": args.seed + start_game,
-                        }
-                        for start_game, games in chunks
-                    ],
                 }
-            }
-            dataset = merge_self_play_datasets(
-                [result.dataset for result in chunk_results],
-                config=full_config,
-                generation_settings_extra=parallel_settings,
-            )
+                with profile_scope("dataset.load_shards", shards=len(chunk_results)):
+                    shard_datasets = [
+                        load_self_play_dataset(result.shard_output)
+                        for result in chunk_results
+                    ]
+                dataset = merge_self_play_datasets(
+                    shard_datasets,
+                    config=full_config,
+                    generation_settings_extra=parallel_settings,
+                )
+            finally:
+                shard_temp.cleanup()
         progress_reporter.saving(args.output)
         save_self_play_dataset(dataset, args.output)
         if main_profiler.enabled:
