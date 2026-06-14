@@ -186,7 +186,7 @@ Risk:
 
 - MLX arrays are process-local; do not serialize them across process workers.
 
-### 3. Vectorize compact legal-policy gather and softmax
+### 3. Vectorize compact legal-policy gather and softmax — Done 2026-06-14
 
 Current hotspot:
 
@@ -207,6 +207,20 @@ Acceptance:
 - Empty-legal rows still return empty policies.
 - Tests cover varied legal counts in one batch.
 - Inference microbenchmark improves for batch sizes 8-32.
+
+Implementation notes:
+
+- Replaced the per-row `predict_legal_batch()` softmax loop with `_compact_legal_policy_batch()`.
+- Pads legal-action indices to `[batch, max_legal]`, gathers with `mx.take_along_axis()`, masks padded slots, and calls `mx.softmax(..., axis=1)` once.
+- Preserves compact per-row return policies by slicing the batched compact policy matrix after the vectorized model/gather/softmax path.
+- Keeps the all-cached, equal-length batch path allocation-light by stacking supplied legal-index MLX arrays directly; varied-length batches use one padded host index/mask conversion.
+- Added a varied-count test with an empty row proving a single `(batch, max_legal)` softmax and matching per-row probabilities.
+- Measured direct gather/softmax microbenchmarks against the old per-row loop:
+  - Batch 8: 0.1661s old vs 0.1351s new over 1000 iterations, 1.23x faster.
+  - Batch 16: 0.1556s old vs 0.1108s new over 800 iterations, 1.40x faster.
+  - Batch 32: 0.1556s old vs 0.1092s new over 600 iterations, 1.43x faster.
+
+- Measured self-play smoke benchmark after change: 9.21s, 69.38 samples/sec on 32 games × 20 plies × 200 simulations, workers 8, batch 16.
 
 Risk:
 

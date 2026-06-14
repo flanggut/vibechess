@@ -317,20 +317,12 @@ class PolicyValueInference:
                         raise ValueError(
                             "legal_action_index_arrays rows must match legal_moves rows"
                         )
-            legal_policies: list[MLXArray] = []
             with profile_scope("inference.policy_softmax"):
-                for row_index, indices in enumerate(legal_indices_by_row):
-                    if not indices:
-                        legal_policies.append(mx.zeros((0,), dtype=mx.float32))
-                        continue
-                    index_array = (
-                        legal_index_arrays[row_index]
-                        if legal_index_arrays is not None
-                        else mx.array(indices)
-                    )
-                    legal_logits = logits[row_index][index_array]
-                    legal_policies.append(mx.softmax(legal_logits))
-            legal_policy_tuple = tuple(legal_policies)
+                legal_policy_tuple = _compact_legal_policy_batch(
+                    logits,
+                    legal_indices_by_row,
+                    legal_index_arrays,
+                )
             with profile_scope("mlx.sync.legal_batch_eval"):
                 mx.eval(output.value, *legal_policy_tuple)
             values = tuple(float(value) for value in np.asarray(output.value, dtype=np.float32))
@@ -493,6 +485,58 @@ def _prepare_cached_encoded_batch(
             f"{TENSOR_SHAPE} or [8, 8, {ENCODER_CHANNELS}], got {shape[1:]}"
         )
     return encoded
+
+
+
+def _compact_legal_policy_batch(
+    logits: MLXArray,
+    legal_indices_by_row: Sequence[Sequence[int]],
+    legal_index_arrays: Sequence[MLXArray] | None,
+) -> tuple[MLXArray, ...]:
+    """Return per-row compact legal policies using one batched gather and softmax."""
+    row_lengths = tuple(len(indices) for indices in legal_indices_by_row)
+    max_legal = max(row_lengths, default=0)
+    if max_legal == 0:
+        return tuple(mx.zeros((0,), dtype=mx.float32) for _ in row_lengths)
+    padded_indices, valid_mask = _padded_legal_index_batch(
+        legal_indices_by_row,
+        legal_index_arrays,
+        row_lengths,
+        max_legal,
+    )
+    legal_logits = mx.take_along_axis(logits, padded_indices, axis=1)
+    masked_logits = mx.where(
+        valid_mask,
+        legal_logits,
+        mx.full(tensor_shape(legal_logits), -1.0e9, dtype=legal_logits.dtype),
+    )
+    legal_policy_batch = mx.softmax(masked_logits, axis=1) * valid_mask.astype(mx.float32)
+    return tuple(
+        legal_policy_batch[row_index, :row_length]
+        for row_index, row_length in enumerate(row_lengths)
+    )
+
+
+def _padded_legal_index_batch(
+    legal_indices_by_row: Sequence[Sequence[int]],
+    legal_index_arrays: Sequence[MLXArray] | None,
+    row_lengths: Sequence[int],
+    max_legal: int,
+) -> tuple[MLXArray, MLXArray]:
+    if legal_index_arrays is not None and all(length == max_legal for length in row_lengths):
+        return (
+            mx.stack(list(legal_index_arrays)),
+            mx.ones((len(row_lengths), max_legal), dtype=mx.bool_),
+        )
+
+    padded = np.zeros((len(legal_indices_by_row), max_legal), dtype=np.int32)
+    valid = np.zeros((len(legal_indices_by_row), max_legal), dtype=np.bool_)
+    for row_index, indices in enumerate(legal_indices_by_row):
+        row_length = len(indices)
+        if row_length:
+            padded[row_index, :row_length] = indices
+            valid[row_index, :row_length] = True
+    return mx.array(padded), mx.array(valid)
 
 
 def _prepare_legal_mask_batch(legal_masks: MLXArray, batch_size: int) -> MLXArray:

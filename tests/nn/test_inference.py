@@ -67,6 +67,62 @@ def test_predict_legal_batch_profiles_single_combined_sync_zone() -> None:
             assert scalar(mx.sum(policy)) == pytest.approx(1.0)
 
 
+def test_predict_legal_batch_vectorizes_compact_softmax(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    games = (
+        Game.new(),
+        Game.from_fen("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1"),
+        Game.from_fen("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1"),
+    )
+    legal_moves = (
+        games[0].legal_moves[:3],
+        games[1].legal_moves[:5],
+        games[2].legal_moves,
+    )
+    logits = np.stack(
+        (
+            np.linspace(-1.0, 1.0, ACTION_SPACE_SIZE, dtype=np.float32),
+            np.linspace(1.0, -1.0, ACTION_SPACE_SIZE, dtype=np.float32),
+            np.zeros((ACTION_SPACE_SIZE,), dtype=np.float32),
+        )
+    )
+    inference = PolicyValueInference(
+        cast(PolicyValueNet, RowVaryingOutputModel(logits, (0.125, -0.25, 0.5)))
+    )
+    inference_mx = cast(Any, inference_module).mx
+    original_softmax = inference_mx.softmax
+    softmax_calls: list[tuple[tuple[int, ...], int | None]] = []
+
+    def recording_softmax(values: Any, *args: Any, **kwargs: Any) -> Any:
+        axis = kwargs.get("axis")
+        if args:
+            axis = args[0]
+        softmax_calls.append((tensor_shape(values), axis))
+        return original_softmax(values, *args, **kwargs)
+
+    monkeypatch.setattr(inference_mx, "softmax", recording_softmax)
+
+    result = inference.predict_legal_batch(games, legal_moves)
+
+    assert softmax_calls == [((3, 5), 1)]
+    for row_index, indices in enumerate(result.legal_action_indices):
+        policy = result.legal_policies[row_index]
+        assert tensor_shape(policy) == (len(indices),)
+        if not indices:
+            np.testing.assert_array_equal(np.asarray(policy, dtype=np.float32), np.array([]))
+            continue
+        row_logits = logits[row_index, list(indices)]
+        expected = np.exp(row_logits - np.max(row_logits))
+        expected = expected / np.sum(expected)
+        np.testing.assert_allclose(
+            np.asarray(policy, dtype=np.float32),
+            expected,
+            rtol=1e-6,
+            atol=1e-7,
+        )
+
+
 def test_predict_legal_batch_uses_cached_indices_and_encoded_inputs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
