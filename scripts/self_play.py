@@ -62,6 +62,8 @@ class GenerationArgs:
     blocks: int
     batch_size: int
     active_games: int | None
+    collection_batch_size: int
+    virtual_loss: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +187,8 @@ def _self_play_config(args: GenerationArgs, *, games: int, seed: int) -> SelfPla
             simulations=args.simulations,
             temperature=args.temperature,
             seed=seed,
+            collection_batch_size=args.collection_batch_size,
+            virtual_loss=args.virtual_loss,
         ),
         classical_mcts=MCTSConfig(
             simulations=args.simulations,
@@ -386,6 +390,27 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--collection-batch-size",
+        type=int,
+        default=1,
+        help=(
+            "within-search virtual-loss leaf collection width per neural search; "
+            "default 1 is serial. Values >1 gather that many distinct leaves per round "
+            "and evaluate them in one batched model call. Only active on the serial "
+            "self-play path (--batch-size 1); ignored when central cross-game batching "
+            "(--batch-size >1) is used."
+        ),
+    )
+    parser.add_argument(
+        "--virtual-loss",
+        type=int,
+        default=1,
+        help=(
+            "pessimistic visit count temporarily applied to in-flight leaf paths so "
+            "collected leaves diverge; only used when --collection-batch-size >1"
+        ),
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=1,
@@ -428,6 +453,8 @@ def main() -> int:
         blocks=args.blocks,
         batch_size=args.batch_size,
         active_games=args.active_games,
+        collection_batch_size=args.collection_batch_size,
+        virtual_loss=args.virtual_loss,
     )
     full_config = _self_play_config(generation_args, games=args.games, seed=args.seed)
 
