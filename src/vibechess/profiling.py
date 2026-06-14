@@ -429,10 +429,15 @@ class SelfPlayProfiler:
         self.stats = ProfileStats(metadata=dict(metadata or {}))
         self._clock = clock
         self._stack: list[ProfileZone] = []
-        self._slow_heaps: dict[Literal["ply", "search"], list[tuple[float, dict[str, object]]]] = {
+        self._slow_heaps: dict[
+            Literal["ply", "search"], list[tuple[float, int, dict[str, object]]]
+        ] = {
             "ply": [],
             "search": [],
         }
+        # Monotonic tiebreaker so heap ordering never compares the payload dicts
+        # when two records share an identical duration.
+        self._slow_sequence = 0
 
     @contextmanager
     def scope(self, name: str, **tags: object) -> Iterator[None]:
@@ -487,13 +492,14 @@ class SelfPlayProfiler:
     ) -> None:
         item = {"seconds": seconds, **dict(tags)}
         heap = self._slow_heaps[kind]
-        entry = (seconds, item)
+        self._slow_sequence += 1
+        entry = (seconds, self._slow_sequence, item)
         if len(heap) < SLOW_ITEM_LIMIT:
             heappush(heap, entry)
         elif seconds > heap[0][0]:
             heappushpop(heap, entry)
         target = self.stats.slowest_plies if kind == "ply" else self.stats.slowest_searches
-        target[:] = [entry_item for _seconds, entry_item in sorted(heap, reverse=True)]
+        target[:] = [entry_item for _seconds, _sequence, entry_item in sorted(heap, reverse=True)]
 
     def to_dict(self) -> dict[str, object]:
         return self.stats.to_dict()
