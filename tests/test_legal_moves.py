@@ -75,6 +75,46 @@ def test_legal_moves_matches_full_check_reference_on_fixtures(fen: str) -> None:
     assert move_set(legal_moves(board)) == move_set(reference_legal_moves_by_full_check(board))
 
 
+@pytest.mark.parametrize(
+    "fen",
+    [
+        "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1",
+        "4k3/8/8/r2pP2K/8/8/8/8 w - d6 0 1",
+        "8/8/8/8/R2Pp2k/8/8/4K3 b - d3 0 1",
+        "4k3/P7/8/8/8/8/8/4K3 w - - 0 1",
+        "4k3/8/8/8/8/8/p7/4K3 b - - 0 1",
+        "k3r3/8/8/8/8/8/4R3/4K3 w - - 0 1",
+    ],
+)
+def test_legal_moves_matches_reference_on_scratch_restoration_fixtures(fen: str) -> None:
+    board = parse_fen(fen).board
+    first_moves = move_set(legal_moves(board))
+    second_moves = move_set(legal_moves(board))
+
+    assert first_moves == second_moves
+    assert first_moves == move_set(reference_legal_moves_by_full_check(board))
+
+
+@pytest.mark.parametrize(
+    ("fen", "en_passant_uci"),
+    [
+        ("4k3/8/8/r2pP2K/8/8/8/8 w - d6 0 1", "e5d6"),
+        ("8/8/8/8/R2Pp2k/8/8/4K3 b - d3 0 1", "e4d3"),
+    ],
+)
+def test_en_passant_discovered_horizontal_check_is_illegal(
+    fen: str, en_passant_uci: str
+) -> None:
+    board = parse_fen(fen).board
+    pseudo = move_set(pseudo_legal_moves(board))
+    legal = move_set(legal_moves(board))
+    reference = move_set(reference_legal_moves_by_full_check(board))
+
+    assert en_passant_uci in pseudo
+    assert legal == reference
+    assert en_passant_uci not in legal
+
+
 def test_legal_moves_matches_full_check_reference_on_random_legal_game_states() -> None:
     rng = random.Random(20260603)
     board = Board.starting_position()

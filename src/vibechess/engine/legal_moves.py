@@ -237,37 +237,53 @@ def _king_safe_after_move(
     color = moving_piece.color
     is_king = moving_piece.kind is PieceType.KING
 
-    # Build the (index, new_value) edits this move applies; indices never overlap.
-    edits: list[tuple[int, Piece | None]] = [(from_index, None)]
+    from_original = squares[from_index]
+    to_original = squares[to_index]
+    scratch[from_index] = None
+
+    delta_abs = abs(to_index - from_index)
+    en_passant_capture_index = -1
+    en_passant_capture_original: Piece | None = None
     if (
         moving_piece.kind is PieceType.PAWN
         and en_passant_target == move.to_square
-        and squares[to_index] is None
-        and abs(to_index - from_index) in {7, 9}
+        and to_original is None
+        and (delta_abs == 7 or delta_abs == 9)
     ):
         capture_index = to_index + (-8 if color is Color.WHITE else 8)
         if 0 <= capture_index < 64:
-            edits.append((capture_index, None))
-    if move.promotion is not None:
-        edits.append((to_index, Piece(color, move.promotion)))
-    else:
-        edits.append((to_index, moving_piece))
-    if is_king and abs(to_index - from_index) == 2:
+            en_passant_capture_index = capture_index
+            en_passant_capture_original = squares[capture_index]
+            scratch[capture_index] = None
+
+    scratch[to_index] = Piece(color, move.promotion) if move.promotion is not None else moving_piece
+
+    rook_from = -1
+    rook_to = -1
+    rook_from_original: Piece | None = None
+    rook_to_original: Piece | None = None
+    if is_king and delta_abs == 2:
         rank_offset = 0 if color is Color.WHITE else 56
         if to_index == rank_offset + 6:
             rook_from, rook_to = rank_offset + 7, rank_offset + 5
         else:
             rook_from, rook_to = rank_offset, rank_offset + 3
-        edits.append((rook_to, squares[rook_from]))
-        edits.append((rook_from, None))
+        rook_from_original = squares[rook_from]
+        rook_to_original = squares[rook_to]
+        scratch[rook_to] = rook_from_original
+        scratch[rook_from] = None
 
-    for index, value in edits:
-        scratch[index] = value
     target_index = to_index if is_king else king_index
     safe = not _is_square_attacked_index(scratch, target_index, opponent)
+
     # Restore scratch to the original board placement for the next candidate.
-    for index, _value in edits:
-        scratch[index] = squares[index]
+    if rook_from != -1:
+        scratch[rook_to] = rook_to_original
+        scratch[rook_from] = rook_from_original
+    if en_passant_capture_index != -1:
+        scratch[en_passant_capture_index] = en_passant_capture_original
+    scratch[to_index] = to_original
+    scratch[from_index] = from_original
     return safe
 
 
