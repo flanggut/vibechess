@@ -363,6 +363,72 @@ def test_neural_mcts_uses_serial_inference_semantics() -> None:
     assert all(visits >= 0 for visits in result.visit_counts.values())
 
 
+def test_neural_mcts_collection_batches_distinct_leaves() -> None:
+    game = Game.new()
+    inference = RecordingPolicyValueInference()
+    config = NeuralMCTSConfig(simulations=32, seed=5, collection_batch_size=8, virtual_loss=1)
+    player = NeuralMCTSPlayer(inference, config)
+
+    result = player.search(game)
+
+    assert result.move in game.legal_moves
+    assert result.simulations == 32
+    # The collection path evaluates leaves only via the batched compact API.
+    assert inference.legal_batch_calls >= 1
+    assert inference.legal_calls == 0
+    assert inference.predict_calls == 0
+    # Virtual loss diverges selection, so at least one round batches multiple leaves.
+    assert max(inference.legal_batch_sizes) > 1
+    # No leaf is terminal at the opening, so every simulation evaluates exactly one leaf.
+    assert sum(inference.legal_batch_sizes) == result.simulations
+    # Virtual loss is fully unwound: root visits equal completed simulations.
+    assert player._tree_root is not None
+    assert player._tree_root.visits == result.simulations
+
+
+def test_neural_mcts_collection_returns_preferred_move() -> None:
+    game = Game.new()
+    preferred = Move.from_uci("e2e4")
+    inference = FakeLegalBatchInference(preferred_move=preferred, value=0.1)
+    config = NeuralMCTSConfig(simulations=24, seed=2, collection_batch_size=6, virtual_loss=2)
+    player = NeuralMCTSPlayer(inference, config)
+
+    result = player.search(game)
+
+    assert result.move == preferred
+    assert inference.legal_batch_calls >= 1
+    assert inference.legal_calls == 0
+
+
+def test_neural_mcts_collection_falls_back_without_batch_support() -> None:
+    game = Game.new()
+    inference = FakeInference()
+    # FakeInference exposes only predict(); collection requires predict_legal_batch,
+    # so the player must fall back to the single-leaf serial path.
+    config = NeuralMCTSConfig(simulations=4, seed=1, collection_batch_size=8)
+    player = NeuralMCTSPlayer(inference, config)
+
+    result = player.search(game)
+
+    assert result.move in game.legal_moves
+    assert result.simulations == 4
+    assert inference.calls == 4
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"collection_batch_size": 0},
+        {"virtual_loss": -1},
+    ],
+)
+def test_neural_mcts_config_rejects_invalid_collection_settings(
+    kwargs: dict[str, int],
+) -> None:
+    with pytest.raises(ValueError):
+        NeuralMCTSConfig(**kwargs)
+
+
 def test_neural_mcts_session_single_request_batches_match_search() -> None:
     game = Game.new()
     config = NeuralMCTSConfig(simulations=6, puct_exploration=1.5, temperature=0.0, seed=11)

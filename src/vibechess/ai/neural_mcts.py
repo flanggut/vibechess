@@ -5,9 +5,9 @@ from __future__ import annotations
 import math
 import random
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Protocol, cast
+from typing import Protocol, TypeAlias, cast
 
 import numpy as np
 
@@ -21,6 +21,7 @@ from vibechess.engine.piece import Color
 from vibechess.nn.encode import move_to_action_index
 from vibechess.nn.inference import (
     InferenceResult,
+    LegalPolicyBatchResult,
     LegalPolicyResult,
     PolicyValueInference,
 )
@@ -28,6 +29,11 @@ from vibechess.profiling import profile_scope, record_counter, record_distributi
 
 # Kept as a module attribute for Work Item 5.1 self-play profiling monkeypatches.
 determine_outcome = _game_determine_outcome
+
+# Batched compact-prediction callable used by virtual-loss leaf collection.
+_LegalBatchPredict: TypeAlias = Callable[
+    [Sequence[Game], Sequence[Sequence[Move]]], LegalPolicyBatchResult
+]
 
 
 class NeuralInference(Protocol):
@@ -45,6 +51,14 @@ class NeuralMCTSConfig:
     priors are cached without creating child nodes; when the cap is reached,
     search keeps simulating but evaluates the current node instead of
     materializing a selected child.
+
+    ``collection_batch_size`` enables virtual-loss leaf collection in ``search()``:
+    when greater than ``1`` and the inference backend supports batched legal-move
+    prediction, the player gathers up to that many distinct leaves per round
+    (temporarily applying ``virtual_loss`` to already-selected paths so selection
+    diverges), evaluates them in one batched model call, then unwinds the virtual
+    loss and backs up the real values. The default of ``1`` preserves the original
+    one-leaf-per-prediction serial behavior exactly.
     """
 
     simulations: int = 25
@@ -53,6 +67,8 @@ class NeuralMCTSConfig:
     puct_exploration: float = 1.5
     temperature: float = 0.0
     seed: int | None = None
+    collection_batch_size: int = 1
+    virtual_loss: int = 1
 
     def __post_init__(self) -> None:
         if self.simulations < 1:
@@ -69,6 +85,12 @@ class NeuralMCTSConfig:
             raise ValueError(msg)
         if self.temperature < 0:
             msg = f"temperature must be non-negative, got {self.temperature}"
+            raise ValueError(msg)
+        if self.collection_batch_size < 1:
+            msg = f"collection_batch_size must be at least 1, got {self.collection_batch_size}"
+            raise ValueError(msg)
+        if self.virtual_loss < 0:
+            msg = f"virtual_loss must be non-negative, got {self.virtual_loss}"
             raise ValueError(msg)
 
 
@@ -325,6 +347,20 @@ class NeuralMCTSPlayer:
         nodes_created: int,
         deadline: float | None,
     ) -> tuple[int, int]:
+        if self.config.collection_batch_size > 1:
+            batch_predict = getattr(self.inference, "predict_legal_batch", None)
+            if callable(batch_predict):
+                return self._run_collected_simulations(
+                    root, nodes_created, deadline, cast(_LegalBatchPredict, batch_predict)
+                )
+        return self._run_single_leaf_simulations(root, nodes_created, deadline)
+
+    def _run_single_leaf_simulations(
+        self,
+        root: NeuralMCTSNode,
+        nodes_created: int,
+        deadline: float | None,
+    ) -> tuple[int, int]:
         simulations = 0
         while simulations < self.config.simulations:
             if deadline is not None and simulations > 0 and time.perf_counter() >= deadline:
@@ -345,6 +381,79 @@ class NeuralMCTSPlayer:
                 self._backup(selection.node, value)
                 simulations += 1
         return simulations, nodes_created
+
+    def _run_collected_simulations(
+        self,
+        root: NeuralMCTSNode,
+        nodes_created: int,
+        deadline: float | None,
+        batch_predict: _LegalBatchPredict,
+    ) -> tuple[int, int]:
+        """Run simulations using virtual-loss leaf collection and batched inference.
+
+        Each round selects up to ``collection_batch_size`` distinct leaves, applying
+        ``virtual_loss`` along each selected path so subsequent selections diverge.
+        Terminal leaves are backed up immediately (no model call needed). The remaining
+        leaves are evaluated in one batched prediction; their virtual loss is then
+        removed and the real network value is backed up.
+        """
+        width = self.config.collection_batch_size
+        simulations = 0
+        while simulations < self.config.simulations:
+            if deadline is not None and simulations > 0 and time.perf_counter() >= deadline:
+                break
+
+            target = min(width, self.config.simulations - simulations)
+            pending: list[_SerialLeafSelection] = []
+            pending_ids: set[int] = set()
+            with profile_scope("mcts.collect", target=target):
+                for _ in range(target):
+                    selection = self._select_serial_leaf(root, nodes_created)
+                    nodes_created = selection.nodes_created
+                    if selection.terminal_value is not None:
+                        self._backup(selection.node, selection.terminal_value)
+                        simulations += 1
+                        continue
+                    if id(selection.node) in pending_ids:
+                        # Selection re-converged on an in-flight leaf; flush what we have
+                        # rather than evaluating or expanding the same node twice.
+                        break
+                    self._apply_virtual_loss(selection.node)
+                    pending.append(selection)
+                    pending_ids.add(id(selection.node))
+
+            if not pending:
+                continue
+
+            with profile_scope("mcts.collected_predict", batch_size=len(pending)):
+                games = tuple(
+                    selection.node.state.to_game(include_positions=False) for selection in pending
+                )
+                legal_by_game = tuple(selection.node.legal_moves for selection in pending)
+                batch = batch_predict(games, legal_by_game)
+
+            for row_index, selection in enumerate(pending):
+                self._remove_virtual_loss(selection.node)
+                prediction = batch.result_at(row_index)
+                if selection.budget_blocked:
+                    record_counter("mcts.evaluate.calls")
+                    value = prediction.value
+                else:
+                    value = self._expand_from_prediction(selection.node, prediction)
+                    record_counter("mcts.expanded_simulations")
+                self._backup(selection.node, value)
+                simulations += 1
+        return simulations, nodes_created
+
+    def _apply_virtual_loss(self, node: NeuralMCTSNode) -> None:
+        amount = self.config.virtual_loss
+        if amount:
+            _add_path_value(node, float(-amount), visit_delta=amount)
+
+    def _remove_virtual_loss(self, node: NeuralMCTSNode) -> None:
+        amount = self.config.virtual_loss
+        if amount:
+            _add_path_value(node, float(amount), visit_delta=-amount)
 
     def _select_serial_leaf(
         self,
