@@ -17,6 +17,7 @@ from vibechess.ai.neural_mcts import (
     NeuralMCTSPlayer,
     NeuralMCTSResult,
     NeuralMCTSSearchSession,
+    _call_legal_batch_predict,
 )
 from vibechess.ai.search_config import MCTSConfig
 from vibechess.engine.game import Game, determine_outcome
@@ -348,11 +349,24 @@ def _run_central_neural_searches(
                 requests = [pending.pop(index) for index in batch_indexes]
                 games = tuple(request.game for request in requests)
                 legal_by_game = tuple(request.legal_moves for request in requests)
+                legal_indices_by_game = tuple(
+                    request.legal_action_indices for request in requests
+                )
+                encoded_inputs = tuple(request.encoded_input for request in requests)
+                cached_encoded_inputs = (
+                    None if any(item is None for item in encoded_inputs) else encoded_inputs
+                )
                 with profile_scope(
                     "self_play.central_predict_legal_batch",
                     batch_size=len(requests),
                 ):
-                    batch = inference.predict_legal_batch(games, legal_by_game)
+                    batch = _call_legal_batch_predict(
+                        inference.predict_legal_batch,
+                        games,
+                        legal_by_game,
+                        legal_indices_by_game,
+                        cached_encoded_inputs,
+                    )
                 for row_index, search_index in enumerate(batch_indexes):
                     searches[search_index].session.resume(batch.result_at(row_index))
                 progressed = True

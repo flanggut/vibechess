@@ -7,7 +7,8 @@ import random
 import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Protocol, TypeAlias, cast
+from inspect import Parameter, signature
+from typing import Any, Protocol, TypeAlias, cast
 
 import numpy as np
 
@@ -18,7 +19,7 @@ from vibechess.engine.game import determine_outcome as _game_determine_outcome
 from vibechess.engine.move import Move
 from vibechess.engine.outcome import Outcome
 from vibechess.engine.piece import Color
-from vibechess.nn.encode import move_to_action_index
+from vibechess.nn.encode import encode_board, move_to_action_index
 from vibechess.nn.inference import (
     InferenceResult,
     LegalPolicyBatchResult,
@@ -31,9 +32,7 @@ from vibechess.profiling import profile_scope, record_counter, record_distributi
 determine_outcome = _game_determine_outcome
 
 # Batched compact-prediction callable used by virtual-loss leaf collection.
-_LegalBatchPredict: TypeAlias = Callable[
-    [Sequence[Game], Sequence[Sequence[Move]]], LegalPolicyBatchResult
-]
+_LegalBatchPredict: TypeAlias = Callable[..., LegalPolicyBatchResult]
 
 
 class NeuralInference(Protocol):
@@ -117,6 +116,7 @@ class NeuralMCTSEdge:
         return self.total_value / self.visits
 
 
+
 @dataclass(slots=True)
 class NeuralMCTSNode:
     """One node in a neural PUCT search tree.
@@ -138,6 +138,8 @@ class NeuralMCTSNode:
     visits: int = 0
     total_value: float = 0.0
     is_expanded: bool = False
+    _legal_action_indices: tuple[int, ...] | None = field(default=None, repr=False)
+    _encoded_input: Any | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not self.legal_moves and self.outcome is None:
@@ -169,6 +171,31 @@ class NeuralMCTSNode:
                 legal_moves=legal,
                 outcome=outcome,
             )
+
+    def cached_legal_action_indices(self) -> tuple[int, ...]:
+        """Return legal action indices aligned with ``legal_moves`` for this node."""
+        indices = self._legal_action_indices
+        if indices is None:
+            with profile_scope("policy.legal_indices"):
+                record_counter("policy.legal_indices.moves", len(self.legal_moves))
+                indices = tuple(
+                    move_to_action_index(move, self.state.board) for move in self.legal_moves
+                )
+            self._legal_action_indices = indices
+        return indices
+
+    def cached_encoded_input(self) -> Any:
+        """Return an encoded MLX tensor for this node's position."""
+        encoded = self._encoded_input
+        if encoded is None:
+            with profile_scope("encode.game_mlx"):
+                encoded = encode_board(
+                    self.state.board,
+                    halfmove_clock=self.state.halfmove_clock,
+                    fullmove_number=self.state.fullmove_number,
+                )
+            self._encoded_input = encoded
+        return encoded
 
     @property
     def game(self) -> Game:
@@ -209,6 +236,7 @@ class NeuralMCTSNode:
                 key=lambda edge: (score(edge), edge.move.to_uci()),
             )
 
+
     def best_child(self, exploration: float) -> NeuralMCTSNode:
         """Return the materialized child behind the highest-scoring legal edge."""
         edge = self.best_edge(exploration)
@@ -246,6 +274,9 @@ class NeuralMCTSInferenceRequest:
     legal_moves: tuple[Move, ...]
     budget_blocked: bool
     selection_depth: int
+    legal_action_indices: tuple[int, ...] = ()
+    encoded_input: Any | None = None
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -430,7 +461,19 @@ class NeuralMCTSPlayer:
                     selection.node.state.to_game(include_positions=False) for selection in pending
                 )
                 legal_by_game = tuple(selection.node.legal_moves for selection in pending)
-                batch = batch_predict(games, legal_by_game)
+                legal_indices_by_game = tuple(
+                    selection.node.cached_legal_action_indices() for selection in pending
+                )
+                encoded_inputs = tuple(
+                    selection.node.cached_encoded_input() for selection in pending
+                )
+                batch = _call_legal_batch_predict(
+                    batch_predict,
+                    games,
+                    legal_by_game,
+                    legal_indices_by_game,
+                    encoded_inputs,
+                )
 
             for row_index, selection in enumerate(pending):
                 self._remove_virtual_loss(selection.node)
@@ -599,18 +642,15 @@ class NeuralMCTSPlayer:
             node.children[edge.move] = child
             return child
 
-    def _predict(self, node: NeuralMCTSNode) -> InferenceResult:
+    def _predict(self, node: NeuralMCTSNode) -> InferenceResult | LegalPolicyResult:
         with profile_scope("mcts.predict"):
             return self._predict_profiled(node)
 
-    def _predict_profiled(self, node: NeuralMCTSNode) -> InferenceResult:
+    def _predict_profiled(self, node: NeuralMCTSNode) -> InferenceResult | LegalPolicyResult:
         predict_with_legal_moves = getattr(self.inference, "predict_with_legal_moves", None)
         if callable(predict_with_legal_moves):
-            typed_predict = cast(
-                Callable[[Game, tuple[Move, ...]], InferenceResult],
-                predict_with_legal_moves,
-            )
-            return typed_predict(node.state.to_game(include_positions=False), node.legal_moves)
+            typed_predict = cast(Callable[..., InferenceResult], predict_with_legal_moves)
+            return _call_predict_with_cached_node(typed_predict, node)
         return self.inference.predict(
             node.state.to_game(include_positions=False),
             mask_legal_moves=True,
@@ -716,6 +756,8 @@ class NeuralMCTSSearchSession:
                     legal_moves=selection.node.legal_moves,
                     budget_blocked=selection.budget_blocked,
                     selection_depth=selection.selection_depth,
+                    legal_action_indices=selection.node.cached_legal_action_indices(),
+                    encoded_input=selection.node.cached_encoded_input(),
                 )
                 self._pending_selection = selection
                 self._pending_request = request
@@ -753,6 +795,70 @@ class NeuralMCTSSearchSession:
                 start_time=self._start_time,
             )
         return self._result
+
+
+def _call_predict_with_cached_node(
+    predict_with_legal_moves: Callable[..., InferenceResult],
+    node: NeuralMCTSNode,
+) -> InferenceResult:
+    game = node.state.to_game(include_positions=False)
+    supported = _supported_keyword_parameters(predict_with_legal_moves)
+    kwargs: dict[str, object] = {}
+    if "legal_action_indices" in supported:
+        kwargs["legal_action_indices"] = node.cached_legal_action_indices()
+    if "encoded_input" in supported:
+        kwargs["encoded_input"] = node.cached_encoded_input()
+    return predict_with_legal_moves(game, node.legal_moves, **kwargs)
+
+
+
+def _call_legal_batch_predict(
+    batch_predict: _LegalBatchPredict,
+    games: Sequence[Game],
+    legal_moves: Sequence[Sequence[Move]],
+    legal_action_indices: Sequence[Sequence[int]],
+    encoded_inputs: Sequence[Any] | None,
+) -> LegalPolicyBatchResult:
+    supported = _supported_keyword_parameters(batch_predict)
+    kwargs: dict[str, object] = {}
+    if "legal_action_indices" in supported:
+        kwargs["legal_action_indices"] = legal_action_indices
+    if "encoded_inputs" in supported:
+        kwargs["encoded_inputs"] = encoded_inputs
+    return batch_predict(games, legal_moves, **kwargs)
+
+
+# Memoized per underlying function so search hot paths avoid repeated
+# ``inspect.signature`` calls on custom inference implementations.
+_keyword_parameter_cache: dict[object, frozenset[str]] = {}
+
+
+def _supported_keyword_parameters(callable_object: Callable[..., object]) -> frozenset[str]:
+    """Return the keyword-argument names ``callable_object`` accepts, memoized."""
+    key = getattr(callable_object, "__func__", callable_object)
+    try:
+        cached = _keyword_parameter_cache.get(key)
+    except TypeError:
+        # Unhashable callable; fall back to uncached introspection.
+        return _introspect_keyword_parameters(callable_object)
+    if cached is None:
+        cached = _introspect_keyword_parameters(callable_object)
+        _keyword_parameter_cache[key] = cached
+    return cached
+
+
+def _introspect_keyword_parameters(callable_object: Callable[..., object]) -> frozenset[str]:
+    try:
+        parameters = signature(callable_object).parameters
+    except (TypeError, ValueError):
+        return frozenset()
+    if any(parameter.kind is Parameter.VAR_KEYWORD for parameter in parameters.values()):
+        return frozenset({"legal_action_indices", "encoded_input", "encoded_inputs"})
+    return frozenset(
+        name
+        for name, parameter in parameters.items()
+        if parameter.kind in (Parameter.KEYWORD_ONLY, Parameter.POSITIONAL_OR_KEYWORD)
+    )
 
 
 def _add_path_value(node: NeuralMCTSNode, value: float, *, visit_delta: int) -> int:
@@ -823,9 +929,17 @@ def _legal_priors_impl(
         raise ValueError(msg)
 
     record_counter("mcts.legal_priors.dense_fallback")
+    if prediction.legal_moves == legal and prediction.legal_action_indices:
+        record_counter("mcts.legal_priors.dense_cached_indices")
+        indices = prediction.legal_action_indices
+    elif isinstance(position, NeuralMCTSNode):
+        record_counter("mcts.legal_priors.dense_cached_indices")
+        indices = position.cached_legal_action_indices()
+    else:
+        indices = tuple(move_to_action_index(move, board) for move in legal)
+
     full_raw_priors: dict[Move, float] = {}
-    for move in legal:
-        index = move_to_action_index(move, board)
+    for move, index in zip(legal, indices, strict=True):
         full_raw_priors[move] = max(0.0, float(prediction.policy[index].item()))
     return _normalize_priors(full_raw_priors)
 

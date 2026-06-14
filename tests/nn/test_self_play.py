@@ -93,10 +93,22 @@ class CountingPolicyValueInference(PolicyValueInference):
             mask_legal_moves=mask_legal_moves,
         )
 
-    def predict_legal_batch(self, games: Any, legal_moves: Any) -> Any:
+    def predict_legal_batch(
+        self,
+        games: Any,
+        legal_moves: Any,
+        *,
+        legal_action_indices: Any | None = None,
+        encoded_inputs: Any | None = None,
+    ) -> Any:
         self.legal_batch_calls += 1
         self.legal_batch_sizes.append(len(games))
-        return super().predict_legal_batch(games, legal_moves)
+        return super().predict_legal_batch(
+            games,
+            legal_moves,
+            legal_action_indices=legal_action_indices,
+            encoded_inputs=encoded_inputs,
+        )
 
 
 class DeterministicPolicyValueInference(PolicyValueInference):
@@ -119,7 +131,11 @@ class DeterministicPolicyValueInference(PolicyValueInference):
         self,
         game: Game,
         legal_moves: tuple[Move, ...],
+        *,
+        legal_action_indices: Sequence[int] | None = None,
+        encoded_input: Any | None = None,
     ) -> InferenceResult:
+        del encoded_input
         legal = tuple(legal_moves)
         legal_policy = self._legal_policy(legal)
         policy = mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32)
@@ -129,7 +145,11 @@ class DeterministicPolicyValueInference(PolicyValueInference):
             policy=policy,
             value=0.0,
             legal_moves=legal,
-            legal_action_indices=tuple(move_to_action_index(move, game.board) for move in legal),
+            legal_action_indices=(
+                tuple(legal_action_indices)
+                if legal_action_indices is not None
+                else tuple(move_to_action_index(move, game.board) for move in legal)
+            ),
             legal_policy=legal_policy,
         )
 
@@ -137,7 +157,11 @@ class DeterministicPolicyValueInference(PolicyValueInference):
         self,
         games: Sequence[Game],
         legal_moves: Sequence[Sequence[Move]],
+        *,
+        legal_action_indices: Sequence[Sequence[int]] | None = None,
+        encoded_inputs: Any | None = None,
     ) -> LegalPolicyBatchResult:
+        del encoded_inputs
         games_tuple = tuple(games)
         legal_tuple = tuple(tuple(row) for row in legal_moves)
         policies = tuple(self._legal_policy(legal) for legal in legal_tuple)
@@ -145,9 +169,13 @@ class DeterministicPolicyValueInference(PolicyValueInference):
         return LegalPolicyBatchResult(
             values=tuple(0.0 for _game in games_tuple),
             legal_moves=legal_tuple,
-            legal_action_indices=tuple(
-                tuple(move_to_action_index(move, game.board) for move in legal)
-                for game, legal in zip(games_tuple, legal_tuple, strict=True)
+            legal_action_indices=(
+                tuple(tuple(row) for row in legal_action_indices)
+                if legal_action_indices is not None
+                else tuple(
+                    tuple(move_to_action_index(move, game.board) for move in legal)
+                    for game, legal in zip(games_tuple, legal_tuple, strict=True)
+                )
             ),
             legal_policies=policies,
         )

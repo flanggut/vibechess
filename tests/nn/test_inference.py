@@ -6,6 +6,7 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
+import vibechess.nn.inference as inference_module
 from vibechess.engine import Game
 from vibechess.nn import (
     ACTION_SPACE_SIZE,
@@ -13,6 +14,7 @@ from vibechess.nn import (
     PolicyValueInference,
     PolicyValueNet,
     PolicyValueOutput,
+    encode_game,
     tensor_shape,
 )
 from vibechess.profiling import activate_self_play_profile
@@ -63,3 +65,39 @@ def test_predict_legal_batch_profiles_single_combined_sync_zone() -> None:
         assert tensor_shape(policy) == (len(legal),)
         if legal:
             assert scalar(mx.sum(policy)) == pytest.approx(1.0)
+
+
+def test_predict_legal_batch_uses_cached_indices_and_encoded_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    game = Game.new()
+    legal_moves = (game.legal_moves,)
+    logits = np.linspace(-2.0, 2.0, ACTION_SPACE_SIZE, dtype=np.float32)[None, :]
+    values = (0.375,)
+    inference = PolicyValueInference(cast(PolicyValueNet, RowVaryingOutputModel(logits, values)))
+    uncached = inference.predict_legal_batch((game,), legal_moves)
+    encoded = encode_game(game)
+
+    def fail_encode(_game: Game) -> Any:
+        raise AssertionError("cached encoded inputs should avoid encode_game")
+
+    def fail_indices(_game: Game, _legal: tuple[Any, ...]) -> Any:
+        raise AssertionError("cached legal indices should avoid recomputation")
+
+    monkeypatch.setattr(inference_module, "encode_game", fail_encode)
+    monkeypatch.setattr(inference_module, "legal_action_indices_fn", fail_indices)
+
+    cached = inference.predict_legal_batch(
+        (game,),
+        legal_moves,
+        legal_action_indices=uncached.legal_action_indices,
+        encoded_inputs=(encoded,),
+    )
+
+    assert cached.values == uncached.values
+    assert cached.legal_moves == uncached.legal_moves
+    assert cached.legal_action_indices == uncached.legal_action_indices
+    np.testing.assert_allclose(
+        np.asarray(cached.legal_policies[0], dtype=np.float32),
+        np.asarray(uncached.legal_policies[0], dtype=np.float32),
+    )

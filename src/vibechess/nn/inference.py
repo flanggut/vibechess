@@ -16,11 +16,13 @@ from vibechess.nn.encode import (
     ENCODER_CHANNELS,
     TENSOR_SHAPE,
     encode_game,
-    legal_action_indices,
     legal_move_mask,
     legal_move_mask_from_legal_moves,
     tensor_shape,
     to_mlx,
+)
+from vibechess.nn.encode import (
+    legal_action_indices as legal_action_indices_fn,
 )
 from vibechess.profiling import profile_scope, record_counter, record_distribution
 
@@ -161,6 +163,9 @@ class PolicyValueInference:
         self,
         game: Game,
         legal_moves: tuple[Move, ...],
+        *,
+        legal_action_indices: Sequence[int] | None = None,
+        encoded_input: MLXArray | None = None,
     ) -> InferenceResult:
         """Run inference using precomputed legal moves for compact legal priors.
 
@@ -173,15 +178,24 @@ class PolicyValueInference:
             record_counter("inference.predict_with_legal_moves.calls")
             legal = tuple(legal_moves)
             record_distribution("inference.legal_moves", len(legal), unit="moves")
-            with profile_scope("encode.game_mlx"):
-                encoded = encode_game(game)
+            if encoded_input is None:
+                with profile_scope("encode.game_mlx"):
+                    encoded = encode_game(game)
+            else:
+                with profile_scope("encode.game_mlx.cached"):
+                    encoded = _prepare_encoded_batch(encoded_input)
             with profile_scope("model.forward"):
                 output = self.model(encoded)
             logits = cast(MLXArray, output.policy_logits[0])
             with profile_scope("mlx.sync.value_item"):
                 value = float(output.value[0].item())
-            with profile_scope("policy.legal_indices"):
-                indices = legal_action_indices(game, legal)
+            if legal_action_indices is None:
+                with profile_scope("policy.legal_indices"):
+                    indices = legal_action_indices_fn(game, legal)
+            else:
+                indices = tuple(legal_action_indices)
+                if len(indices) != len(legal):
+                    raise ValueError("legal_action_indices length must match legal_moves")
             if not indices:
                 legal_policy = mx.zeros((0,), dtype=mx.float32)
                 policy = mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32)
@@ -226,13 +240,18 @@ class PolicyValueInference:
         self,
         games: Sequence[Game],
         legal_moves: Sequence[Sequence[Move]],
+        *,
+        legal_action_indices: Sequence[Sequence[int]] | None = None,
+        encoded_inputs: Sequence[MLXArray] | MLXArray | None = None,
     ) -> LegalPolicyBatchResult:
         """Run compact batched inference over supplied legal moves only.
 
         This search-oriented API computes model logits once for the encoded batch,
         gathers each row's supplied legal action logits, and applies softmax only
         to those compact vectors. Empty legal rows return empty ``float32`` policy
-        vectors.
+        vectors. Search callers may provide cached legal action indices and/or
+        cached encoded position tensors; public ``Game`` inputs remain required so
+        the legal-move contract and existing call sites stay unchanged.
         """
         with profile_scope("inference.predict_legal_batch"):
             games_tuple = tuple(games)
@@ -251,8 +270,12 @@ class PolicyValueInference:
             for legal in legal_by_row:
                 record_distribution("inference.legal_moves", len(legal), unit="moves")
 
-            with profile_scope("encode.batch_stack"):
-                encoded = mx.stack([encode_game(game) for game in games_tuple])
+            if encoded_inputs is None:
+                with profile_scope("encode.batch_stack"):
+                    encoded = mx.stack([encode_game(game) for game in games_tuple])
+            else:
+                with profile_scope("encode.batch_stack.cached"):
+                    encoded = _prepare_cached_encoded_batch(encoded_inputs, batch_size)
             with profile_scope("model.forward"):
                 output = self.model(encoded)
             logits = output.policy_logits
@@ -260,11 +283,19 @@ class PolicyValueInference:
             if value_count != batch_size:
                 raise ValueError(f"model returned {value_count} values for batch size {batch_size}")
 
-            with profile_scope("policy.legal_indices"):
-                legal_indices_by_row = tuple(
-                    legal_action_indices(game, legal)
-                    for game, legal in zip(games_tuple, legal_by_row, strict=True)
-                )
+            if legal_action_indices is None:
+                with profile_scope("policy.legal_indices"):
+                    legal_indices_by_row = tuple(
+                        legal_action_indices_fn(game, legal)
+                        for game, legal in zip(games_tuple, legal_by_row, strict=True)
+                    )
+            else:
+                legal_indices_by_row = tuple(tuple(row) for row in legal_action_indices)
+                if len(legal_indices_by_row) != batch_size:
+                    raise ValueError("legal_action_indices length must match batch size")
+                for legal, indices in zip(legal_by_row, legal_indices_by_row, strict=True):
+                    if len(indices) != len(legal):
+                        raise ValueError("legal_action_indices rows must match legal_moves rows")
             legal_policies: list[MLXArray] = []
             with profile_scope("inference.policy_softmax"):
                 for row_index, indices in enumerate(legal_indices_by_row):
@@ -343,7 +374,7 @@ class PolicyValueInference:
                         raise ValueError("legal_moves length must match batch size")
                     with profile_scope("policy.legal_indices"):
                         legal_indices_by_row = tuple(
-                            legal_action_indices(game, legal)
+                            legal_action_indices_fn(game, legal)
                             for game, legal in zip(games, legal_by_row, strict=True)
                         )
                     with profile_scope("policy.legal_mask_mlx"):
@@ -360,7 +391,7 @@ class PolicyValueInference:
                     legal_by_row = tuple(game.legal_moves for game in games)
                     with profile_scope("policy.legal_indices"):
                         legal_indices_by_row = tuple(
-                            legal_action_indices(game, legal)
+                            legal_action_indices_fn(game, legal)
                             for game, legal in zip(games, legal_by_row, strict=True)
                         )
                     with profile_scope("policy.legal_mask_mlx"):
@@ -417,6 +448,26 @@ def _prepare_encoded_batch(inputs: MLXArray) -> MLXArray:
         f"{TENSOR_SHAPE}, [N, {TENSOR_SHAPE}], or "
         f"[N, 8, 8, {ENCODER_CHANNELS}], got {shape}"
     )
+
+
+def _prepare_cached_encoded_batch(
+    inputs: Sequence[MLXArray] | MLXArray,
+    batch_size: int,
+) -> MLXArray:
+    if isinstance(inputs, Sequence):
+        rows = tuple(inputs)
+        encoded = mx.stack([to_mlx(row) for row in rows])
+    else:
+        encoded = _prepare_encoded_batch(inputs)
+    shape = tensor_shape(encoded)
+    if len(shape) != 4 or shape[0] != batch_size:
+        raise ValueError(f"encoded_inputs batch size must be {batch_size}, got {shape}")
+    if shape[1:] != TENSOR_SHAPE and shape[1:] != (8, 8, ENCODER_CHANNELS):
+        raise ValueError(
+            "encoded_inputs rows must have shape "
+            f"{TENSOR_SHAPE} or [8, 8, {ENCODER_CHANNELS}], got {shape[1:]}"
+        )
+    return encoded
 
 
 def _prepare_legal_mask_batch(legal_masks: MLXArray, batch_size: int) -> MLXArray:

@@ -3,11 +3,12 @@ from __future__ import annotations
 import random
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import cast
+from typing import Any, cast
 
 import mlx.core as mx
 import pytest
 
+import vibechess.ai.neural_mcts as neural_mcts_module
 import vibechess.ai.search_state as search_state_module
 import vibechess.engine.game as game_module
 from vibechess.ai.mcts import MCTSPlayer
@@ -147,22 +148,38 @@ class RecordingPolicyValueInference(PolicyValueInference):
         self,
         game: Game,
         legal_moves: tuple[Move, ...],
+        *,
+        legal_action_indices: Sequence[int] | None = None,
+        encoded_input: Any | None = None,
     ) -> InferenceResult:
         self.legal_calls += 1
         self.seen_legal_moves.append(legal_moves)
-        return super().predict_with_legal_moves(game, legal_moves)
+        return super().predict_with_legal_moves(
+            game,
+            legal_moves,
+            legal_action_indices=legal_action_indices,
+            encoded_input=encoded_input,
+        )
 
     def predict_legal_batch(
         self,
         games: Sequence[Game],
         legal_moves: Sequence[Sequence[Move]],
+        *,
+        legal_action_indices: Sequence[Sequence[int]] | None = None,
+        encoded_inputs: Sequence[Any] | Any | None = None,
     ) -> LegalPolicyBatchResult:
         self.legal_batch_calls += 1
         self.legal_batch_sizes.append(len(games))
         self.legal_batch_paths.append(
             tuple(tuple(move.to_uci() for move in game.moves) for game in games)
         )
-        return super().predict_legal_batch(games, legal_moves)
+        return super().predict_legal_batch(
+            games,
+            legal_moves,
+            legal_action_indices=legal_action_indices,
+            encoded_inputs=encoded_inputs,
+        )
 
 
 def _policy_result(values: list[float], *, value: float = 0.0) -> InferenceResult:
@@ -198,6 +215,29 @@ def test_neural_node_create_caches_legal_moves_and_is_terminal_uses_cache(
     assert not node.is_terminal
     assert not node.is_terminal
     assert calls == 1
+
+
+def test_neural_node_caches_legal_action_indices(monkeypatch: pytest.MonkeyPatch) -> None:
+    node = NeuralMCTSNode.create(Game.new())
+    original = cast(
+        Callable[[Move, Board], int],
+        neural_mcts_module.__dict__["move_to_action_index"],
+    )
+    calls = 0
+
+    def counting_index(move: Move, board: Board) -> int:
+        nonlocal calls
+        calls += 1
+        return original(move, board)
+
+    monkeypatch.setattr(neural_mcts_module, "move_to_action_index", counting_index)
+
+    first = node.cached_legal_action_indices()
+    second = node.cached_legal_action_indices()
+
+    assert first == second
+    assert len(first) == len(node.legal_moves)
+    assert calls == len(node.legal_moves)
 
 
 def test_neural_node_create_caches_terminal_outcome() -> None:
