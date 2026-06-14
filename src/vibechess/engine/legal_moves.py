@@ -40,6 +40,68 @@ _BISHOP_ATTACKERS = frozenset({PieceType.BISHOP, PieceType.QUEEN})
 _ROOK_ATTACKERS = frozenset({PieceType.ROOK, PieceType.QUEEN})
 
 
+def _build_leaper_attack_table(
+    deltas: tuple[tuple[int, int], ...],
+) -> tuple[tuple[int, ...], ...]:
+    table: list[tuple[int, ...]] = []
+    for target_index in range(64):
+        target_file = target_index % 8
+        target_rank = target_index // 8
+        attackers: list[int] = []
+        for file_delta, rank_delta in deltas:
+            attacker_file = target_file + file_delta
+            attacker_rank = target_rank + rank_delta
+            if 0 <= attacker_file < 8 and 0 <= attacker_rank < 8:
+                attackers.append(attacker_rank * 8 + attacker_file)
+        table.append(tuple(attackers))
+    return tuple(table)
+
+
+def _build_pawn_attack_table(color: Color) -> tuple[tuple[int, ...], ...]:
+    table: list[tuple[int, ...]] = []
+    rank_delta = -1 if color is Color.WHITE else 1
+    for target_index in range(64):
+        target_file = target_index % 8
+        target_rank = target_index // 8
+        attackers: list[int] = []
+        for file_delta in (-1, 1):
+            attacker_file = target_file + file_delta
+            attacker_rank = target_rank + rank_delta
+            if 0 <= attacker_file < 8 and 0 <= attacker_rank < 8:
+                attackers.append(attacker_rank * 8 + attacker_file)
+        table.append(tuple(attackers))
+    return tuple(table)
+
+
+def _build_ray_attack_table(
+    directions: tuple[tuple[int, int], ...],
+) -> tuple[tuple[tuple[int, ...], ...], ...]:
+    table: list[tuple[tuple[int, ...], ...]] = []
+    for target_index in range(64):
+        target_file = target_index % 8
+        target_rank = target_index // 8
+        rays: list[tuple[int, ...]] = []
+        for file_delta, rank_delta in directions:
+            ray: list[int] = []
+            current_file = target_file + file_delta
+            current_rank = target_rank + rank_delta
+            while 0 <= current_file < 8 and 0 <= current_rank < 8:
+                ray.append(current_rank * 8 + current_file)
+                current_file += file_delta
+                current_rank += rank_delta
+            rays.append(tuple(ray))
+        table.append(tuple(rays))
+    return tuple(table)
+
+
+_KNIGHT_ATTACKERS_BY_TARGET = _build_leaper_attack_table(_KNIGHT_DELTAS)
+_KING_ATTACKERS_BY_TARGET = _build_leaper_attack_table(_KING_DELTAS)
+_WHITE_PAWN_ATTACKERS_BY_TARGET = _build_pawn_attack_table(Color.WHITE)
+_BLACK_PAWN_ATTACKERS_BY_TARGET = _build_pawn_attack_table(Color.BLACK)
+_BISHOP_ATTACK_RAYS_BY_TARGET = _build_ray_attack_table(_BISHOP_DIRECTIONS)
+_ROOK_ATTACK_RAYS_BY_TARGET = _build_ray_attack_table(_ROOK_DIRECTIONS)
+
+
 def pseudo_legal_moves(board: Board) -> tuple[Move, ...]:
     """Return pseudo-legal moves for the side to move.
 
@@ -157,56 +219,32 @@ def _is_square_attacked_index(
     skips ``Square`` validation, accepting an in-range board index and a piece array
     (tuple or scratch list) directly.
     """
-    target_file = target_index % 8
-    target_rank = target_index // 8
-
-    pawn_rank_delta = -1 if by_color is Color.WHITE else 1
-    for file_delta in (-1, 1):
-        attacker_file = target_file + file_delta
-        attacker_rank = target_rank + pawn_rank_delta
-        if _is_on_board(attacker_file, attacker_rank) and _has_piece_at_index(
-            squares, attacker_rank * 8 + attacker_file, by_color, PieceType.PAWN
-        ):
+    pawn_attackers = (
+        _WHITE_PAWN_ATTACKERS_BY_TARGET[target_index]
+        if by_color is Color.WHITE
+        else _BLACK_PAWN_ATTACKERS_BY_TARGET[target_index]
+    )
+    for square_index in pawn_attackers:
+        piece = squares[square_index]
+        if piece is not None and piece.color is by_color and piece.kind is PieceType.PAWN:
             return True
 
-    for file_delta, rank_delta in _KNIGHT_DELTAS:
-        attacker_file = target_file + file_delta
-        attacker_rank = target_rank + rank_delta
-        if _is_on_board(attacker_file, attacker_rank) and _has_piece_at_index(
-            squares, attacker_rank * 8 + attacker_file, by_color, PieceType.KNIGHT
-        ):
+    for square_index in _KNIGHT_ATTACKERS_BY_TARGET[target_index]:
+        piece = squares[square_index]
+        if piece is not None and piece.color is by_color and piece.kind is PieceType.KNIGHT:
             return True
 
-    for file_delta, rank_delta in _BISHOP_DIRECTIONS:
-        if _ray_attacked(
-            squares,
-            target_file,
-            target_rank,
-            file_delta,
-            rank_delta,
-            by_color,
-            _BISHOP_ATTACKERS,
-        ):
+    for ray in _BISHOP_ATTACK_RAYS_BY_TARGET[target_index]:
+        if _ray_attacked(squares, ray, by_color, _BISHOP_ATTACKERS):
             return True
 
-    for file_delta, rank_delta in _ROOK_DIRECTIONS:
-        if _ray_attacked(
-            squares,
-            target_file,
-            target_rank,
-            file_delta,
-            rank_delta,
-            by_color,
-            _ROOK_ATTACKERS,
-        ):
+    for ray in _ROOK_ATTACK_RAYS_BY_TARGET[target_index]:
+        if _ray_attacked(squares, ray, by_color, _ROOK_ATTACKERS):
             return True
 
-    for file_delta, rank_delta in _KING_DELTAS:
-        attacker_file = target_file + file_delta
-        attacker_rank = target_rank + rank_delta
-        if _is_on_board(attacker_file, attacker_rank) and _has_piece_at_index(
-            squares, attacker_rank * 8 + attacker_file, by_color, PieceType.KING
-        ):
+    for square_index in _KING_ATTACKERS_BY_TARGET[target_index]:
+        piece = squares[square_index]
+        if piece is not None and piece.color is by_color and piece.kind is PieceType.KING:
             return True
 
     return False
@@ -449,20 +487,13 @@ def _en_passant_capture_square(target: Square, capturing_color: Color) -> Square
 
 def _ray_attacked(
     squares: Sequence[Piece | None],
-    target_file: int,
-    target_rank: int,
-    file_delta: int,
-    rank_delta: int,
+    ray: tuple[int, ...],
     by_color: Color,
     attacking_kinds: frozenset[PieceType],
 ) -> bool:
-    current_file = target_file + file_delta
-    current_rank = target_rank + rank_delta
-    while _is_on_board(current_file, current_rank):
-        piece = squares[current_rank * 8 + current_file]
+    for square_index in ray:
+        piece = squares[square_index]
         if piece is None:
-            current_file += file_delta
-            current_rank += rank_delta
             continue
         return piece.color is by_color and piece.kind in attacking_kinds
     return False

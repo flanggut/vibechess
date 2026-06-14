@@ -16,7 +16,7 @@ from vibechess.engine import (
 )
 from vibechess.engine.board import board_from_ascii
 from vibechess.engine.fen import parse_fen
-from vibechess.engine.legal_moves import has_legal_move, is_in_check
+from vibechess.engine.legal_moves import has_legal_move, is_in_check, is_square_attacked
 from vibechess.engine.square import parse_square
 
 
@@ -164,6 +164,38 @@ def test_castling_through_attacked_square_is_illegal() -> None:
     moves = move_set(legal_moves(board))
     assert "e1g1" not in moves
     assert "e1c1" in moves
+
+
+def test_attack_detection_uses_pawn_direction_without_edge_wrap() -> None:
+    board = board_from_ascii(
+        "4k3/1p6/8/8/8/P7/1P6/4K3",
+        side_to_move=Color.WHITE,
+    )
+
+    assert is_square_attacked(board, parse_square("a3"), Color.WHITE)
+    assert is_square_attacked(board, parse_square("a6"), Color.BLACK)
+    assert not is_square_attacked(board, parse_square("a1"), Color.WHITE)
+    assert not is_square_attacked(board, parse_square("a8"), Color.BLACK)
+
+
+def test_attack_detection_uses_leaper_tables_without_edge_wrap() -> None:
+    board = board_from_ascii("4k3/8/8/8/8/1n6/8/K7", side_to_move=Color.WHITE)
+
+    assert is_square_attacked(board, parse_square("a1"), Color.BLACK)
+    assert is_square_attacked(board, parse_square("d2"), Color.BLACK)
+    assert not is_square_attacked(board, parse_square("h1"), Color.BLACK)
+
+
+def test_attack_detection_respects_slider_blockers() -> None:
+    clear_rook = board_from_ascii("4r3/8/8/8/8/8/8/4K2k", side_to_move=Color.WHITE)
+    blocked_rook = board_from_ascii("4r3/8/8/8/4P3/8/8/4K2k", side_to_move=Color.WHITE)
+    clear_bishop = board_from_ascii("4k3/8/8/8/7b/8/8/4K3", side_to_move=Color.WHITE)
+    blocked_bishop = board_from_ascii("4k3/8/8/8/7b/8/5P2/4K3", side_to_move=Color.WHITE)
+
+    assert is_square_attacked(clear_rook, parse_square("e1"), Color.BLACK)
+    assert not is_square_attacked(blocked_rook, parse_square("e1"), Color.BLACK)
+    assert is_square_attacked(clear_bishop, parse_square("e1"), Color.BLACK)
+    assert not is_square_attacked(blocked_bishop, parse_square("e1"), Color.BLACK)
 
 
 def test_en_passant_move_is_generated_and_applied() -> None:
