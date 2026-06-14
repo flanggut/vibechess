@@ -256,10 +256,9 @@ class PolicyValueInference:
             with profile_scope("model.forward"):
                 output = self.model(encoded)
             logits = output.policy_logits
-            with profile_scope("mlx.sync.value_item"):
-                values = tuple(float(value) for value in np.asarray(output.value, dtype=np.float32))
-            if len(values) != batch_size:
-                raise ValueError(f"model returned {len(values)} values for batch size {batch_size}")
+            value_count = tensor_shape(output.value)[0]
+            if value_count != batch_size:
+                raise ValueError(f"model returned {value_count} values for batch size {batch_size}")
 
             with profile_scope("policy.legal_indices"):
                 legal_indices_by_row = tuple(
@@ -276,8 +275,11 @@ class PolicyValueInference:
                     legal_logits = logits[row_index][index_array]
                     legal_policies.append(mx.softmax(legal_logits))
             legal_policy_tuple = tuple(legal_policies)
-            with profile_scope("mlx.sync.policy_eval"):
-                mx.eval(*legal_policy_tuple)
+            with profile_scope("mlx.sync.legal_batch_eval"):
+                mx.eval(output.value, *legal_policy_tuple)
+            values = tuple(float(value) for value in np.asarray(output.value, dtype=np.float32))
+            if len(values) != batch_size:
+                raise ValueError(f"model returned {len(values)} values for batch size {batch_size}")
             return LegalPolicyBatchResult(
                 values=values,
                 legal_moves=legal_by_row,

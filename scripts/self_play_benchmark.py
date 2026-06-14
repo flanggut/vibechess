@@ -716,6 +716,7 @@ def _format_profile_lines(
                 "model.forward",
                 "mlx.sync.value_item",
                 "mlx.sync.policy_eval",
+                "mlx.sync.legal_batch_eval",
                 "policy.legal_indices",
                 "policy.legal_mask_mlx",
             ),

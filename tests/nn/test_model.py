@@ -29,6 +29,7 @@ from vibechess.nn import (
     save_checkpoint,
     tensor_shape,
 )
+from vibechess.profiling import activate_self_play_profile
 
 
 def scalar(value: object) -> float:
@@ -372,6 +373,34 @@ def test_predict_legal_batch_uses_matching_logit_row() -> None:
             rtol=1e-6,
             atol=1e-7,
         )
+
+
+def test_predict_legal_batch_profiles_single_combined_sync_zone() -> None:
+    games = (
+        Game.new(),
+        Game.from_fen("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1"),
+    )
+    legal_moves = tuple(game.legal_moves for game in games)
+    base_logits = np.linspace(-1.0, 1.0, ACTION_SPACE_SIZE, dtype=np.float32)
+    logits = np.stack((base_logits, -base_logits))
+    values = (0.125, -0.25)
+    inference = PolicyValueInference(cast(PolicyValueNet, RowVaryingOutputModel(logits, values)))
+
+    with activate_self_play_profile("detailed") as profiler:
+        result = inference.predict_legal_batch(games, legal_moves)
+
+    zones = profiler.stats.to_dict()["zones"]
+    assert isinstance(zones, dict)
+    legal_batch_zone = zones["mlx.sync.legal_batch_eval"]
+    assert isinstance(legal_batch_zone, dict)
+    assert legal_batch_zone["calls"] == 1
+    assert "mlx.sync.value_item" not in zones
+    assert "mlx.sync.policy_eval" not in zones
+    assert result.values == pytest.approx(values)
+    for policy, legal in zip(result.legal_policies, legal_moves, strict=True):
+        assert tensor_shape(policy) == (len(legal),)
+        if legal:
+            assert scalar(mx.sum(policy)) == pytest.approx(1.0)
 
 
 def test_predict_legal_matches_predict_with_legal_moves() -> None:

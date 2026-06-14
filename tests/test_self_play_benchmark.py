@@ -127,6 +127,7 @@ def test_self_play_benchmark_central_queue_profile_counters(tmp_path: Path) -> N
     stats = data["profile"]["stats"]
     assert stats["counters"]["inference.predict_legal_batch.calls"] >= 1
     assert stats["counters"]["inference.legal_batch_positions"] == 2
+    assert stats["zones"]["mlx.sync.legal_batch_eval"]["calls"] >= 1
     legal_batch_size = stats["distributions"]["inference.legal_batch_size"]
     assert legal_batch_size["count"] >= 1
     assert legal_batch_size["max"] == 2.0
