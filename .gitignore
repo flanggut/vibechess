@@ -272,6 +272,7 @@ Carthage/Build/
 # Keep directory placeholders tracked, but do not commit generated self-play shards,
 # model checkpoints, or downloaded PGN corpora.
 data/selfplay/*
+data/pgn/*
 !data/selfplay/.gitkeep
 data/checkpoints/*
 !data/checkpoints/.gitkeep
