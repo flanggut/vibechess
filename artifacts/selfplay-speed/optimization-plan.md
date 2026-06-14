@@ -113,7 +113,7 @@ Acceptance:
 
 ## Optimization items
 
-### 1. Remove UCI string allocation from MCTS edge tie-breaks
+### 1. Remove UCI string allocation from MCTS edge tie-breaks — Done 2026-06-14
 
 Current hotspot:
 
@@ -134,6 +134,18 @@ Acceptance:
 - Existing neural MCTS tests pass.
 - `Move.to_uci()` calls drop sharply in cProfile.
 - Smoke benchmark improves without changing sample count for fixed seed/config.
+
+
+Completed:
+
+- Added `_move_uci_order_key()` with UCI-lexical-compatible numeric ordering, including promotion ordering.
+- Replaced `best_edge()`'s `max(..., key=(score, move.to_uci()))` path with a manual scan that compares score plus numeric move key.
+- Added tests that the numeric key matches `Move.to_uci()` lexical ordering and that `best_edge()` does not call `Move.to_uci()`.
+- Measured cProfile slice improvement:
+  - total: 5.92s -> 4.37s after this item
+  - `best_edge`: 1.52s -> 0.34s
+  - `Move.to_uci()`: ~745k calls -> 40 calls
+- Measured smoke benchmark after change: 15.78s, 40.56 samples/sec on 32 games × 20 plies × 200 simulations, workers 8, batch 16.
 
 Risk:
 

@@ -19,7 +19,7 @@ from vibechess.engine.game import Game
 from vibechess.engine.game import determine_outcome as _game_determine_outcome
 from vibechess.engine.move import Move
 from vibechess.engine.outcome import Outcome
-from vibechess.engine.piece import Color
+from vibechess.engine.piece import Color, PieceType
 from vibechess.nn.encode import encode_board, move_to_action_index
 from vibechess.nn.inference import (
     InferenceResult,
@@ -33,6 +33,14 @@ from vibechess.profiling import profile_scope, record_counter, record_distributi
 determine_outcome = _game_determine_outcome
 
 # Batched compact-prediction callable used by virtual-loss leaf collection.
+
+_PROMOTION_UCI_ORDER: dict[PieceType | None, int] = {
+    None: 0,
+    PieceType.BISHOP: 1,
+    PieceType.KNIGHT: 2,
+    PieceType.QUEEN: 3,
+    PieceType.ROOK: 4,
+}
 _LegalBatchPredict: TypeAlias = Callable[..., LegalPolicyBatchResult]
 
 
@@ -232,7 +240,6 @@ class NeuralMCTSNode:
             if not self.edges:
                 msg = "cannot select best edge from an unexpanded leaf"
                 raise ValueError(msg)
-            candidates = tuple(self.edges.values())
             parent_visits = max(1, self.visits)
 
             def score(edge: NeuralMCTSEdge) -> float:
@@ -241,11 +248,22 @@ class NeuralMCTSNode:
                 q_value = -edge.mean_value
                 u_value = exploration * edge.prior * math.sqrt(parent_visits) / (1 + edge.visits)
                 return q_value + u_value
-
-            return max(
-                candidates,
-                key=lambda edge: (score(edge), edge.move.to_uci()),
-            )
+            edge_iter = iter(self.edges.values())
+            best = next(edge_iter)
+            best_score = score(best)
+            best_move_key = _move_uci_order_key(best.move)
+            for edge in edge_iter:
+                edge_score = score(edge)
+                if edge_score > best_score:
+                    best = edge
+                    best_score = edge_score
+                    best_move_key = _move_uci_order_key(edge.move)
+                elif edge_score == best_score:
+                    edge_move_key = _move_uci_order_key(edge.move)
+                    if edge_move_key > best_move_key:
+                        best = edge
+                        best_move_key = edge_move_key
+            return best
 
 
     def best_child(self, exploration: float) -> NeuralMCTSNode:
@@ -914,6 +932,16 @@ def _add_path_value(node: NeuralMCTSNode, value: float, *, visit_delta: int) -> 
         current_value = -current_value
         current = parent
     return depth
+
+
+def _move_uci_order_key(move: Move) -> int:
+    """Return an allocation-free key with the same ordering as ``Move.to_uci()``."""
+    from_square = move.from_square
+    to_square = move.to_square
+    return (
+        (((from_square % 8) * 8 + (from_square // 8)) * 8 + (to_square % 8)) * 8
+        + (to_square // 8)
+    ) * 5 + _PROMOTION_UCI_ORDER[move.promotion]
 
 
 def _legal_priors(

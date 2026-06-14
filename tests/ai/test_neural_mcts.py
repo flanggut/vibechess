@@ -21,6 +21,7 @@ from vibechess.ai.neural_mcts import (
     NeuralMCTSResult,
     NeuralMCTSSearchSession,
     _legal_priors,
+    _move_uci_order_key,
     _select_by_temperature,
 )
 from vibechess.ai.player import NoLegalMoveError, RandomPlayer, play_game
@@ -685,6 +686,39 @@ def test_neural_value_backup_flips_side_to_move_perspective() -> None:
     assert child.total_value == pytest.approx(0.7)
     assert root.visits == 1
     assert root.total_value == pytest.approx(-0.7)
+
+
+def test_move_uci_order_key_matches_uci_lexical_order() -> None:
+    moves = (
+        Move.from_uci("h2h4"),
+        Move.from_uci("a7a8q"),
+        Move.from_uci("a7a8r"),
+        Move.from_uci("a7a8b"),
+        Move.from_uci("a7a8n"),
+        Move.from_uci("b1a3"),
+        Move.from_uci("g1h3"),
+    )
+
+    assert sorted(moves, key=_move_uci_order_key) == sorted(moves, key=lambda move: move.to_uci())
+
+
+def test_neural_puct_tie_break_uses_move_key_without_uci_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = NeuralMCTSNode.create(Game.new())
+    moves = root.legal_moves
+    expected = max(moves, key=lambda move: move.to_uci())
+    root.edges = {
+        move: NeuralMCTSEdge(move=move, prior=0.5, visits=0)
+        for move in reversed(moves)
+    }
+
+    def fail_to_uci(_move: Move) -> str:
+        raise AssertionError("best_edge should not allocate UCI strings")
+
+    monkeypatch.setattr(Move, "to_uci", fail_to_uci)
+
+    assert root.best_edge(exploration=0.0).move == expected
 
 
 def test_neural_puct_selection_uses_child_value_from_parent_perspective() -> None:
