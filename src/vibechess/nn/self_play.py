@@ -76,6 +76,7 @@ class SelfPlayConfig:
     model_checkpoint_id: str | None = None
     seed: int | None = None
     batch_size: int = 1
+    active_games: int | None = None
 
     def __post_init__(self) -> None:
         if self.games < 1:
@@ -88,6 +89,8 @@ class SelfPlayConfig:
             )
         if self.batch_size < 1:
             raise ValueError(f"batch_size must be at least 1, got {self.batch_size}")
+        if self.active_games is not None and self.active_games < 1:
+            raise ValueError(f"active_games must be at least 1, got {self.active_games}")
 
     def to_dict(
         self,
@@ -115,6 +118,7 @@ class SelfPlayConfig:
             "model_checkpoint_id": self.model_checkpoint_id,
             "seed": self.seed,
             "batch_size": self.batch_size,
+            "active_games": self.active_games,
             "batching_mode": resolved_batching_mode,
             "inference_batch_size": resolved_inference_batch_size,
         }
@@ -271,6 +275,28 @@ class _CentralSearch:
     session: NeuralMCTSSearchSession
 
 
+def _resolved_active_game_limit(config: SelfPlayConfig) -> int:
+    requested_active_games = (
+        config.batch_size if config.active_games is None else config.active_games
+    )
+    return min(config.games, requested_active_games)
+
+
+def _new_batched_game_state(
+    inference: PolicyValueInference,
+    config: SelfPlayConfig,
+    game_index: int,
+) -> _BatchedGameState:
+    return _BatchedGameState(
+        game_index=game_index,
+        game=Game.new(),
+        player=cast(
+            NeuralMCTSPlayer,
+            _player_for_game(inference, config, game_index),
+        ),
+    )
+
+
 def _record_batched_decision(
     state: _BatchedGameState,
     legal: tuple[Move, ...],
@@ -298,7 +324,7 @@ def _run_central_neural_searches(
     *,
     batch_size: int,
 ) -> list[tuple[_BatchedGameState, tuple[Move, ...], NeuralMCTSResult]]:
-    """Run one neural MCTS search per decision with deterministic cross-game batching."""
+    """Run searches with deterministic ordering and inference calls capped by batch_size."""
     searches = [
         _CentralSearch(
             state=state,
@@ -354,6 +380,68 @@ def _run_central_neural_searches(
     ]
 
 
+def _append_completed_batched_state(
+    state: _BatchedGameState,
+    *,
+    positions: list[npt.NDArray[np.float32]],
+    legal_masks: list[npt.NDArray[np.float32]],
+    policies: list[PolicyTargetRow],
+    outcome_values: list[float],
+    game_records: list[SelfPlayGameRecord],
+) -> SelfPlayGameRecord:
+    with profile_scope("self_play.game", game_index=state.game_index):
+        if state.game.outcome is None:
+            state.game = _with_max_plies_outcome(state.game)
+        positions.extend(state.positions)
+        legal_masks.extend(state.legal_masks)
+        policies.extend(state.policies)
+        with profile_scope("record.outcome_values"):
+            outcome_values.extend(_outcome_values(state.game, state.game_sides))
+        with profile_scope("record.game_record"):
+            game_record = _game_record(state.game_index, state.game)
+            game_records.append(game_record)
+        record_counter("self_play.games_completed")
+        return game_record
+
+
+def _flush_completed_batched_states(
+    completed_states: dict[int, _BatchedGameState],
+    *,
+    next_output_game_index: int,
+    config: SelfPlayConfig,
+    positions: list[npt.NDArray[np.float32]],
+    legal_masks: list[npt.NDArray[np.float32]],
+    policies: list[PolicyTargetRow],
+    outcome_values: list[float],
+    game_records: list[SelfPlayGameRecord],
+    completed_plies: int,
+    progress: Callable[[SelfPlayProgress], None] | None,
+) -> tuple[int, int]:
+    while next_output_game_index in completed_states:
+        state = completed_states.pop(next_output_game_index)
+        game_record = _append_completed_batched_state(
+            state,
+            positions=positions,
+            legal_masks=legal_masks,
+            policies=policies,
+            outcome_values=outcome_values,
+            game_records=game_records,
+        )
+        completed_plies += game_record.plies
+        if progress is not None:
+            progress(
+                SelfPlayProgress(
+                    games_completed=len(game_records),
+                    total_games=config.games,
+                    samples=len(positions),
+                    plies=completed_plies,
+                    game_index=state.game_index,
+                )
+            )
+        next_output_game_index += 1
+    return next_output_game_index, completed_plies
+
+
 def _generate_batched_neural_self_play_dataset(
     inference: PolicyValueInference,
     config: SelfPlayConfig,
@@ -365,80 +453,108 @@ def _generate_batched_neural_self_play_dataset(
     policies: list[PolicyTargetRow] = []
     outcome_values: list[float] = []
     game_records: list[SelfPlayGameRecord] = []
+    active_states: dict[int, _BatchedGameState] = {}
+    completed_states: dict[int, _BatchedGameState] = {}
+    active_limit = _resolved_active_game_limit(config)
+    next_game_index = 0
+    next_output_game_index = 0
     completed_plies = 0
 
+    def launch_available_games() -> None:
+        nonlocal next_game_index
+        while len(active_states) < active_limit and next_game_index < config.games:
+            active_states[next_game_index] = _new_batched_game_state(
+                inference,
+                config,
+                next_game_index,
+            )
+            next_game_index += 1
+
+    def complete_state(state: _BatchedGameState) -> None:
+        active_states.pop(state.game_index, None)
+        completed_states[state.game_index] = state
+
     with profile_scope("self_play.batched_loop"):
-        for start_game in range(0, config.games, config.batch_size):
-            game_count = min(config.batch_size, config.games - start_game)
-            states = [
-                _BatchedGameState(
-                    game_index=start_game + offset,
-                    game=Game.new(),
-                    player=cast(
-                        NeuralMCTSPlayer,
-                        _player_for_game(inference, config, start_game + offset),
-                    ),
-                )
-                for offset in range(game_count)
-            ]
-            for ply_index in range(config.max_plies):
-                decisions: list[tuple[_BatchedGameState, tuple[Move, ...]]] = []
-                for state in states:
-                    with profile_scope(
-                        "self_play.ply",
-                        game_index=state.game_index,
-                        ply_index=ply_index,
-                    ):
-                        legal = state.game.legal_moves
-                        record_distribution(
-                            "self_play.legal_moves_per_ply",
-                            len(legal),
-                            unit="moves",
-                        )
-                        with profile_scope("self_play.terminal_check"):
-                            terminal = determine_outcome(state.game, legal_moves=legal)
-                        if terminal is None and legal:
-                            decisions.append((state, legal))
-                if not decisions:
-                    break
+        launch_available_games()
+        while next_output_game_index < config.games:
+            decisions: list[tuple[_BatchedGameState, tuple[Move, ...]]] = []
+            completed_before_decisions = False
+            for state in [active_states[index] for index in sorted(active_states)]:
+                ply_index = len(state.game.moves)
+                with profile_scope(
+                    "self_play.ply",
+                    game_index=state.game_index,
+                    ply_index=ply_index,
+                ):
+                    if ply_index >= config.max_plies:
+                        complete_state(state)
+                        completed_before_decisions = True
+                        continue
+                    legal = state.game.legal_moves
+                    record_distribution(
+                        "self_play.legal_moves_per_ply",
+                        len(legal),
+                        unit="moves",
+                    )
+                    with profile_scope("self_play.terminal_check"):
+                        terminal = determine_outcome(state.game, legal_moves=legal)
+                    if terminal is not None or not legal:
+                        complete_state(state)
+                        completed_before_decisions = True
+                    else:
+                        decisions.append((state, legal))
 
-                central_results = _run_central_neural_searches(
-                    inference,
-                    decisions,
-                    batch_size=config.batch_size,
+            if completed_before_decisions:
+                launch_available_games()
+                next_output_game_index, completed_plies = _flush_completed_batched_states(
+                    completed_states,
+                    next_output_game_index=next_output_game_index,
+                    config=config,
+                    positions=positions,
+                    legal_masks=legal_masks,
+                    policies=policies,
+                    outcome_values=outcome_values,
+                    game_records=game_records,
+                    completed_plies=completed_plies,
+                    progress=progress,
                 )
-                for state, legal, result in central_results:
-                    with profile_scope(
-                        "self_play.ply_decision",
-                        game_index=state.game_index,
-                        ply_index=ply_index,
-                    ):
-                        _record_batched_decision(state, legal, result.move, result.visit_counts)
+                continue
 
-            for state in states:
-                with profile_scope("self_play.game", game_index=state.game_index):
-                    if state.game.outcome is None:
-                        state.game = _with_max_plies_outcome(state.game)
-                    positions.extend(state.positions)
-                    legal_masks.extend(state.legal_masks)
-                    policies.extend(state.policies)
-                    with profile_scope("record.outcome_values"):
-                        outcome_values.extend(_outcome_values(state.game, state.game_sides))
-                    with profile_scope("record.game_record"):
-                        game_record = _game_record(state.game_index, state.game)
-                        game_records.append(game_record)
-                    completed_plies += game_record.plies
-                    record_counter("self_play.games_completed")
-                    if progress is not None:
-                        progress(
-                            SelfPlayProgress(
-                                games_completed=len(game_records),
-                                total_games=config.games,
-                                samples=len(positions),
-                                plies=completed_plies,
-                                game_index=state.game_index,
-                            )
-                        )
+            if not decisions:
+                raise RuntimeError("central neural self-play scheduler made no progress")
+
+            central_results = _run_central_neural_searches(
+                inference,
+                decisions,
+                batch_size=config.batch_size,
+            )
+            completed_after_decisions: list[_BatchedGameState] = []
+            for state, legal, result in central_results:
+                ply_index = len(state.game.moves)
+                with profile_scope(
+                    "self_play.ply_decision",
+                    game_index=state.game_index,
+                    ply_index=ply_index,
+                ):
+                    _record_batched_decision(state, legal, result.move, result.visit_counts)
+                if len(state.game.moves) >= config.max_plies:
+                    completed_after_decisions.append(state)
+            for state in completed_after_decisions:
+                complete_state(state)
+            if completed_after_decisions:
+                launch_available_games()
+                next_output_game_index, completed_plies = _flush_completed_batched_states(
+                    completed_states,
+                    next_output_game_index=next_output_game_index,
+                    config=config,
+                    positions=positions,
+                    legal_masks=legal_masks,
+                    policies=policies,
+                    outcome_values=outcome_values,
+                    game_records=game_records,
+                    completed_plies=completed_plies,
+                    progress=progress,
+                )
 
     return _self_play_dataset_from_samples(
         config,

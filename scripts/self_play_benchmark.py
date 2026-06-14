@@ -54,6 +54,7 @@ class BenchmarkConfig:
     workers: int
     seed: int
     batch_size: int
+    active_games: int | None
     label_source: str
     checkpoint: str | None
     checkpoint_id: str | None
@@ -418,6 +419,8 @@ def _self_play_command(config: BenchmarkConfig, output_dir: Path) -> list[str]:
         "--workers",
         str(config.workers),
     ]
+    if config.active_games is not None:
+        command.extend(["--active-games", str(config.active_games)])
     if config.checkpoint is not None:
         command.extend(["--checkpoint", config.checkpoint])
     if config.checkpoint_id is not None:
@@ -436,6 +439,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument(
+        "--active-games",
+        type=int,
+        default=None,
+        help=(
+            "maximum in-process active neural self-play games; defaults to --batch-size; "
+            "inference calls are still capped by --batch-size"
+        ),
+    )
     parser.add_argument(
         "--label-source",
         choices=("neural", "classical"),
@@ -493,6 +505,8 @@ def _validate_args(args: argparse.Namespace) -> None:
             raise ValueError(f"--{name.replace('_', '-')} must be at least 1")
     if args.max_plies < 0:
         raise ValueError("--max-plies must be non-negative")
+    if args.active_games is not None and args.active_games < 1:
+        raise ValueError("--active-games must be at least 1")
     if args.repeat < 1:
         raise ValueError("--repeat must be at least 1")
     if args.blocks < 0:
@@ -514,6 +528,7 @@ def _benchmark_config(args: argparse.Namespace) -> BenchmarkConfig:
         workers=args.workers,
         seed=args.seed,
         batch_size=args.batch_size,
+        active_games=args.active_games,
         label_source=args.label_source,
         checkpoint=checkpoint,
         checkpoint_id=args.checkpoint_id,

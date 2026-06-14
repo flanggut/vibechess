@@ -60,6 +60,7 @@ class GenerationArgs:
     channels: int
     blocks: int
     batch_size: int
+    active_games: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +192,7 @@ def _self_play_config(args: GenerationArgs, *, games: int, seed: int) -> SelfPla
         model_checkpoint_id=args.checkpoint_id,
         seed=seed,
         batch_size=args.batch_size,
+        active_games=args.active_games,
     )
 
 
@@ -355,6 +357,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--active-games",
+        type=int,
+        default=None,
+        help=(
+            "maximum in-process active neural self-play games; defaults to --batch-size; "
+            "inference calls are still capped by --batch-size"
+        ),
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=1,
@@ -372,6 +383,8 @@ def main() -> int:
         parser.error("--workers must be at least 1")
     if args.batch_size < 1:
         parser.error("--batch-size must be at least 1")
+    if args.active_games is not None and args.active_games < 1:
+        parser.error("--active-games must be at least 1")
     if args.label_source == LABEL_SOURCE_CLASSICAL:
         if args.checkpoint is not None:
             parser.error("--checkpoint is only supported with --label-source neural")
@@ -394,6 +407,7 @@ def main() -> int:
         channels=args.channels,
         blocks=args.blocks,
         batch_size=args.batch_size,
+        active_games=args.active_games,
     )
     full_config = _self_play_config(generation_args, games=args.games, seed=args.seed)
 

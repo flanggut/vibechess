@@ -102,6 +102,8 @@ def test_self_play_benchmark_central_queue_profile_counters(tmp_path: Path) -> N
             "1",
             "--batch-size",
             "2",
+            "--active-games",
+            "3",
             "--workers",
             "1",
             "--repeat",
@@ -119,6 +121,7 @@ def test_self_play_benchmark_central_queue_profile_counters(tmp_path: Path) -> N
 
     assert completed.returncode == 0, completed.stderr
     data = json.loads(completed.stdout)
+    assert data["config"]["active_games"] == 3
     assert data["batching_mode"] == "central_inference_queue"
     assert data["inference_batch_size"] == 2
     repeat = _single_repeat(data)

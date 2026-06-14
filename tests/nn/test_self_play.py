@@ -217,6 +217,15 @@ def test_generate_self_play_dataset_reports_serial_progress() -> None:
     assert dataset.metadata.sample_count == 2
 
 
+def test_self_play_config_rejects_invalid_active_games() -> None:
+    try:
+        SelfPlayConfig(active_games=0)
+    except ValueError as exc:
+        assert "active_games must be at least 1" in str(exc)
+    else:
+        raise AssertionError("expected invalid active_games to be rejected")
+
+
 def test_batched_neural_self_play_preserves_schema_and_legal_targets() -> None:
     inference = CountingPolicyValueInference(
         PolicyValueNet(
@@ -298,6 +307,114 @@ def test_batched_neural_self_play_reports_progress() -> None:
     assert dataset.metadata.sample_count == 2
 
 
+def test_batched_neural_self_play_can_decouple_active_games_from_batch_size(
+    monkeypatch: Any,
+) -> None:
+    inference = CountingPolicyValueInference(
+        PolicyValueNet(
+            PolicyValueConfig(
+                residual_channels=4,
+                residual_blocks=0,
+                policy_channels=1,
+                value_channels=1,
+                value_hidden_dim=4,
+            )
+        )
+    )
+    decision_groups: list[list[int]] = []
+    original_run = self_play._run_central_neural_searches
+
+    def spy_run(
+        inference_arg: PolicyValueInference,
+        decisions: list[tuple[self_play._BatchedGameState, tuple[Move, ...]]],
+        *,
+        batch_size: int,
+    ) -> list[tuple[self_play._BatchedGameState, tuple[Move, ...], Any]]:
+        decision_groups.append([state.game_index for state, _legal in decisions])
+        return original_run(inference_arg, decisions, batch_size=batch_size)
+
+    monkeypatch.setattr(self_play, "_run_central_neural_searches", spy_run)
+
+    dataset = generate_self_play_dataset(
+        inference,
+        SelfPlayConfig(
+            games=3,
+            max_plies=1,
+            mcts=NeuralMCTSConfig(simulations=1, temperature=0.0, seed=43),
+            seed=43,
+            batch_size=2,
+            active_games=3,
+        ),
+    )
+
+    assert decision_groups[0] == [0, 1, 2]
+    assert max(inference.legal_batch_sizes) <= 2
+    assert [record.game_index for record in dataset.games] == [0, 1, 2]
+    assert dataset.metadata.generation_settings["batch_size"] == 2
+    assert dataset.metadata.generation_settings["active_games"] == 3
+    assert dataset.metadata.generation_settings["inference_batch_size"] == 2
+
+
+def test_batched_neural_self_play_rolls_new_game_when_slot_frees(monkeypatch: Any) -> None:
+    inference = CountingPolicyValueInference(
+        PolicyValueNet(
+            PolicyValueConfig(
+                residual_channels=4,
+                residual_blocks=0,
+                policy_channels=1,
+                value_channels=1,
+                value_hidden_dim=4,
+            )
+        )
+    )
+    events: list[SelfPlayProgress] = []
+    decision_groups: list[list[int]] = []
+    original_run = self_play._run_central_neural_searches
+    original_record = self_play._record_batched_decision
+    forced_indexes: set[int] = set()
+
+    def spy_run(
+        inference_arg: PolicyValueInference,
+        decisions: list[tuple[self_play._BatchedGameState, tuple[Move, ...]]],
+        *,
+        batch_size: int,
+    ) -> list[tuple[self_play._BatchedGameState, tuple[Move, ...], Any]]:
+        decision_groups.append([state.game_index for state, _legal in decisions])
+        return original_run(inference_arg, decisions, batch_size=batch_size)
+
+    def force_first_game_complete(
+        state: self_play._BatchedGameState,
+        legal: tuple[Move, ...],
+        selected_move: Move,
+        visit_counts: dict[Any, int],
+    ) -> None:
+        original_record(state, legal, selected_move, visit_counts)
+        if state.game_index == 0 and state.game_index not in forced_indexes:
+            forced_indexes.add(state.game_index)
+            state.game = self_play._with_max_plies_outcome(state.game)
+
+    monkeypatch.setattr(self_play, "_run_central_neural_searches", spy_run)
+    monkeypatch.setattr(self_play, "_record_batched_decision", force_first_game_complete)
+
+    dataset = generate_self_play_dataset(
+        inference,
+        SelfPlayConfig(
+            games=3,
+            max_plies=2,
+            mcts=NeuralMCTSConfig(simulations=1, temperature=0.0, seed=47),
+            seed=47,
+            batch_size=2,
+            active_games=2,
+        ),
+        progress=events.append,
+    )
+
+    assert decision_groups[0] == [0, 1]
+    assert [1, 2] in decision_groups[1:]
+    assert [record.game_index for record in dataset.games] == [0, 1, 2]
+    assert [event.game_index for event in events] == [0, 1, 2]
+
+
 def test_batched_neural_self_play_uses_legal_batch_queue_after_root_expansion() -> None:
     inference = CountingPolicyValueInference(
         PolicyValueNet(
@@ -340,11 +457,12 @@ def test_batched_neural_self_play_is_reproducible_for_fixed_seed() -> None:
         )
     )
     config = SelfPlayConfig(
-        games=2,
+        games=3,
         max_plies=2,
         mcts=NeuralMCTSConfig(simulations=1, temperature=0.0, seed=23),
         seed=23,
         batch_size=2,
+        active_games=3,
     )
 
     first = generate_self_play_dataset(PolicyValueInference(model), config)
@@ -826,20 +944,22 @@ def test_self_play_script_progress_never_suppresses_stderr_progress(
     assert "self-play:" not in result.stderr
 
 
-def test_self_play_script_accepts_batch_size(tmp_path: Path) -> None:
+def test_self_play_script_accepts_batch_size_and_active_games(tmp_path: Path) -> None:
     output = tmp_path / "script-batch-output"
     result = subprocess.run(
         [
             sys.executable,
             "scripts/self_play.py",
             "--games",
-            "2",
+            "3",
             "--max-plies",
             "1",
             "--simulations",
             "1",
             "--batch-size",
             "2",
+            "--active-games",
+            "3",
             "--output",
             str(output),
         ],
@@ -853,14 +973,15 @@ def test_self_play_script_accepts_batch_size(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     dataset = load_self_play_dataset(output)
     assert dataset.metadata.generation_settings["batch_size"] == 2
+    assert dataset.metadata.generation_settings["active_games"] == 3
     assert (
         dataset.metadata.generation_settings["batching_mode"]
         == BATCHING_MODE_CENTRAL_INFERENCE_QUEUE
     )
     assert dataset.metadata.generation_settings["inference_batch_size"] == 2
-    assert dataset.metadata.game_count == 2
-    assert dataset.metadata.sample_count == 2
-    assert [record.game_index for record in dataset.games] == [0, 1]
+    assert dataset.metadata.game_count == 3
+    assert dataset.metadata.sample_count == 3
+    assert [record.game_index for record in dataset.games] == [0, 1, 2]
 
 
 def test_self_play_script_help_describes_central_batching() -> None:
@@ -879,6 +1000,10 @@ def test_self_play_script_help_describes_central_batching() -> None:
     assert "default 8" in result.stdout
     assert "Set to 1 for" in result.stdout
     assert "not within-tree leaf" in result.stdout
+    assert "--active-games" in result.stdout
+    assert "defaults to --batch-size" in result.stdout
+    assert "inference calls are still" in result.stdout
+    assert "capped by --batch-size" in result.stdout
     assert "--progress" in result.stdout
     assert "auto" in result.stdout
 
@@ -956,6 +1081,28 @@ def test_self_play_script_rejects_invalid_worker_count(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "--workers must be at least 1" in result.stderr
+
+
+def test_self_play_script_rejects_invalid_active_games(tmp_path: Path) -> None:
+    output = tmp_path / "invalid-active-games"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/self_play.py",
+            "--active-games",
+            "0",
+            "--output",
+            str(output),
+        ],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode != 0
+    assert "--active-games must be at least 1" in result.stderr
 
 
 def test_self_play_script_rejects_classical_checkpoint_id(tmp_path: Path) -> None:
