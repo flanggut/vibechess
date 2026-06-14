@@ -473,7 +473,12 @@ def _prepare_cached_encoded_batch(
 ) -> MLXArray:
     if isinstance(inputs, Sequence):
         rows = tuple(inputs)
-        encoded = mx.stack([to_mlx(row) for row in rows])
+        if rows and all(isinstance(row, np.ndarray) for row in rows):
+            # Stack the per-node NumPy encodings and convert to MLX once, instead
+            # of building one small MLX array per row then stacking.
+            encoded = mx.array(np.stack(rows))
+        else:
+            encoded = mx.stack([to_mlx(row) for row in rows])
     else:
         encoded = _prepare_encoded_batch(inputs)
     shape = tensor_shape(encoded)

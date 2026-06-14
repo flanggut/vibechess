@@ -20,7 +20,7 @@ from vibechess.engine.game import determine_outcome as _game_determine_outcome
 from vibechess.engine.move import Move
 from vibechess.engine.outcome import Outcome
 from vibechess.engine.piece import Color, PieceType
-from vibechess.nn.encode import encode_board, move_to_action_index
+from vibechess.nn.encode import encode_board_np, move_to_action_index
 from vibechess.nn.inference import (
     InferenceResult,
     LegalPolicyBatchResult,
@@ -204,11 +204,16 @@ class NeuralMCTSNode:
         return index_array
 
     def cached_encoded_input(self) -> Any:
-        """Return an encoded MLX tensor for this node's position."""
+        """Return an encoded NumPy tensor for this node's position.
+
+        NumPy encoding avoids per-node MLX array construction; callers batch and
+        convert to MLX once per inference call (the model receives an identical
+        tensor either way).
+        """
         encoded = self._encoded_input
         if encoded is None:
-            with profile_scope("encode.game_mlx"):
-                encoded = encode_board(
+            with profile_scope("encode.node_np"):
+                encoded = encode_board_np(
                     self.state.board,
                     halfmove_clock=self.state.halfmove_clock,
                     fullmove_number=self.state.fullmove_number,

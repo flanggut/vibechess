@@ -73,6 +73,14 @@ _KNIGHT_DELTAS: tuple[tuple[int, int], ...] = (
 _UNDERPROMOTION_TYPES = (PieceType.KNIGHT, PieceType.BISHOP, PieceType.ROOK)
 _UNDERPROMOTION_FILES = (0, -1, 1)  # forward, capture-left, capture-right from mover's view.
 _UNDERPROMOTION_OFFSET = 64
+# Precomputed plane/index lookups so the per-move action-index hot path avoids
+# linear ``tuple.index()`` scans (called millions of times during self-play search).
+_KNIGHT_PLANES: dict[tuple[int, int], int] = {
+    delta: 56 + index for index, delta in enumerate(_KNIGHT_DELTAS)
+}
+_QUEEN_DIRECTION_INDEX: dict[tuple[int, int], int] = {
+    direction: index for index, direction in enumerate(_QUEEN_DIRECTIONS)
+}
 _BOARD_GRID = mx.arange(BOARD_SIZE).reshape(8, 8)
 
 
@@ -316,16 +324,18 @@ def legal_move_mask_from_board_moves_np(
 
 
 def _queen_or_knight_plane(df: int, dr: int) -> int:
-    if (df, dr) in _KNIGHT_DELTAS:
-        return 56 + _KNIGHT_DELTAS.index((df, dr))
+    knight_plane = _KNIGHT_PLANES.get((df, dr))
+    if knight_plane is not None:
+        return knight_plane
     distance = max(abs(df), abs(dr))
     if distance < 1 or distance > 7:
         raise ValueError(f"move delta ({df}, {dr}) is not representable")
     step = (0 if df == 0 else df // abs(df), 0 if dr == 0 else dr // abs(dr))
     is_straight_or_diagonal = abs(df) in {0, distance} and abs(dr) in {0, distance}
-    if step not in _QUEEN_DIRECTIONS or not is_straight_or_diagonal:
+    direction_index = _QUEEN_DIRECTION_INDEX.get(step)
+    if direction_index is None or not is_straight_or_diagonal:
         raise ValueError(f"move delta ({df}, {dr}) is not representable")
-    return _QUEEN_DIRECTIONS.index(step) * 7 + (distance - 1)
+    return direction_index * 7 + (distance - 1)
 
 
 def _underpromotion_plane(move: Move, board: Board, df: int, dr: int) -> int:
