@@ -139,7 +139,7 @@ Risk:
 
 - Tie ordering may differ from previous UCI lexical order unless the numeric key reproduces it. Prefer exact UCI-order-compatible numeric key if deterministic parity matters.
 
-### 2. Cache compact legal-index MLX arrays per node
+### 2. Cache compact legal-index MLX arrays per node — Done 2026-06-14
 
 Current hotspot:
 
@@ -160,6 +160,15 @@ Acceptance:
 - `predict_legal_batch()` avoids per-row Python-to-MLX index conversion when cached arrays are supplied.
 - Unit tests cover cached and uncached legal-index inputs.
 - Smoke benchmark improves or is neutral.
+
+
+Completed:
+
+- Added `NeuralMCTSNode.cached_legal_action_index_array()` and per-node MLX index-array storage.
+- Threaded optional `legal_action_index_array`/`legal_action_index_arrays` through neural MCTS requests, search helpers, central self-play batching, and `PolicyValueInference`.
+- Kept tuple `legal_action_indices` in result DTOs for existing callers and validation.
+- Added tests proving cached arrays are reused by nodes and `predict_legal_batch()` avoids `mx.array(indices)` when arrays are supplied.
+- Measured smoke benchmark after change: 15.96s, 40.10 samples/sec on 32 games × 20 plies × 200 simulations, workers 8, batch 16.
 
 Risk:
 

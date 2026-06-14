@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from inspect import Parameter, signature
 from typing import Any, Protocol, TypeAlias, cast
 
+import mlx.core as mx
 import numpy as np
 
 from vibechess.ai.player import NoLegalMoveError
@@ -139,6 +140,7 @@ class NeuralMCTSNode:
     total_value: float = 0.0
     is_expanded: bool = False
     _legal_action_indices: tuple[int, ...] | None = field(default=None, repr=False)
+    _legal_action_index_array: Any | None = field(default=None, repr=False)
     _encoded_input: Any | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -183,6 +185,15 @@ class NeuralMCTSNode:
                 )
             self._legal_action_indices = indices
         return indices
+
+    def cached_legal_action_index_array(self) -> Any:
+        """Return an MLX index tensor aligned with ``legal_moves`` for this node."""
+        index_array = self._legal_action_index_array
+        if index_array is None:
+            with profile_scope("policy.legal_index_array"):
+                index_array = mx.array(self.cached_legal_action_indices())
+            self._legal_action_index_array = index_array
+        return index_array
 
     def cached_encoded_input(self) -> Any:
         """Return an encoded MLX tensor for this node's position."""
@@ -275,6 +286,7 @@ class NeuralMCTSInferenceRequest:
     budget_blocked: bool
     selection_depth: int
     legal_action_indices: tuple[int, ...] = ()
+    legal_action_index_array: Any | None = None
     encoded_input: Any | None = None
 
 
@@ -464,6 +476,9 @@ class NeuralMCTSPlayer:
                 legal_indices_by_game = tuple(
                     selection.node.cached_legal_action_indices() for selection in pending
                 )
+                legal_index_arrays = tuple(
+                    selection.node.cached_legal_action_index_array() for selection in pending
+                )
                 encoded_inputs = tuple(
                     selection.node.cached_encoded_input() for selection in pending
                 )
@@ -472,6 +487,7 @@ class NeuralMCTSPlayer:
                     games,
                     legal_by_game,
                     legal_indices_by_game,
+                    legal_index_arrays,
                     encoded_inputs,
                 )
 
@@ -757,6 +773,7 @@ class NeuralMCTSSearchSession:
                     budget_blocked=selection.budget_blocked,
                     selection_depth=selection.selection_depth,
                     legal_action_indices=selection.node.cached_legal_action_indices(),
+                    legal_action_index_array=selection.node.cached_legal_action_index_array(),
                     encoded_input=selection.node.cached_encoded_input(),
                 )
                 self._pending_selection = selection
@@ -806,6 +823,8 @@ def _call_predict_with_cached_node(
     kwargs: dict[str, object] = {}
     if "legal_action_indices" in supported:
         kwargs["legal_action_indices"] = node.cached_legal_action_indices()
+    if "legal_action_index_array" in supported:
+        kwargs["legal_action_index_array"] = node.cached_legal_action_index_array()
     if "encoded_input" in supported:
         kwargs["encoded_input"] = node.cached_encoded_input()
     return predict_with_legal_moves(game, node.legal_moves, **kwargs)
@@ -817,12 +836,15 @@ def _call_legal_batch_predict(
     games: Sequence[Game],
     legal_moves: Sequence[Sequence[Move]],
     legal_action_indices: Sequence[Sequence[int]],
+    legal_action_index_arrays: Sequence[Any] | None,
     encoded_inputs: Sequence[Any] | None,
 ) -> LegalPolicyBatchResult:
     supported = _supported_keyword_parameters(batch_predict)
     kwargs: dict[str, object] = {}
     if "legal_action_indices" in supported:
         kwargs["legal_action_indices"] = legal_action_indices
+    if "legal_action_index_arrays" in supported:
+        kwargs["legal_action_index_arrays"] = legal_action_index_arrays
     if "encoded_inputs" in supported:
         kwargs["encoded_inputs"] = encoded_inputs
     return batch_predict(games, legal_moves, **kwargs)
@@ -853,7 +875,15 @@ def _introspect_keyword_parameters(callable_object: Callable[..., object]) -> fr
     except (TypeError, ValueError):
         return frozenset()
     if any(parameter.kind is Parameter.VAR_KEYWORD for parameter in parameters.values()):
-        return frozenset({"legal_action_indices", "encoded_input", "encoded_inputs"})
+        return frozenset(
+            {
+                "legal_action_indices",
+                "legal_action_index_array",
+                "legal_action_index_arrays",
+                "encoded_input",
+                "encoded_inputs",
+            }
+        )
     return frozenset(
         name
         for name, parameter in parameters.items()

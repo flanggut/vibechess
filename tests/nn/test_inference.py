@@ -77,6 +77,7 @@ def test_predict_legal_batch_uses_cached_indices_and_encoded_inputs(
     inference = PolicyValueInference(cast(PolicyValueNet, RowVaryingOutputModel(logits, values)))
     uncached = inference.predict_legal_batch((game,), legal_moves)
     encoded = encode_game(game)
+    index_array = mx.array(uncached.legal_action_indices[0])
 
     def fail_encode(_game: Game) -> Any:
         raise AssertionError("cached encoded inputs should avoid encode_game")
@@ -84,13 +85,19 @@ def test_predict_legal_batch_uses_cached_indices_and_encoded_inputs(
     def fail_indices(_game: Game, _legal: tuple[Any, ...]) -> Any:
         raise AssertionError("cached legal indices should avoid recomputation")
 
+    def fail_array(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("cached legal index arrays should avoid mx.array")
+
     monkeypatch.setattr(inference_module, "encode_game", fail_encode)
+    inference_mx = cast(Any, inference_module).mx
     monkeypatch.setattr(inference_module, "legal_action_indices_fn", fail_indices)
+    monkeypatch.setattr(inference_mx, "array", fail_array)
 
     cached = inference.predict_legal_batch(
         (game,),
         legal_moves,
         legal_action_indices=uncached.legal_action_indices,
+        legal_action_index_arrays=(index_array,),
         encoded_inputs=(encoded,),
     )
 

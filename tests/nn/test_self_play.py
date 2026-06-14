@@ -99,6 +99,7 @@ class CountingPolicyValueInference(PolicyValueInference):
         legal_moves: Any,
         *,
         legal_action_indices: Any | None = None,
+        legal_action_index_arrays: Any | None = None,
         encoded_inputs: Any | None = None,
     ) -> Any:
         self.legal_batch_calls += 1
@@ -107,6 +108,7 @@ class CountingPolicyValueInference(PolicyValueInference):
             games,
             legal_moves,
             legal_action_indices=legal_action_indices,
+            legal_action_index_arrays=legal_action_index_arrays,
             encoded_inputs=encoded_inputs,
         )
 
@@ -133,9 +135,10 @@ class DeterministicPolicyValueInference(PolicyValueInference):
         legal_moves: tuple[Move, ...],
         *,
         legal_action_indices: Sequence[int] | None = None,
+        legal_action_index_array: Any | None = None,
         encoded_input: Any | None = None,
     ) -> InferenceResult:
-        del encoded_input
+        del legal_action_index_array, encoded_input
         legal = tuple(legal_moves)
         legal_policy = self._legal_policy(legal)
         policy = mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32)
@@ -159,9 +162,10 @@ class DeterministicPolicyValueInference(PolicyValueInference):
         legal_moves: Sequence[Sequence[Move]],
         *,
         legal_action_indices: Sequence[Sequence[int]] | None = None,
+        legal_action_index_arrays: Any | None = None,
         encoded_inputs: Any | None = None,
     ) -> LegalPolicyBatchResult:
-        del encoded_inputs
+        del legal_action_index_arrays, encoded_inputs
         games_tuple = tuple(games)
         legal_tuple = tuple(tuple(row) for row in legal_moves)
         policies = tuple(self._legal_policy(legal) for legal in legal_tuple)

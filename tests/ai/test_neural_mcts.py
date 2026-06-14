@@ -150,6 +150,7 @@ class RecordingPolicyValueInference(PolicyValueInference):
         legal_moves: tuple[Move, ...],
         *,
         legal_action_indices: Sequence[int] | None = None,
+        legal_action_index_array: Any | None = None,
         encoded_input: Any | None = None,
     ) -> InferenceResult:
         self.legal_calls += 1
@@ -158,6 +159,7 @@ class RecordingPolicyValueInference(PolicyValueInference):
             game,
             legal_moves,
             legal_action_indices=legal_action_indices,
+            legal_action_index_array=legal_action_index_array,
             encoded_input=encoded_input,
         )
 
@@ -167,6 +169,7 @@ class RecordingPolicyValueInference(PolicyValueInference):
         legal_moves: Sequence[Sequence[Move]],
         *,
         legal_action_indices: Sequence[Sequence[int]] | None = None,
+        legal_action_index_arrays: Sequence[Any] | None = None,
         encoded_inputs: Sequence[Any] | Any | None = None,
     ) -> LegalPolicyBatchResult:
         self.legal_batch_calls += 1
@@ -178,6 +181,7 @@ class RecordingPolicyValueInference(PolicyValueInference):
             games,
             legal_moves,
             legal_action_indices=legal_action_indices,
+            legal_action_index_arrays=legal_action_index_arrays,
             encoded_inputs=encoded_inputs,
         )
 
@@ -238,6 +242,29 @@ def test_neural_node_caches_legal_action_indices(monkeypatch: pytest.MonkeyPatch
     assert first == second
     assert len(first) == len(node.legal_moves)
     assert calls == len(node.legal_moves)
+
+
+def test_neural_node_caches_legal_action_index_array(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    node = NeuralMCTSNode.create(Game.new())
+    neural_mcts_mx = cast(Any, neural_mcts_module).mx
+    original_array = neural_mcts_mx.array
+    calls = 0
+
+    def counting_array(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        return original_array(*args, **kwargs)
+
+    monkeypatch.setattr(neural_mcts_mx, "array", counting_array)
+
+    first = node.cached_legal_action_index_array()
+    second = node.cached_legal_action_index_array()
+
+    assert first is second
+    assert tuple(first.shape) == (len(node.legal_moves),)
+    assert calls == 1
 
 
 def test_neural_node_create_caches_terminal_outcome() -> None:
@@ -507,6 +534,8 @@ def test_neural_mcts_session_request_resume_state_and_node_budget() -> None:
     first = session.advance()
 
     assert isinstance(first, NeuralMCTSInferenceRequest)
+    assert first.legal_action_index_array is not None
+    assert tuple(first.legal_action_index_array.shape) == (len(game.legal_moves),)
     assert first.session_id == 5
     assert first.node is session.root
     assert first.game.positions == (game.board,)

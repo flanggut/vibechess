@@ -165,6 +165,7 @@ class PolicyValueInference:
         legal_moves: tuple[Move, ...],
         *,
         legal_action_indices: Sequence[int] | None = None,
+        legal_action_index_array: MLXArray | None = None,
         encoded_input: MLXArray | None = None,
     ) -> InferenceResult:
         """Run inference using precomputed legal moves for compact legal priors.
@@ -196,12 +197,21 @@ class PolicyValueInference:
                 indices = tuple(legal_action_indices)
                 if len(indices) != len(legal):
                     raise ValueError("legal_action_indices length must match legal_moves")
+            if (
+                legal_action_index_array is not None
+                and tensor_shape(legal_action_index_array) != (len(legal),)
+            ):
+                raise ValueError("legal_action_index_array length must match legal_moves")
             if not indices:
                 legal_policy = mx.zeros((0,), dtype=mx.float32)
                 policy = mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32)
                 mask = mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32)
             else:
-                index_array = mx.array(indices)
+                index_array = (
+                    legal_action_index_array
+                    if legal_action_index_array is not None
+                    else mx.array(indices)
+                )
                 legal_logits = logits[index_array]
                 with profile_scope("inference.policy_softmax"):
                     legal_policy = mx.softmax(legal_logits)
@@ -242,6 +252,7 @@ class PolicyValueInference:
         legal_moves: Sequence[Sequence[Move]],
         *,
         legal_action_indices: Sequence[Sequence[int]] | None = None,
+        legal_action_index_arrays: Sequence[MLXArray] | None = None,
         encoded_inputs: Sequence[MLXArray] | MLXArray | None = None,
     ) -> LegalPolicyBatchResult:
         """Run compact batched inference over supplied legal moves only.
@@ -296,13 +307,27 @@ class PolicyValueInference:
                 for legal, indices in zip(legal_by_row, legal_indices_by_row, strict=True):
                     if len(indices) != len(legal):
                         raise ValueError("legal_action_indices rows must match legal_moves rows")
+            legal_index_arrays = None
+            if legal_action_index_arrays is not None:
+                legal_index_arrays = tuple(legal_action_index_arrays)
+                if len(legal_index_arrays) != batch_size:
+                    raise ValueError("legal_action_index_arrays length must match batch size")
+                for legal, index_array in zip(legal_by_row, legal_index_arrays, strict=True):
+                    if tensor_shape(index_array) != (len(legal),):
+                        raise ValueError(
+                            "legal_action_index_arrays rows must match legal_moves rows"
+                        )
             legal_policies: list[MLXArray] = []
             with profile_scope("inference.policy_softmax"):
                 for row_index, indices in enumerate(legal_indices_by_row):
                     if not indices:
                         legal_policies.append(mx.zeros((0,), dtype=mx.float32))
                         continue
-                    index_array = mx.array(indices)
+                    index_array = (
+                        legal_index_arrays[row_index]
+                        if legal_index_arrays is not None
+                        else mx.array(indices)
+                    )
                     legal_logits = logits[row_index][index_array]
                     legal_policies.append(mx.softmax(legal_logits))
             legal_policy_tuple = tuple(legal_policies)

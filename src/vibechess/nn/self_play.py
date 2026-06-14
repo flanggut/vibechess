@@ -352,6 +352,10 @@ def _run_central_neural_searches(
                 legal_indices_by_game = tuple(
                     request.legal_action_indices for request in requests
                 )
+                legal_index_arrays = tuple(request.legal_action_index_array for request in requests)
+                cached_index_arrays = (
+                    None if any(item is None for item in legal_index_arrays) else legal_index_arrays
+                )
                 encoded_inputs = tuple(request.encoded_input for request in requests)
                 cached_encoded_inputs = (
                     None if any(item is None for item in encoded_inputs) else encoded_inputs
@@ -365,6 +369,7 @@ def _run_central_neural_searches(
                         games,
                         legal_by_game,
                         legal_indices_by_game,
+                        cached_index_arrays,
                         cached_encoded_inputs,
                     )
                 for row_index, search_index in enumerate(batch_indexes):
