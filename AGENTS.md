@@ -3,7 +3,7 @@
 ## Project orientation
 
 - Python-first chess engine/AI project for Apple Silicon macOS. The Python engine is the correctness reference; Swift under `swift/` is optional acceleration scaffolding only.
-- Main package layout: `src/vibechess/engine` (board, moves, game, FEN, bounded PGN/SAN, legal moves), `ai` (players, MCTS, evaluation), `nn` (MLX encoding/model/checkpoints/self-play/PGN datasets/train), `protocols` (bounded UCI), `ui` (terminal), plus `scripts/`, `tests/`, `docs/`, and optional `swift/`.
+- Main package layout: `src/vibechess/engine` (board, moves, game, FEN, bounded PGN/SAN, legal moves), `ai` (players, MCTS, evaluation), `nn` (MLX encoding/model/checkpoints/self-play/PGN datasets/train), `protocols` (bounded UCI), `ui` (terminal), plus `scripts/`, `tests/`, and optional `swift/`.
 - Core chess conventions: squares are `0..63` with `a1 == 0`, `h8 == 63`; use `Move` objects internally and UCI/SAN strings only at boundaries. `Board` stores placement/side/castling/en-passant; `Game` stores history, counters, repetition, and outcome state.
 
 ## Setup and validation
@@ -28,6 +28,6 @@
 
 ## Documentation expectations
 
-- Update docs/tests alongside behavioral changes, especially for protocol boundaries, PGN ingestion, dataset formats, CLI/script usage, and Swift acceleration claims.
+- Update `README.md` and tests alongside behavioral changes, especially for protocol boundaries, PGN ingestion, dataset formats, CLI/script usage, and Swift acceleration claims.
 - Prefer narrow, evidence-backed optimizations: include a benchmark or focused test when changing hot paths.
 - Any temporary artifacts from planning or other agent activities should be store in an `artifacts` subfolder.
