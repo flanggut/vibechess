@@ -77,6 +77,8 @@ class NeuralMCTSConfig:
     seed: int | None = None
     collection_batch_size: int = 1
     virtual_loss: int = 1
+    reuse_simulation_budget: bool = False
+    min_reuse_simulations: int = 16
 
     def __post_init__(self) -> None:
         if self.simulations < 1:
@@ -99,6 +101,22 @@ class NeuralMCTSConfig:
             raise ValueError(msg)
         if self.virtual_loss < 0:
             msg = f"virtual_loss must be non-negative, got {self.virtual_loss}"
+            raise ValueError(msg)
+        if self.min_reuse_simulations < 0:
+            msg = (
+                "min_reuse_simulations must be non-negative, "
+                f"got {self.min_reuse_simulations}"
+            )
+            raise ValueError(msg)
+        if (
+            self.reuse_simulation_budget
+            and self.min_reuse_simulations > self.simulations
+        ):
+            msg = (
+                "min_reuse_simulations must be no greater than simulations when "
+                "reuse_simulation_budget is enabled, got "
+                f"{self.min_reuse_simulations} > {self.simulations}"
+            )
             raise ValueError(msg)
 
 
@@ -329,6 +347,7 @@ class _PreparedNeuralMCTSSearch:
     nodes_created: int
     start_time: float
     deadline: float | None
+    target_simulations: int
 
 
 @dataclass(slots=True)
@@ -368,6 +387,7 @@ class NeuralMCTSPlayer:
             prepared.root,
             prepared.nodes_created,
             prepared.deadline,
+            prepared.target_simulations,
         )
 
         return self._finish_search(
@@ -397,6 +417,21 @@ class NeuralMCTSPlayer:
             self._detach_root(root)
         self._tree_root = root
 
+        target_simulations = self.config.simulations
+        if self.config.reuse_simulation_budget:
+            if adopted_root:
+                remaining = self.config.simulations - root.visits
+                target_simulations = min(
+                    max(remaining, self.config.min_reuse_simulations),
+                    self.config.simulations,
+                )
+            skipped = self.config.simulations - target_simulations
+            record_distribution(
+                "mcts.reuse_simulations_skipped",
+                skipped,
+                unit="simulations",
+            )
+
         deadline = None
         if self.config.time_limit_seconds is not None:
             deadline = start_time + self.config.time_limit_seconds
@@ -405,6 +440,7 @@ class NeuralMCTSPlayer:
             nodes_created=nodes_created,
             start_time=start_time,
             deadline=deadline,
+            target_simulations=target_simulations,
         )
 
     def _run_serial_simulations(
@@ -412,23 +448,34 @@ class NeuralMCTSPlayer:
         root: NeuralMCTSNode,
         nodes_created: int,
         deadline: float | None,
+        target_simulations: int,
     ) -> tuple[int, int]:
         if self.config.collection_batch_size > 1:
             batch_predict = getattr(self.inference, "predict_legal_batch", None)
             if callable(batch_predict):
                 return self._run_collected_simulations(
-                    root, nodes_created, deadline, cast(_LegalBatchPredict, batch_predict)
+                    root,
+                    nodes_created,
+                    deadline,
+                    target_simulations,
+                    cast(_LegalBatchPredict, batch_predict),
                 )
-        return self._run_single_leaf_simulations(root, nodes_created, deadline)
+        return self._run_single_leaf_simulations(
+            root,
+            nodes_created,
+            deadline,
+            target_simulations,
+        )
 
     def _run_single_leaf_simulations(
         self,
         root: NeuralMCTSNode,
         nodes_created: int,
         deadline: float | None,
+        target_simulations: int,
     ) -> tuple[int, int]:
         simulations = 0
-        while simulations < self.config.simulations:
+        while simulations < target_simulations:
             if deadline is not None and simulations > 0 and time.perf_counter() >= deadline:
                 break
             with profile_scope("mcts.simulation", simulation_index=simulations):
@@ -453,6 +500,7 @@ class NeuralMCTSPlayer:
         root: NeuralMCTSNode,
         nodes_created: int,
         deadline: float | None,
+        target_simulations: int,
         batch_predict: _LegalBatchPredict,
     ) -> tuple[int, int]:
         """Run simulations using virtual-loss leaf collection and batched inference.
@@ -465,11 +513,11 @@ class NeuralMCTSPlayer:
         """
         width = self.config.collection_batch_size
         simulations = 0
-        while simulations < self.config.simulations:
+        while simulations < target_simulations:
             if deadline is not None and simulations > 0 and time.perf_counter() >= deadline:
                 break
 
-            target = min(width, self.config.simulations - simulations)
+            target = min(width, target_simulations - simulations)
             pending: list[_SerialLeafSelection] = []
             pending_ids: set[int] = set()
             with profile_scope("mcts.collect", target=target):
@@ -724,6 +772,7 @@ class NeuralMCTSSearchSession:
     nodes_created: int
     _start_time: float
     _deadline: float | None
+    _target_simulations: int
     _pending_selection: _SerialLeafSelection | None
     _pending_request: NeuralMCTSInferenceRequest | None
     _result: NeuralMCTSResult | None
@@ -743,6 +792,7 @@ class NeuralMCTSSearchSession:
         self.nodes_created = prepared.nodes_created
         self._start_time = prepared.start_time
         self._deadline = prepared.deadline
+        self._target_simulations = prepared.target_simulations
         self.simulations = 0
         self._pending_selection = None
         self._pending_request = None
@@ -770,7 +820,7 @@ class NeuralMCTSSearchSession:
         if self._pending_request is not None:
             return self._pending_request
 
-        while self.simulations < self.player.config.simulations:
+        while self.simulations < self._target_simulations:
             if (
                 self._deadline is not None
                 and self.simulations > 0

@@ -64,6 +64,8 @@ class GenerationArgs:
     active_games: int | None
     collection_batch_size: int
     virtual_loss: int
+    reuse_simulation_budget: bool = False
+    min_reuse_simulations: int = 16
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,6 +191,8 @@ def _self_play_config(args: GenerationArgs, *, games: int, seed: int) -> SelfPla
             seed=seed,
             collection_batch_size=args.collection_batch_size,
             virtual_loss=args.virtual_loss,
+            reuse_simulation_budget=args.reuse_simulation_budget,
+            min_reuse_simulations=args.min_reuse_simulations,
         ),
         classical_mcts=MCTSConfig(
             simulations=args.simulations,
@@ -358,6 +362,23 @@ def main() -> int:
     parser.add_argument("--games", type=int, default=1)
     parser.add_argument("--max-plies", type=int, default=16)
     parser.add_argument("--simulations", type=int, default=2)
+    parser.add_argument(
+        "--reuse-simulation-budget",
+        action="store_true",
+        help=(
+            "when neural tree reuse adopts an existing root, spend only the remaining "
+            "visit budget instead of always running --simulations new visits"
+        ),
+    )
+    parser.add_argument(
+        "--min-reuse-simulations",
+        type=int,
+        default=16,
+        help=(
+            "minimum new neural MCTS simulations to run after visit-budget-aware "
+            "root reuse"
+        ),
+    )
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--classical-exploration", type=float, default=1.41421356237)
     parser.add_argument(
@@ -455,6 +476,8 @@ def main() -> int:
         active_games=args.active_games,
         collection_batch_size=args.collection_batch_size,
         virtual_loss=args.virtual_loss,
+        reuse_simulation_budget=args.reuse_simulation_budget,
+        min_reuse_simulations=args.min_reuse_simulations,
     )
     full_config = _self_play_config(generation_args, games=args.games, seed=args.seed)
 

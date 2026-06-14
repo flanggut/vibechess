@@ -491,7 +491,21 @@ def test_neural_mcts_collection_falls_back_without_batch_support() -> None:
     ],
 )
 def test_neural_mcts_config_rejects_invalid_collection_settings(
-    kwargs: dict[str, int],
+    kwargs: dict[str, Any],
+) -> None:
+    with pytest.raises(ValueError):
+        NeuralMCTSConfig(**kwargs)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"min_reuse_simulations": -1},
+        {"simulations": 4, "reuse_simulation_budget": True, "min_reuse_simulations": 5},
+    ],
+)
+def test_neural_mcts_config_rejects_invalid_reuse_budget_settings(
+    kwargs: dict[str, Any],
 ) -> None:
     with pytest.raises(ValueError):
         NeuralMCTSConfig(**kwargs)
@@ -569,6 +583,42 @@ def test_neural_mcts_session_request_resume_state_and_node_budget() -> None:
     assert session.result is result
     assert session.advance() is result
     assert player.last_result is result
+
+
+def test_neural_mcts_session_reuse_budget_zero_completes_without_request() -> None:
+    game = Game.new()
+    preferred = Move.from_uci("e2e4")
+    inference = FakeLegalBatchInference(preferred_move=preferred)
+    config = NeuralMCTSConfig(
+        simulations=4,
+        temperature=0.0,
+        seed=5,
+        reuse_simulation_budget=True,
+        min_reuse_simulations=0,
+    )
+    player = NeuralMCTSPlayer(inference, config)
+
+    first_result = player.search(game)
+    first_root = player._tree_root
+    assert first_root is not None
+    reused_root = first_root.children[first_result.move]
+    reused_root.visits = config.simulations
+    requested = game.play(first_result.move)
+    inference.legal_calls = 0
+    inference.legal_batch_calls = 0
+
+    session = NeuralMCTSSearchSession(player, requested, session_id=23)
+    result = session.advance()
+
+    assert isinstance(result, NeuralMCTSResult)
+    assert result.simulations == 0
+    assert result.move in requested.legal_moves
+    assert session.is_complete
+    assert session.pending_request is None
+    assert player.last_result is result
+    assert player._tree_root is reused_root
+    assert inference.legal_calls == 0
+    assert inference.legal_batch_calls == 0
 
 
 def test_neural_mcts_session_terminal_leaf_completes_without_second_request() -> None:
@@ -925,6 +975,72 @@ def test_neural_tree_reuse_adopts_exact_descendant_and_preserves_visits() -> Non
     assert reused_child.parent is None
     assert reused_child.visits >= 7
     assert second_result.move in requested.legal_moves
+
+
+def test_neural_tree_reuse_default_off_runs_full_simulation_budget() -> None:
+    game = Game.new()
+    inference = FakeInference(preferred_move=Move.from_uci("e2e4"))
+    config = NeuralMCTSConfig(
+        simulations=4,
+        temperature=0.0,
+        seed=1,
+        min_reuse_simulations=0,
+    )
+    player = NeuralMCTSPlayer(inference, config)
+
+    first_result = player.search(game)
+    first_root = player._tree_root
+    assert first_root is not None
+    reused_root = first_root.children[first_result.move]
+    reused_root.visits = 11
+    requested = game.play(first_result.move)
+    inference.calls = 0
+
+    second_result = player.search(requested)
+
+    assert player._tree_root is reused_root
+    assert second_result.simulations == config.simulations
+    assert inference.calls == config.simulations
+    assert reused_root.visits == 11 + config.simulations
+
+
+@pytest.mark.parametrize(
+    ("adopted_visits", "expected_fresh_simulations"),
+    [
+        (7, 3),
+        (99, 2),
+        (0, 10),
+    ],
+)
+def test_neural_tree_reuse_budget_counts_adopted_root_visits_with_clamps(
+    adopted_visits: int,
+    expected_fresh_simulations: int,
+) -> None:
+    game = Game.new()
+    inference = FakeInference(preferred_move=Move.from_uci("e2e4"))
+    config = NeuralMCTSConfig(
+        simulations=10,
+        temperature=0.0,
+        seed=1,
+        reuse_simulation_budget=True,
+        min_reuse_simulations=2,
+    )
+    player = NeuralMCTSPlayer(inference, config)
+
+    first_result = player.search(game)
+    first_root = player._tree_root
+    assert first_root is not None
+    reused_root = first_root.children[first_result.move]
+    reused_root.visits = adopted_visits
+    requested = game.play(first_result.move)
+    inference.calls = 0
+
+    second_result = player.search(requested)
+
+    assert player._tree_root is reused_root
+    assert second_result.simulations == expected_fresh_simulations
+    assert inference.calls == expected_fresh_simulations
+    assert reused_root.visits == adopted_visits + expected_fresh_simulations
 
 
 def test_neural_clear_tree_discards_reusable_state() -> None:

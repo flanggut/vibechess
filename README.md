@@ -107,6 +107,12 @@ Typical loop:
 For detailed flags and formats, prefer the script `--help` output and the dataset
 loader/writer tests over duplicated prose.
 
+
+Neural self-play can opt into visit-budget-aware tree reuse with
+`scripts/self_play.py --reuse-simulation-budget --min-reuse-simulations N`.
+The default is off: enabling it changes policy targets and trajectories, so treat
+datasets generated with the flag as a separate quality/speed experiment.
+
 ## Development notes
 
 - Keep the Python engine as the source of truth unless a Swift acceleration task

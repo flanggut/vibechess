@@ -13,7 +13,7 @@ import mlx.core as mx
 import numpy as np
 
 import vibechess.nn.self_play as self_play
-from vibechess.ai.neural_mcts import NeuralMCTSConfig
+from vibechess.ai.neural_mcts import NeuralMCTSConfig, NeuralMCTSPlayer
 from vibechess.ai.search_config import MCTSConfig
 from vibechess.engine import Game, Move, OutcomeReason
 from vibechess.nn.checkpoint import save_checkpoint
@@ -224,6 +224,30 @@ def test_generate_self_play_dataset_completes_smoke_game() -> None:
     assert dataset.games[0].plies == 4
     assert dataset.games[0].outcome_reason == OutcomeReason.MAX_PLIES.value
     assert len(dataset.games[0].moves_uci) == 4
+
+
+def test_generate_self_play_dataset_records_reuse_budget_metadata() -> None:
+    dataset = generate_self_play_dataset(
+        FakeInference(),
+        SelfPlayConfig(
+            games=1,
+            max_plies=2,
+            mcts=NeuralMCTSConfig(
+                simulations=2,
+                temperature=0.0,
+                seed=13,
+                reuse_simulation_budget=True,
+                min_reuse_simulations=0,
+            ),
+            model_checkpoint_id="fake-checkpoint",
+            seed=13,
+        ),
+    )
+
+    mcts_settings = dataset.metadata.generation_settings["mcts"]
+    assert isinstance(mcts_settings, dict)
+    assert mcts_settings["reuse_simulation_budget"] is True
+    assert mcts_settings["min_reuse_simulations"] == 0
 
 
 def test_generate_self_play_dataset_reports_serial_progress() -> None:
@@ -478,6 +502,58 @@ def test_batched_neural_self_play_uses_legal_batch_queue_after_root_expansion() 
     assert 2 in inference.legal_batch_sizes[1:]
 
 
+def test_central_neural_searches_handle_mixed_reuse_targets() -> None:
+    inference = DeterministicPolicyValueInference()
+    reuse_config = NeuralMCTSConfig(
+        simulations=4,
+        temperature=0.0,
+        seed=61,
+        reuse_simulation_budget=True,
+        min_reuse_simulations=0,
+    )
+    reuse_player = NeuralMCTSPlayer(inference, reuse_config)
+    game = Game.new()
+    first_result = reuse_player.search(game)
+    first_root = reuse_player._tree_root
+    assert first_root is not None
+    reused_root = first_root.children[first_result.move]
+    reused_root.visits = reuse_config.simulations
+    reused_game = game.play(first_result.move)
+    normal_game = Game.new()
+    normal_player = NeuralMCTSPlayer(
+        inference,
+        NeuralMCTSConfig(simulations=2, temperature=0.0, seed=62),
+    )
+
+    results = self_play._run_central_neural_searches(
+        inference,
+        [
+            (
+                self_play._BatchedGameState(
+                    game_index=0,
+                    game=reused_game,
+                    player=reuse_player,
+                ),
+                reused_game.legal_moves,
+            ),
+            (
+                self_play._BatchedGameState(
+                    game_index=1,
+                    game=normal_game,
+                    player=normal_player,
+                ),
+                normal_game.legal_moves,
+            ),
+        ],
+        batch_size=2,
+    )
+
+    assert [state.game_index for state, _legal, _result in results] == [0, 1]
+    assert results[0][2].simulations == 0
+    assert results[1][2].simulations == 2
+    assert reuse_player._tree_root is reused_root
+
+
 def test_batched_neural_self_play_is_reproducible_for_fixed_seed() -> None:
     model = PolicyValueNet(
         PolicyValueConfig(
@@ -506,6 +582,43 @@ def test_batched_neural_self_play_is_reproducible_for_fixed_seed() -> None:
     np.testing.assert_array_equal(first.outcomes, second.outcomes)
     assert [record.moves_uci for record in first.games] == [
         record.moves_uci for record in second.games
+    ]
+
+
+def test_neural_self_play_default_off_ignores_reuse_floor_for_outputs() -> None:
+    base_config = SelfPlayConfig(
+        games=2,
+        max_plies=3,
+        mcts=NeuralMCTSConfig(
+            simulations=2,
+            temperature=0.0,
+            seed=29,
+            reuse_simulation_budget=False,
+            min_reuse_simulations=0,
+        ),
+        seed=29,
+        batch_size=2,
+    )
+    changed_floor_config = replace(
+        base_config,
+        mcts=replace(base_config.mcts, min_reuse_simulations=99),
+    )
+
+    first = generate_self_play_dataset(DeterministicPolicyValueInference(), base_config)
+    second = generate_self_play_dataset(
+        DeterministicPolicyValueInference(),
+        changed_floor_config,
+    )
+
+    np.testing.assert_array_equal(first.positions, second.positions)
+    np.testing.assert_array_equal(first.legal_masks, second.legal_masks)
+    np.testing.assert_array_equal(first.mcts_policies, second.mcts_policies)
+    np.testing.assert_array_equal(first.outcomes, second.outcomes)
+    assert [record.moves_uci for record in first.games] == [
+        record.moves_uci for record in second.games
+    ]
+    assert [record.final_fen for record in first.games] == [
+        record.final_fen for record in second.games
     ]
 
 
@@ -1016,6 +1129,39 @@ def test_self_play_script_accepts_batch_size_and_active_games(tmp_path: Path) ->
     assert [record.game_index for record in dataset.games] == [0, 1, 2]
 
 
+def test_self_play_script_records_reuse_budget_metadata(tmp_path: Path) -> None:
+    output = tmp_path / "script-reuse-output"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/self_play.py",
+            "--games",
+            "1",
+            "--max-plies",
+            "1",
+            "--simulations",
+            "2",
+            "--reuse-simulation-budget",
+            "--min-reuse-simulations",
+            "0",
+            "--output",
+            str(output),
+        ],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    dataset = load_self_play_dataset(output)
+    mcts_settings = dataset.metadata.generation_settings["mcts"]
+    assert isinstance(mcts_settings, dict)
+    assert mcts_settings["reuse_simulation_budget"] is True
+    assert mcts_settings["min_reuse_simulations"] == 0
+
+
 def test_self_play_script_help_describes_central_batching() -> None:
     result = subprocess.run(
         [sys.executable, "scripts/self_play.py", "--help"],
@@ -1038,6 +1184,8 @@ def test_self_play_script_help_describes_central_batching() -> None:
     assert "capped by --batch-size" in result.stdout
     assert "--progress" in result.stdout
     assert "auto" in result.stdout
+    assert "--reuse-simulation-budget" in result.stdout
+    assert "--min-reuse-simulations" in result.stdout
 
 
 def test_self_play_script_rejects_removed_parallel_batch_flag(tmp_path: Path) -> None:
