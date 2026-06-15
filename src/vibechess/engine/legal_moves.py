@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from contextlib import AbstractContextManager
 
 from vibechess.engine.board import Board
 from vibechess.engine.move import Move
 from vibechess.engine.piece import Color, Piece, PieceType
-from vibechess.engine.square import Square, make_square, validate_square
+from vibechess.engine.square import Square, validate_square
 
 
 def _profile_scope(name: str, **tags: object) -> AbstractContextManager[None]:
@@ -36,8 +36,6 @@ _KING_DELTAS = ((1, 1), (1, 0), (1, -1), (0, 1), (0, -1), (-1, 1), (-1, 0), (-1,
 _BISHOP_DIRECTIONS = ((1, 1), (1, -1), (-1, 1), (-1, -1))
 _ROOK_DIRECTIONS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 _QUEEN_DIRECTIONS = _BISHOP_DIRECTIONS + _ROOK_DIRECTIONS
-_BISHOP_ATTACKERS = frozenset({PieceType.BISHOP, PieceType.QUEEN})
-_ROOK_ATTACKERS = frozenset({PieceType.ROOK, PieceType.QUEEN})
 
 
 def _build_leaper_attack_table(
@@ -114,19 +112,26 @@ def pseudo_legal_moves(board: Board) -> tuple[Move, ...]:
         for square_index, piece in enumerate(board.squares):
             if piece is None or piece.color is not side_to_move:
                 continue
-            square = Square(square_index)
             if piece.kind is PieceType.PAWN:
-                moves.extend(_pawn_moves(board, square, piece.color))
+                _append_pawn_moves(moves, board, square_index, piece.color)
             elif piece.kind is PieceType.KNIGHT:
-                moves.extend(_leaper_moves(board, square, piece.color, _KNIGHT_DELTAS))
+                _append_leaper_moves(
+                    moves, board.squares, square_index, piece.color, _KNIGHT_DELTAS
+                )
             elif piece.kind is PieceType.BISHOP:
-                moves.extend(_slider_moves(board, square, piece.color, _BISHOP_DIRECTIONS))
+                _append_slider_moves(
+                    moves, board.squares, square_index, piece.color, _BISHOP_DIRECTIONS
+                )
             elif piece.kind is PieceType.ROOK:
-                moves.extend(_slider_moves(board, square, piece.color, _ROOK_DIRECTIONS))
+                _append_slider_moves(
+                    moves, board.squares, square_index, piece.color, _ROOK_DIRECTIONS
+                )
             elif piece.kind is PieceType.QUEEN:
-                moves.extend(_slider_moves(board, square, piece.color, _QUEEN_DIRECTIONS))
+                _append_slider_moves(
+                    moves, board.squares, square_index, piece.color, _QUEEN_DIRECTIONS
+                )
             elif piece.kind is PieceType.KING:
-                moves.extend(_king_moves(board, square, piece.color))
+                _append_king_moves(moves, board, square_index, piece.color)
         result = tuple(moves)
         _record_distribution("legal.pseudo_moves", len(result), unit="moves")
         return result
@@ -235,12 +240,26 @@ def _is_square_attacked_index(
             return True
 
     for ray in _BISHOP_ATTACK_RAYS_BY_TARGET[target_index]:
-        if _ray_attacked(squares, ray, by_color, _BISHOP_ATTACKERS):
-            return True
+        for square_index in ray:
+            piece = squares[square_index]
+            if piece is None:
+                continue
+            if piece.color is by_color and (
+                piece.kind is PieceType.BISHOP or piece.kind is PieceType.QUEEN
+            ):
+                return True
+            break
 
     for ray in _ROOK_ATTACK_RAYS_BY_TARGET[target_index]:
-        if _ray_attacked(squares, ray, by_color, _ROOK_ATTACKERS):
-            return True
+        for square_index in ray:
+            piece = squares[square_index]
+            if piece is None:
+                continue
+            if piece.color is by_color and (
+                piece.kind is PieceType.ROOK or piece.kind is PieceType.QUEEN
+            ):
+                return True
+            break
 
     for square_index in _KING_ATTACKERS_BY_TARGET[target_index]:
         piece = squares[square_index]
@@ -325,149 +344,175 @@ def _king_safe_after_move(
     return safe
 
 
-def _pawn_moves(board: Board, square: Square, color: Color) -> Iterable[Move]:
-    moves: list[Move] = []
+def _append_pawn_moves(
+    moves: list[Move],
+    board: Board,
+    from_index: int,
+    color: Color,
+) -> None:
     squares = board.squares
     start_rank = 1 if color is Color.WHITE else 6
     promotion_rank = 7 if color is Color.WHITE else 0
     direction = 1 if color is Color.WHITE else -1
-    from_index = int(square)
-    from_file = from_index % 8
-    from_rank = from_index // 8
+    from_file = from_index & 7
+    from_rank = from_index >> 3
+    from_square = Square(from_index)
 
-    one_step = _offset_square(from_file, from_rank, 0, direction)
-    if one_step is not None and squares[int(one_step)] is None:
-        moves.extend(_promotion_or_normal(square, one_step, int(one_step) // 8 == promotion_rank))
-        two_step = _offset_square(from_file, from_rank, 0, direction * 2)
-        if from_rank == start_rank and two_step is not None and squares[int(two_step)] is None:
-            moves.append(Move(square, two_step))
+    one_step_index = from_index + direction * 8
+    if 0 <= one_step_index < 64 and squares[one_step_index] is None:
+        _append_promotion_or_normal(
+            moves,
+            from_square,
+            one_step_index,
+            one_step_index >> 3 == promotion_rank,
+        )
+        two_step_index = from_index + direction * 16
+        if (
+            from_rank == start_rank
+            and 0 <= two_step_index < 64
+            and squares[two_step_index] is None
+        ):
+            moves.append(Move(from_square, Square(two_step_index)))
 
+    en_passant_target = (
+        -1 if board.en_passant_target is None else int(board.en_passant_target)
+    )
+    opponent = color.opposite
     for file_delta in (-1, 1):
-        target = _offset_square(from_file, from_rank, file_delta, direction)
-        if target is None:
+        target_file = from_file + file_delta
+        if not 0 <= target_file < 8:
             continue
-        target_piece = squares[int(target)]
+        target_index = from_index + direction * 8 + file_delta
+        if not 0 <= target_index < 64:
+            continue
+        target_piece = squares[target_index]
         if target_piece is not None and target_piece.color is not color:
-            moves.extend(_promotion_or_normal(square, target, int(target) // 8 == promotion_rank))
-        elif board.en_passant_target == target:
-            capture_square = _en_passant_capture_square(target, color)
-            if _has_piece(board, capture_square, color.opposite, PieceType.PAWN):
-                moves.append(Move(square, target))
-    return moves
+            _append_promotion_or_normal(
+                moves,
+                from_square,
+                target_index,
+                target_index >> 3 == promotion_rank,
+            )
+        elif target_index == en_passant_target:
+            capture_index = target_index + (-8 if color is Color.WHITE else 8)
+            if (
+                0 <= capture_index < 64
+                and _has_piece_at_index(squares, capture_index, opponent, PieceType.PAWN)
+            ):
+                moves.append(Move(from_square, Square(target_index)))
 
 
-def _leaper_moves(
-    board: Board, square: Square, color: Color, deltas: Iterable[tuple[int, int]]
-) -> Iterable[Move]:
-    moves: list[Move] = []
-    squares = board.squares
-    from_index = int(square)
-    from_file = from_index % 8
-    from_rank = from_index // 8
+def _append_leaper_moves(
+    moves: list[Move],
+    squares: Sequence[Piece | None],
+    from_index: int,
+    color: Color,
+    deltas: Sequence[tuple[int, int]],
+) -> None:
+    from_file = from_index & 7
+    from_rank = from_index >> 3
+    from_square = Square(from_index)
     for file_delta, rank_delta in deltas:
         target_file = from_file + file_delta
         target_rank = from_rank + rank_delta
         if not (0 <= target_file < 8 and 0 <= target_rank < 8):
             continue
-        target = Square(target_rank * 8 + target_file)
-        target_piece = squares[int(target)]
+        target_index = target_rank * 8 + target_file
+        target_piece = squares[target_index]
         if target_piece is None or target_piece.color is not color:
-            moves.append(Move(square, target))
-    return moves
+            moves.append(Move(from_square, Square(target_index)))
 
 
-def _slider_moves(
-    board: Board, square: Square, color: Color, directions: Iterable[tuple[int, int]]
-) -> Iterable[Move]:
-    moves: list[Move] = []
-    squares = board.squares
-    from_index = int(square)
-    from_file = from_index % 8
-    from_rank = from_index // 8
+def _append_slider_moves(
+    moves: list[Move],
+    squares: Sequence[Piece | None],
+    from_index: int,
+    color: Color,
+    directions: Sequence[tuple[int, int]],
+) -> None:
+    from_file = from_index & 7
+    from_rank = from_index >> 3
+    from_square = Square(from_index)
     for file_delta, rank_delta in directions:
         target_file = from_file + file_delta
         target_rank = from_rank + rank_delta
         while 0 <= target_file < 8 and 0 <= target_rank < 8:
-            target = Square(target_rank * 8 + target_file)
-            target_piece = squares[int(target)]
+            target_index = target_rank * 8 + target_file
+            target_piece = squares[target_index]
             if target_piece is None:
-                moves.append(Move(square, target))
+                moves.append(Move(from_square, Square(target_index)))
             else:
                 if target_piece.color is not color:
-                    moves.append(Move(square, target))
+                    moves.append(Move(from_square, Square(target_index)))
                 break
             target_file += file_delta
             target_rank += rank_delta
-    return moves
 
 
-def _king_moves(board: Board, square: Square, color: Color) -> Iterable[Move]:
-    moves = list(_leaper_moves(board, square, color, _KING_DELTAS))
-    moves.extend(_castling_moves(board, square, color))
-    return moves
+def _append_king_moves(
+    moves: list[Move],
+    board: Board,
+    from_index: int,
+    color: Color,
+) -> None:
+    _append_leaper_moves(moves, board.squares, from_index, color, _KING_DELTAS)
+    _append_castling_moves(moves, board, from_index, color)
 
 
-def _castling_moves(board: Board, square: Square, color: Color) -> Iterable[Move]:
-    rank = 0 if color is Color.WHITE else 7
-    expected_king_square = make_square(4, rank)
-    if square != expected_king_square:
-        return ()
+def _append_castling_moves(
+    moves: list[Move],
+    board: Board,
+    from_index: int,
+    color: Color,
+) -> None:
+    rank_offset = 0 if color is Color.WHITE else 56
+    expected_king_index = rank_offset + 4
+    if from_index != expected_king_index:
+        return
 
     opponent = color.opposite
-    if is_square_attacked(board, square, opponent):
-        return ()
+    squares = board.squares
+    if _is_square_attacked_index(squares, from_index, opponent):
+        return
 
-    moves: list[Move] = []
+    from_square = Square(from_index)
     king_side = "K" if color is Color.WHITE else "k"
     queen_side = "Q" if color is Color.WHITE else "q"
 
-    if king_side in board.castling_rights:
-        rook_square = make_square(7, rank)
-        if (
-            _has_piece(board, rook_square, color, PieceType.ROOK)
-            and board.piece_at(make_square(5, rank)) is None
-            and board.piece_at(make_square(6, rank)) is None
-            and not is_square_attacked(board, make_square(5, rank), opponent)
-            and not is_square_attacked(board, make_square(6, rank), opponent)
-        ):
-            moves.append(Move(square, make_square(6, rank)))
+    if (
+        king_side in board.castling_rights
+        and _has_piece_at_index(squares, rank_offset + 7, color, PieceType.ROOK)
+        and squares[rank_offset + 5] is None
+        and squares[rank_offset + 6] is None
+        and not _is_square_attacked_index(squares, rank_offset + 5, opponent)
+        and not _is_square_attacked_index(squares, rank_offset + 6, opponent)
+    ):
+        moves.append(Move(from_square, Square(rank_offset + 6)))
 
-    if queen_side in board.castling_rights:
-        rook_square = make_square(0, rank)
-        if (
-            _has_piece(board, rook_square, color, PieceType.ROOK)
-            and board.piece_at(make_square(1, rank)) is None
-            and board.piece_at(make_square(2, rank)) is None
-            and board.piece_at(make_square(3, rank)) is None
-            and not is_square_attacked(board, make_square(2, rank), opponent)
-            and not is_square_attacked(board, make_square(3, rank), opponent)
-        ):
-            moves.append(Move(square, make_square(2, rank)))
-    return moves
+    if (
+        queen_side in board.castling_rights
+        and _has_piece_at_index(squares, rank_offset, color, PieceType.ROOK)
+        and squares[rank_offset + 1] is None
+        and squares[rank_offset + 2] is None
+        and squares[rank_offset + 3] is None
+        and not _is_square_attacked_index(squares, rank_offset + 2, opponent)
+        and not _is_square_attacked_index(squares, rank_offset + 3, opponent)
+    ):
+        moves.append(Move(from_square, Square(rank_offset + 2)))
 
 
-def _promotion_or_normal(from_square: Square, to_square: Square, is_promotion: bool) -> list[Move]:
+def _append_promotion_or_normal(
+    moves: list[Move],
+    from_square: Square,
+    to_index: int,
+    is_promotion: bool,
+) -> None:
+    to_square = Square(to_index)
     if not is_promotion:
-        return [Move(from_square, to_square)]
-    return [Move(from_square, to_square, promotion) for promotion in PROMOTION_PIECES]
-
-
-def _offset_square(file_idx: int, rank_idx: int, file_delta: int, rank_delta: int) -> Square | None:
-    target_file = file_idx + file_delta
-    target_rank = rank_idx + rank_delta
-    if not _is_on_board(target_file, target_rank):
-        return None
-    return make_square(target_file, target_rank)
-
-
-def _is_on_board(file_idx: int, rank_idx: int) -> bool:
-    return 0 <= file_idx < 8 and 0 <= rank_idx < 8
-
-
-def _has_piece(board: Board, square: Square | None, color: Color, kind: PieceType) -> bool:
-    if square is None:
-        return False
-    return _has_piece_at_index(board.squares, int(square), color, kind)
+        moves.append(Move(from_square, to_square))
+        return
+    for promotion in PROMOTION_PIECES:
+        moves.append(Move(from_square, to_square, promotion))
 
 
 def _has_piece_at_index(
@@ -475,28 +520,6 @@ def _has_piece_at_index(
 ) -> bool:
     piece = squares[square_index]
     return piece is not None and piece.color is color and piece.kind is kind
-
-
-def _en_passant_capture_square(target: Square, capturing_color: Color) -> Square | None:
-    offset = -8 if capturing_color is Color.WHITE else 8
-    capture_index = int(target) + offset
-    if not 0 <= capture_index < 64:
-        return None
-    return Square(capture_index)
-
-
-def _ray_attacked(
-    squares: Sequence[Piece | None],
-    ray: tuple[int, ...],
-    by_color: Color,
-    attacking_kinds: frozenset[PieceType],
-) -> bool:
-    for square_index in ray:
-        piece = squares[square_index]
-        if piece is None:
-            continue
-        return piece.color is by_color and piece.kind in attacking_kinds
-    return False
 
 
 def _king_square(board: Board, color: Color) -> Square:
