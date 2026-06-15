@@ -28,7 +28,8 @@ from vibechess.nn.encode import (
     ACTION_SPACE_SIZE,
     TENSOR_SHAPE,
     encode_game_np,
-    legal_move_mask_from_legal_moves_np,
+    legal_action_indices,
+    legal_move_mask_from_action_indices_np,
     move_to_action_index,
 )
 from vibechess.nn.inference import PolicyValueInference
@@ -214,13 +215,20 @@ def _generate_serial_self_play_dataset(
                         if result.move not in legal:
                             msg = f"search selected illegal move: {result.move}"
                             raise ValueError(msg)
+                        action_indices = legal_action_indices(game, legal)
                         with profile_scope("record.position_encode_np"):
                             positions.append(encode_game_np(game))
                         with profile_scope("record.legal_mask_np"):
-                            legal_masks.append(legal_move_mask_from_legal_moves_np(game, legal))
+                            legal_masks.append(legal_move_mask_from_action_indices_np(action_indices))
                         with profile_scope("record.policy_target"):
                             policies.append(
-                                _policy_target_row(game, result.visit_counts, result.move)
+                                _policy_target_row(
+                                    game,
+                                    result.visit_counts,
+                                    result.move,
+                                    legal,
+                                    action_indices,
+                                )
                             )
                         record_counter("self_play.samples")
                         record_counter("self_play.plies")
@@ -307,12 +315,15 @@ def _record_batched_decision(
     if selected_move not in legal:
         msg = f"search selected illegal move: {selected_move}"
         raise ValueError(msg)
+    action_indices = legal_action_indices(state.game, legal)
     with profile_scope("record.position_encode_np"):
         state.positions.append(encode_game_np(state.game))
     with profile_scope("record.legal_mask_np"):
-        state.legal_masks.append(legal_move_mask_from_legal_moves_np(state.game, legal))
+        state.legal_masks.append(legal_move_mask_from_action_indices_np(action_indices))
     with profile_scope("record.policy_target"):
-        state.policies.append(_policy_target_row(state.game, visit_counts, selected_move))
+        state.policies.append(
+            _policy_target_row(state.game, visit_counts, selected_move, legal, action_indices)
+        )
     record_counter("self_play.samples")
     record_counter("self_play.plies")
     state.game_sides.append(state.game.board.side_to_move)
@@ -652,7 +663,13 @@ def _policy_target_row(
     game: Game,
     visit_counts: dict[Any, int],
     selected_move: Any,
+    legal: tuple[Move, ...] | None = None,
+    action_indices: tuple[int, ...] | None = None,
 ) -> PolicyTargetRow:
+    action_index_by_move: dict[Any, int] | None = None
+    if legal is not None and action_indices is not None:
+        action_index_by_move = dict(zip(legal, action_indices, strict=True))
+
     total = sum(max(0, visits) for visits in visit_counts.values())
     if total > 0:
         indices: list[int] = []
@@ -661,14 +678,24 @@ def _policy_target_row(
             positive_visits = max(0, visits)
             if positive_visits == 0:
                 continue
-            indices.append(move_to_action_index(move, game.board))
+            index = (
+                action_index_by_move[move]
+                if action_index_by_move is not None and move in action_index_by_move
+                else move_to_action_index(move, game.board)
+            )
+            indices.append(index)
             probabilities.append(positive_visits / total)
         return (
             np.asarray(indices, dtype=np.int32),
             np.asarray(probabilities, dtype=np.float32),
         )
+    selected_index = (
+        action_index_by_move[selected_move]
+        if action_index_by_move is not None and selected_move in action_index_by_move
+        else move_to_action_index(selected_move, game.board)
+    )
     return (
-        np.asarray([move_to_action_index(selected_move, game.board)], dtype=np.int32),
+        np.asarray([selected_index], dtype=np.int32),
         np.asarray([1.0], dtype=np.float32),
     )
 

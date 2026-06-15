@@ -18,7 +18,7 @@ from vibechess.engine.board import Board
 from vibechess.engine.game import Game
 from vibechess.engine.move import Move
 from vibechess.engine.piece import Color, PieceType
-from vibechess.engine.square import BOARD_SIZE, Square, file_index, rank_index, validate_square
+from vibechess.engine.square import BOARD_SIZE, Square, file_index, rank_index
 from vibechess.profiling import profile_scope, record_counter
 
 ACTION_SPACE_VERSION = "az-8x8x73-v1"
@@ -81,6 +81,35 @@ _KNIGHT_PLANES: dict[tuple[int, int], int] = {
 _QUEEN_DIRECTION_INDEX: dict[tuple[int, int], int] = {
     direction: index for index, direction in enumerate(_QUEEN_DIRECTIONS)
 }
+_SQUARE_FILES = tuple(square & 7 for square in range(BOARD_SIZE))
+_SQUARE_RANKS = tuple(square >> 3 for square in range(BOARD_SIZE))
+_UNDERPROMOTION_TYPE_INDEX = {
+    piece_type: index for index, piece_type in enumerate(_UNDERPROMOTION_TYPES)
+}
+_UNDERPROMOTION_FILE_INDEX = {
+    file_delta: index for index, file_delta in enumerate(_UNDERPROMOTION_FILES)
+}
+def _queen_or_knight_plane_unchecked(df: int, dr: int) -> int:
+    knight_plane = _KNIGHT_PLANES.get((df, dr))
+    if knight_plane is not None:
+        return knight_plane
+    distance = max(abs(df), abs(dr))
+    if distance < 1 or distance > 7:
+        return -1
+    step = (0 if df == 0 else df // abs(df), 0 if dr == 0 else dr // abs(dr))
+    if abs(df) not in {0, distance} or abs(dr) not in {0, distance}:
+        return -1
+    direction_index = _QUEEN_DIRECTION_INDEX.get(step)
+    if direction_index is None:
+        return -1
+    return direction_index * 7 + (distance - 1)
+
+
+_ACTION_PLANE_BY_DELTA = tuple(
+    tuple(_queen_or_knight_plane_unchecked(file_delta, rank_delta) for rank_delta in range(-7, 8))
+    for file_delta in range(-7, 8)
+)
+
 _BOARD_GRID = mx.arange(BOARD_SIZE).reshape(8, 8)
 
 
@@ -192,23 +221,33 @@ def move_to_action_index(move: Move, board: Board | None = None) -> int:
     promotion annotation is validated against a side-to-move pawn reaching the
     final rank.
     """
-    from_square = validate_square(move.from_square)
-    to_square = validate_square(move.to_square)
-    from_file = file_index(from_square)
-    from_rank = rank_index(from_square)
-    df = file_index(to_square) - from_file
-    dr = rank_index(to_square) - from_rank
+    from_square = int(move.from_square)
+    if not 0 <= from_square < BOARD_SIZE:
+        msg = f"square must be in 0..63, got {from_square}"
+        raise ValueError(msg)
+    to_square = int(move.to_square)
+    if not 0 <= to_square < BOARD_SIZE:
+        msg = f"square must be in 0..63, got {to_square}"
+        raise ValueError(msg)
+
+    from_file = _SQUARE_FILES[from_square]
+    from_rank = _SQUARE_RANKS[from_square]
+    to_file = _SQUARE_FILES[to_square]
+    to_rank = _SQUARE_RANKS[to_square]
+    df = to_file - from_file
+    dr = to_rank - from_rank
 
     if move.promotion is not None and board is not None:
-        _validate_promotion_move(move, board, df, dr)
+        _validate_promotion_move(move, board, df, dr, to_rank)
 
     if move.promotion in _UNDERPROMOTION_TYPES:
         if board is None:
             raise ValueError("underpromotion action mapping requires board state")
-        plane = _underpromotion_plane(move, board, df, dr)
+        plane = _underpromotion_plane(move, board, df, dr, to_rank)
     else:
         plane = _queen_or_knight_plane(df, dr)
-    return int(from_square) * ACTION_PLANES + plane
+    return from_square * ACTION_PLANES + plane
+
 
 
 def action_index_to_move(index: int, board: Board | None = None) -> Move:
@@ -293,6 +332,17 @@ def legal_move_mask_from_legal_moves(game: Game, legal: tuple[Move, ...]) -> MLX
         indices = mx.array(legal_indices)
         return mx.zeros((ACTION_SPACE_SIZE,), dtype=mx.float32).at[indices].add(1.0)
 
+def legal_move_mask_from_action_indices_np(
+    action_indices: Sequence[int],
+) -> npt.NDArray[np.float32]:
+    """Return a NumPy legal-action mask from precomputed action indices."""
+    mask = np.zeros((ACTION_SPACE_SIZE,), dtype=np.float32)
+    if not action_indices:
+        return mask
+    np.add.at(mask, np.asarray(action_indices, dtype=np.intp), np.float32(1.0))
+    return mask
+
+
 
 def legal_move_mask_from_legal_moves_np(
     game: Game, legal: tuple[Move, ...]
@@ -315,49 +365,41 @@ def legal_move_mask_from_board_moves_np(
     Precondition: ``legal`` must be the legal move tuple for exactly ``board``.
     This board-based helper avoids constructing a ``Game`` for PGN/dataset replay paths.
     """
-    mask = np.zeros((ACTION_SPACE_SIZE,), dtype=np.float32)
-    if not legal:
-        return mask
-    indices = np.asarray([move_to_action_index(move, board) for move in legal], dtype=np.intp)
-    np.add.at(mask, indices, np.float32(1.0))
-    return mask
-
-
-def _queen_or_knight_plane(df: int, dr: int) -> int:
-    knight_plane = _KNIGHT_PLANES.get((df, dr))
-    if knight_plane is not None:
-        return knight_plane
-    distance = max(abs(df), abs(dr))
-    if distance < 1 or distance > 7:
-        raise ValueError(f"move delta ({df}, {dr}) is not representable")
-    step = (0 if df == 0 else df // abs(df), 0 if dr == 0 else dr // abs(dr))
-    is_straight_or_diagonal = abs(df) in {0, distance} and abs(dr) in {0, distance}
-    direction_index = _QUEEN_DIRECTION_INDEX.get(step)
-    if direction_index is None or not is_straight_or_diagonal:
-        raise ValueError(f"move delta ({df}, {dr}) is not representable")
-    return direction_index * 7 + (distance - 1)
-
-
-def _underpromotion_plane(move: Move, board: Board, df: int, dr: int) -> int:
-    _validate_promotion_move(move, board, df, dr)
-    assert move.promotion is not None
-    return (
-        _UNDERPROMOTION_OFFSET
-        + _UNDERPROMOTION_TYPES.index(move.promotion) * 3
-        + _UNDERPROMOTION_FILES.index(df)
+    return legal_move_mask_from_action_indices_np(
+        tuple(move_to_action_index(move, board) for move in legal)
     )
 
 
-def _validate_promotion_move(move: Move, board: Board, df: int, dr: int) -> None:
+def _queen_or_knight_plane(df: int, dr: int) -> int:
+    if -7 <= df <= 7 and -7 <= dr <= 7:
+        plane = _ACTION_PLANE_BY_DELTA[df + 7][dr + 7]
+        if plane >= 0:
+            return plane
+    raise ValueError(f"move delta ({df}, {dr}) is not representable")
+
+
+
+def _underpromotion_plane(move: Move, board: Board, df: int, dr: int, to_rank: int) -> int:
+    _validate_promotion_move(move, board, df, dr, to_rank)
+    assert move.promotion is not None
+    return (
+        _UNDERPROMOTION_OFFSET
+        + _UNDERPROMOTION_TYPE_INDEX[move.promotion] * 3
+        + _UNDERPROMOTION_FILE_INDEX[df]
+    )
+
+
+def _validate_promotion_move(
+    move: Move, board: Board, df: int, dr: int, target_rank: int
+) -> None:
     if move.promotion not in (*_UNDERPROMOTION_TYPES, PieceType.QUEEN):
         raise ValueError("promotion piece must be queen, rook, bishop, or knight")
     piece = board.piece_at(move.from_square)
     if piece is None or piece.kind is not PieceType.PAWN or piece.color is not board.side_to_move:
         raise ValueError("promotion move must be by the side-to-move pawn")
     expected_rank_delta = 1 if piece.color is Color.WHITE else -1
-    if dr != expected_rank_delta or df not in _UNDERPROMOTION_FILES:
+    if dr != expected_rank_delta or df not in _UNDERPROMOTION_FILE_INDEX:
         raise ValueError(f"promotion delta ({df}, {dr}) is not representable")
-    target_rank = rank_index(move.to_square)
     if target_rank != (7 if piece.color is Color.WHITE else 0):
         raise ValueError("promotion target must be the final rank")
 

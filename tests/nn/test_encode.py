@@ -18,6 +18,7 @@ from vibechess.nn import (
     encode_game_np,
     legal_action_indices,
     legal_move_mask,
+    legal_move_mask_from_action_indices_np,
     legal_move_mask_from_board_moves_np,
     legal_move_mask_from_legal_moves_np,
     move_to_action_index,
@@ -247,6 +248,9 @@ def test_legal_move_mask_from_legal_moves_matches_public_mask(game: Game) -> Non
     assert legal_action_indices(game, legal) == tuple(
         move_to_action_index(legal_move, game.board) for legal_move in legal
     )
+    action_helper_mask_np = legal_move_mask_from_action_indices_np(
+        legal_action_indices(game, legal)
+    )
     assert helper_mask.dtype == mx.float32
     assert tensor_shape(helper_mask) == (ACTION_SPACE_SIZE,)
     assert scalar(mx.sum(helper_mask)) == scalar(mx.sum(public_mask))
@@ -261,6 +265,7 @@ def test_legal_move_mask_from_legal_moves_matches_public_mask(game: Game) -> Non
     assert board_helper_mask_np.dtype == np.float32
     assert board_helper_mask_np.shape == (ACTION_SPACE_SIZE,)
     np.testing.assert_array_equal(board_helper_mask_np, helper_mask_np)
+    np.testing.assert_array_equal(action_helper_mask_np, helper_mask_np)
 
 
 def test_to_mlx_is_idempotent_for_mlx_arrays_and_converts_array_like_values() -> None:
