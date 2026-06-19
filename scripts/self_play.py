@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import sys
+import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from dataclasses import dataclass, field, replace
@@ -51,6 +52,9 @@ from vibechess.nn.self_play_profile import (
 
 PROFILE_ENV_VAR = "VIBECHESS_SELF_PLAY_PROFILE"
 _PROGRESS_POLL_SECONDS = 0.05
+# How often the elapsed/eta counters are refreshed independently of progress
+# events, so the timer keeps ticking even while a long game is in flight.
+_PROGRESS_REFRESH_SECONDS = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,6 +323,12 @@ class _ProgressReporter:
     )
     _status: _ProgressStatus = field(default="pending", init=False)
     _start_monotonic: float | None = field(default=None, init=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    _refresh_stop: threading.Event = field(
+        default_factory=threading.Event,
+        init=False,
+    )
+    _refresh_thread: threading.Thread | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self._renderer = _AnsiProgressRenderer(
@@ -330,6 +340,7 @@ class _ProgressReporter:
         self._workers_by_start = self._initial_workers(args)
         self._status = "running"
         self._start_monotonic = time.monotonic()
+        self._start_refresh()
         self._write(
             " ".join(
                 [
@@ -469,40 +480,74 @@ class _ProgressReporter:
         plies: int,
         status: _ProgressStatus,
     ) -> None:
-        worker = self._workers_by_start.get(start_game)
-        worker_id = len(self._workers_by_start) if worker is None else worker.worker_id
-        self._workers_by_start[start_game] = _WorkerProgressState(
-            worker_id=worker_id,
-            start_game=start_game,
-            total_games=total_games,
-            games_completed=games_completed,
-            samples=samples,
-            plies=plies,
-            status=status,
-        )
+        with self._lock:
+            worker = self._workers_by_start.get(start_game)
+            worker_id = (
+                len(self._workers_by_start) if worker is None else worker.worker_id
+            )
+            self._workers_by_start[start_game] = _WorkerProgressState(
+                worker_id=worker_id,
+                start_game=start_game,
+                total_games=total_games,
+                games_completed=games_completed,
+                samples=samples,
+                plies=plies,
+                status=status,
+            )
 
     def _render(self, message: str | None = None, *, finish: bool = False) -> None:
-        snapshot = _ProgressRenderState(
-            total_games=self.total_games,
-            workers=tuple(
-                sorted(
-                    self._workers_by_start.values(),
-                    key=lambda worker: worker.worker_id,
-                )
-            ),
-            status=self._status,
-            message=message,
-            elapsed_seconds=self._elapsed_seconds(),
-        )
-        if finish:
-            self._renderer.finish(snapshot)
-        else:
-            self._renderer.render(snapshot)
+        # The lock serializes renders from the main thread (driven by progress
+        # events) with the background refresh thread so their ANSI escape
+        # sequences never interleave, and guards the worker snapshot against
+        # concurrent mutation in `_upsert_worker`.
+        with self._lock:
+            snapshot = _ProgressRenderState(
+                total_games=self.total_games,
+                workers=tuple(
+                    sorted(
+                        self._workers_by_start.values(),
+                        key=lambda worker: worker.worker_id,
+                    )
+                ),
+                status=self._status,
+                message=message,
+                elapsed_seconds=self._elapsed_seconds(),
+            )
+            if finish:
+                self._renderer.finish(snapshot)
+            else:
+                self._renderer.render(snapshot)
 
     def _elapsed_seconds(self) -> float:
         if self._start_monotonic is None:
             return 0.0
         return max(0.0, time.monotonic() - self._start_monotonic)
+
+    def _start_refresh(self) -> None:
+        if not self.enabled or self._refresh_thread is not None:
+            return
+        self._refresh_stop.clear()
+        thread = threading.Thread(
+            target=self._refresh_loop,
+            name="self-play-progress-refresh",
+            daemon=True,
+        )
+        self._refresh_thread = thread
+        thread.start()
+
+    def _refresh_loop(self) -> None:
+        while not self._refresh_stop.wait(_PROGRESS_REFRESH_SECONDS):
+            # Re-render the current state with refreshed elapsed/eta. Once the
+            # display is finished the renderer ignores further draws, so this
+            # becomes a cheap no-op until the thread is stopped.
+            self._render()
+
+    def _stop_refresh(self) -> None:
+        self._refresh_stop.set()
+        thread = self._refresh_thread
+        if thread is not None:
+            thread.join(timeout=_PROGRESS_REFRESH_SECONDS + 1.0)
+            self._refresh_thread = None
 
     def _write(self, message: str, *, finish: bool = False) -> None:
         legacy_message = (
@@ -513,6 +558,7 @@ class _ProgressReporter:
         self._render(legacy_message, finish=finish)
 
     def cleanup(self) -> None:
+        self._stop_refresh()
         self._renderer.cleanup()
 
 
