@@ -1074,12 +1074,11 @@ def _assert_worker_progress_row(
     *,
     games: str,
     samples: int,
-    plies: int,
     game_range: str,
 ) -> None:
     row_pattern = (
         rf"{worker} status=\w+ {_PROGRESS_BAR_RE.pattern} games={games} "
-        rf"samples={samples} plies={plies} range={game_range}"
+        rf"samples={samples} range={game_range}"
     )
     assert re.search(row_pattern, stderr) is not None
 
@@ -1127,13 +1126,12 @@ def test_self_play_script_progress_always_writes_stderr_only(tmp_path: Path) -> 
         "w00",
         games="2/2",
         samples=2,
-        plies=2,
         game_range="1-2",
     )
     assert "processed=" not in result.stderr
     assert "remaining=" not in result.stderr
     assert "samples=2" in result.stderr
-    assert "plies=2" in result.stderr
+    assert " plies=" not in result.stderr
     _assert_tui_progress_bar(result.stderr)
     assert "self-play: saving" in result.stderr
     assert "self-play: done" in result.stderr
@@ -1530,7 +1528,6 @@ def test_self_play_script_parallel_progress_reports_parent_chunks(
         "w00",
         games="1/1",
         samples=1,
-        plies=1,
         game_range="1-1",
     )
     _assert_worker_progress_row(
@@ -1538,12 +1535,12 @@ def test_self_play_script_parallel_progress_reports_parent_chunks(
         "w01",
         games="1/1",
         samples=1,
-        plies=1,
         game_range="2-2",
     )
     assert "games=2/2" in result.stderr
     assert "processed=" not in result.stderr
     assert "remaining=" not in result.stderr
+    assert " plies=" not in result.stderr
     assert "self-play: chunk_completed=1/2" in result.stderr
     assert "self-play: chunk_completed=2/2" in result.stderr
     _assert_tui_progress_bar(result.stderr)

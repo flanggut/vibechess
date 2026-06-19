@@ -230,7 +230,6 @@ class _AnsiProgressRenderer:
         games_completed = sum(worker.processed_games for worker in state.workers)
         games_completed = min(state.total_games, games_completed)
         samples = sum(worker.samples for worker in state.workers)
-        plies = sum(worker.plies for worker in state.workers)
         eta = self._format_eta(
             state.elapsed_seconds, games_completed, state.total_games
         )
@@ -240,7 +239,6 @@ class _AnsiProgressRenderer:
                 f"status={state.status}",
                 f"games={games_completed}/{state.total_games}",
                 f"samples={samples}",
-                f"plies={plies}",
                 f"elapsed={self._format_duration(state.elapsed_seconds)}",
                 f"eta={eta}",
             ]
@@ -269,7 +267,6 @@ class _AnsiProgressRenderer:
                 f"[{self._bar(worker.processed_games, worker.total_games)}]",
                 f"games={worker.processed_games}/{worker.total_games}",
                 f"samples={worker.samples}",
-                f"plies={worker.plies}",
                 f"range={game_range}",
             ]
         )
@@ -377,7 +374,6 @@ class _ProgressReporter:
                     f"completed={progress.games_completed}/{progress.total_games}",
                     f"game_index={progress.game_index}",
                     f"samples={progress.samples}",
-                    f"plies={progress.plies}",
                 ]
             )
         )
