@@ -242,6 +242,7 @@ class _AnsiProgressRenderer:
                 f"status={state.status}",
                 f"games={games_completed}/{state.total_games}",
                 f"samples={samples}",
+                f"samples/s={self._format_rate(samples, state.elapsed_seconds)}",
                 f"elapsed={self._format_duration(state.elapsed_seconds)}",
                 f"eta={eta}",
             ]
@@ -293,6 +294,12 @@ class _AnsiProgressRenderer:
         if games <= 0:
             return "none"
         return f"{start_game + 1}-{start_game + games}"
+
+    @staticmethod
+    def _format_rate(samples: int, elapsed_seconds: float) -> str:
+        if elapsed_seconds <= 0:
+            return "0.0"
+        return f"{samples / elapsed_seconds:.1f}"
 
     @staticmethod
     def _format_duration(seconds: float) -> str:

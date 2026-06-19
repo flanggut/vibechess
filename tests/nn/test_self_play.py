@@ -1114,6 +1114,7 @@ def test_self_play_script_progress_always_writes_stderr_only(tmp_path: Path) -> 
     assert result.returncode == 0, result.stderr
     _assert_one_stdout_summary(result.stdout, output=output, games=2, samples=2)
     assert "self-play status=" in result.stderr
+    assert re.search(r"samples/s=\d+\.\d+", result.stderr) is not None
     assert re.search(r"elapsed=\d{2}:\d{2}:\d{2}", result.stderr) is not None
     assert re.search(r"eta=(\d{2}:\d{2}:\d{2}|--:--:--)", result.stderr) is not None
     assert "self-play: starting" in result.stderr
@@ -1521,6 +1522,7 @@ def test_self_play_script_parallel_progress_reports_parent_chunks(
     assert result.returncode == 0, result.stderr
     _assert_one_stdout_summary(result.stdout, output=output, games=2, samples=2)
     assert "self-play status=" in result.stderr
+    assert re.search(r"samples/s=\d+\.\d+", result.stderr) is not None
     assert re.search(r"elapsed=\d{2}:\d{2}:\d{2}", result.stderr) is not None
     assert re.search(r"eta=(\d{2}:\d{2}:\d{2}|--:--:--)", result.stderr) is not None
     _assert_worker_progress_row(
