@@ -161,6 +161,9 @@ class _AnsiProgressRenderer:
     _restore_registered: bool = False
 
     _BAR_WIDTH: ClassVar[int] = 24
+    # Pad the "total" label so its bar lines up with the per-worker bars, which
+    # begin after the "wNN status=running " prefix.
+    _TOTAL_LABEL_WIDTH: ClassVar[int] = len("w00 status=running")
     _CLEAR_LINE: ClassVar[str] = "\x1b[2K"
     _CURSOR_HIDE: ClassVar[str] = "\x1b[?25l"
     _CURSOR_SHOW: ClassVar[str] = "\x1b[?25h"
@@ -245,17 +248,16 @@ class _AnsiProgressRenderer:
         )
         if state.message is not None:
             header = f"{header} {state.message}"
-        lines = [
-            header,
-            " ".join(
-                [
-                    "total ",
-                    f"[{self._bar(games_completed, state.total_games)}]",
-                    self._percent(games_completed, state.total_games),
-                ]
-            ),
-        ]
-        lines.extend(self._format_worker(worker) for worker in state.workers)
+        total = " ".join(
+            [
+                f"{'total':<{self._TOTAL_LABEL_WIDTH}}",
+                f"[{self._bar(games_completed, state.total_games)}]",
+                self._percent(games_completed, state.total_games),
+            ]
+        )
+        lines = [self._format_worker(worker) for worker in state.workers]
+        lines.append(total)
+        lines.append(header)
         return lines
 
     def _format_worker(self, worker: _WorkerProgressState) -> str:
