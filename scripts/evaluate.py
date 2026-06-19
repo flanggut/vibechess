@@ -27,11 +27,15 @@ def main() -> None:
         max_plies=args.max_plies,
         alternate_colors=not args.no_alternate_colors,
     )
-    neural_config = NeuralMCTSConfig(
+    neural_config = _build_neural_config(
         simulations=args.neural_simulations,
         node_budget=args.neural_node_budget,
         temperature=args.neural_temperature,
         seed=args.seed,
+        collection_batch_size=args.neural_collection_batch_size,
+        virtual_loss=args.neural_virtual_loss,
+        reuse_simulation_budget=args.reuse_simulation_budget,
+        min_reuse_simulations=args.min_reuse_simulations,
     )
     if args.opponent_checkpoint is not None:
         report = evaluate_checkpoints_head_to_head(
@@ -39,7 +43,7 @@ def main() -> None:
             args.opponent_checkpoint,
             match_config=match_config,
             neural_config=neural_config,
-            opponent_neural_config=NeuralMCTSConfig(
+            opponent_neural_config=_build_neural_config(
                 simulations=(
                     args.neural_simulations
                     if args.opponent_neural_simulations is None
@@ -56,8 +60,30 @@ def main() -> None:
                     else args.opponent_neural_temperature
                 ),
                 seed=args.seed if args.opponent_seed is None else args.opponent_seed,
+                collection_batch_size=(
+                    args.neural_collection_batch_size
+                    if args.opponent_neural_collection_batch_size is None
+                    else args.opponent_neural_collection_batch_size
+                ),
+                virtual_loss=(
+                    args.neural_virtual_loss
+                    if args.opponent_neural_virtual_loss is None
+                    else args.opponent_neural_virtual_loss
+                ),
+                reuse_simulation_budget=(
+                    args.reuse_simulation_budget
+                    if args.opponent_reuse_simulation_budget is None
+                    else args.opponent_reuse_simulation_budget
+                ),
+                min_reuse_simulations=(
+                    args.min_reuse_simulations
+                    if args.opponent_min_reuse_simulations is None
+                    else args.opponent_min_reuse_simulations
+                ),
             ),
             workers=args.workers,
+            batch_size=args.batch_size,
+            active_games=args.active_games,
         )
     else:
         baselines = tuple(args.baseline)
@@ -81,6 +107,8 @@ def main() -> None:
             baselines=baselines,
             criteria=criteria,
             workers=args.workers,
+            batch_size=args.batch_size,
+            active_games=args.active_games,
         )
     if args.output is not None:
         write_evaluation_report(report, args.output)
@@ -93,6 +121,29 @@ def main() -> None:
             _die("internal error: malformed promotion report")
         if args.require_promotion and not promotion.get("promoted"):
             _die("checkpoint did not satisfy early promotion criteria")
+
+
+def _build_neural_config(
+    *,
+    simulations: int,
+    node_budget: int | None,
+    temperature: float,
+    seed: int | None,
+    collection_batch_size: int,
+    virtual_loss: int,
+    reuse_simulation_budget: bool,
+    min_reuse_simulations: int,
+) -> NeuralMCTSConfig:
+    return NeuralMCTSConfig(
+        simulations=simulations,
+        node_budget=node_budget,
+        temperature=temperature,
+        seed=seed,
+        collection_batch_size=collection_batch_size,
+        virtual_loss=virtual_loss,
+        reuse_simulation_budget=reuse_simulation_budget,
+        min_reuse_simulations=min_reuse_simulations,
+    )
 
 
 def _parse_args() -> argparse.Namespace:
@@ -118,6 +169,21 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         default=1,
         help="Worker processes for independent evaluation games",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help=(
+            "cross-game neural inference batch size for independent evaluation games; "
+            "default 1 preserves serial play"
+        ),
+    )
+    parser.add_argument(
+        "--active-games",
+        type=int,
+        default=None,
+        help="maximum in-process active evaluation games; defaults to --batch-size",
     )
     parser.add_argument(
         "--seed",
@@ -150,6 +216,29 @@ def _parse_args() -> argparse.Namespace:
         help="Neural move temperature",
     )
     parser.add_argument(
+        "--neural-collection-batch-size",
+        type=int,
+        default=1,
+        help="Within-search neural leaf collection batch size; default 1 is serial",
+    )
+    parser.add_argument(
+        "--neural-virtual-loss",
+        type=int,
+        default=1,
+        help="Virtual loss applied while collecting batched neural leaves",
+    )
+    parser.add_argument(
+        "--reuse-simulation-budget",
+        action="store_true",
+        help="Reuse adopted neural root visits instead of always running all simulations",
+    )
+    parser.add_argument(
+        "--min-reuse-simulations",
+        type=int,
+        default=0,
+        help="Minimum fresh simulations after neural root reuse",
+    )
+    parser.add_argument(
         "--opponent-neural-simulations",
         type=int,
         default=None,
@@ -166,6 +255,30 @@ def _parse_args() -> argparse.Namespace:
         type=float,
         default=None,
         help="Opponent neural move temperature (default: --neural-temperature)",
+    )
+    parser.add_argument(
+        "--opponent-neural-collection-batch-size",
+        type=int,
+        default=None,
+        help="Opponent neural leaf collection batch size (default: --neural-collection-batch-size)",
+    )
+    parser.add_argument(
+        "--opponent-neural-virtual-loss",
+        type=int,
+        default=None,
+        help="Opponent neural virtual loss (default: --neural-virtual-loss)",
+    )
+    parser.add_argument(
+        "--opponent-reuse-simulation-budget",
+        action="store_true",
+        default=None,
+        help="Enable visit-budget-aware root reuse for the opponent checkpoint",
+    )
+    parser.add_argument(
+        "--opponent-min-reuse-simulations",
+        type=int,
+        default=None,
+        help="Opponent fresh simulation floor after root reuse (default: --min-reuse-simulations)",
     )
     parser.add_argument(
         "--mcts-simulations",
@@ -208,6 +321,10 @@ def _parse_args() -> argparse.Namespace:
     parsed = parser.parse_args()
     if parsed.workers < 1:
         parser.error(f"--workers must be at least 1, got {parsed.workers}")
+    if parsed.batch_size < 1:
+        parser.error("--batch-size must be at least 1")
+    if parsed.active_games is not None and parsed.active_games < 1:
+        parser.error("--active-games must be at least 1")
     if parsed.opponent_checkpoint is not None:
         if parsed.baseline is not None:
             parser.error("--baseline cannot be used with --opponent-checkpoint")
@@ -235,6 +352,59 @@ def _parse_args() -> argparse.Namespace:
         parsed.min_score_rate_vs_random = 0.5
     if parsed.min_score_rate_vs_mcts is None:
         parsed.min_score_rate_vs_mcts = 0.0
+    if parsed.neural_collection_batch_size < 1:
+        parser.error("--neural-collection-batch-size must be at least 1")
+    if parsed.neural_virtual_loss < 0:
+        parser.error("--neural-virtual-loss must be non-negative")
+    if parsed.min_reuse_simulations < 0:
+        parser.error("--min-reuse-simulations must be non-negative")
+    if (
+        parsed.reuse_simulation_budget
+        and parsed.min_reuse_simulations > parsed.neural_simulations
+    ):
+        parser.error(
+            "--min-reuse-simulations must be no greater than --neural-simulations "
+            "when --reuse-simulation-budget is enabled"
+        )
+    opponent_simulations = (
+        parsed.neural_simulations
+        if parsed.opponent_neural_simulations is None
+        else parsed.opponent_neural_simulations
+    )
+    opponent_collection_batch_size = (
+        parsed.neural_collection_batch_size
+        if parsed.opponent_neural_collection_batch_size is None
+        else parsed.opponent_neural_collection_batch_size
+    )
+    opponent_virtual_loss = (
+        parsed.neural_virtual_loss
+        if parsed.opponent_neural_virtual_loss is None
+        else parsed.opponent_neural_virtual_loss
+    )
+    opponent_reuse_simulation_budget = (
+        parsed.reuse_simulation_budget
+        if parsed.opponent_reuse_simulation_budget is None
+        else parsed.opponent_reuse_simulation_budget
+    )
+    opponent_min_reuse_simulations = (
+        parsed.min_reuse_simulations
+        if parsed.opponent_min_reuse_simulations is None
+        else parsed.opponent_min_reuse_simulations
+    )
+    if opponent_collection_batch_size < 1:
+        parser.error("--opponent-neural-collection-batch-size must be at least 1")
+    if opponent_virtual_loss < 0:
+        parser.error("--opponent-neural-virtual-loss must be non-negative")
+    if opponent_min_reuse_simulations < 0:
+        parser.error("--opponent-min-reuse-simulations must be non-negative")
+    if (
+        opponent_reuse_simulation_budget
+        and opponent_min_reuse_simulations > opponent_simulations
+    ):
+        parser.error(
+            "--opponent-min-reuse-simulations must be no greater than opponent "
+            "neural simulations when opponent root reuse is enabled"
+        )
     return parsed
 
 

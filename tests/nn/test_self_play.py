@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -1043,6 +1044,45 @@ def test_self_play_script_defaults_to_200_simulations(tmp_path: Path) -> None:
     assert mcts_settings["simulations"] == 200
 
 
+_PROGRESS_BAR_RE = re.compile(r"\[[█░]+\]")
+
+
+def _assert_one_stdout_summary(stdout: str, *, output: Path, games: int, samples: int) -> None:
+    stdout_lines = stdout.strip().splitlines()
+    assert len(stdout_lines) == 1
+    assert stdout_lines[0].startswith(f"output={output}")
+    assert f"games={games}" in stdout_lines[0]
+    assert f"samples={samples}" in stdout_lines[0]
+    assert "self-play:" not in stdout
+    assert "self-play status=" not in stdout
+    assert "total  [" not in stdout
+    assert "w00 status=" not in stdout
+    assert "w01 status=" not in stdout
+    assert _PROGRESS_BAR_RE.search(stdout) is None
+
+
+def _assert_tui_progress_bar(stderr: str) -> None:
+    assert _PROGRESS_BAR_RE.search(stderr) is not None
+
+
+def _assert_worker_progress_row(
+    stderr: str,
+    worker: str,
+    *,
+    games: str,
+    processed: int,
+    remaining: int,
+    samples: int,
+    plies: int,
+    game_range: str,
+) -> None:
+    row_pattern = (
+        rf"{worker} status=\w+ {_PROGRESS_BAR_RE.pattern} games={games} "
+        rf"processed={processed} remaining={remaining} "
+        rf"samples={samples} plies={plies} range={game_range}"
+    )
+    assert re.search(row_pattern, stderr) is not None
+
 
 def test_self_play_script_progress_always_writes_stderr_only(tmp_path: Path) -> None:
     output = tmp_path / "script-progress-output"
@@ -1050,11 +1090,15 @@ def test_self_play_script_progress_always_writes_stderr_only(tmp_path: Path) -> 
         [
             sys.executable,
             "scripts/self_play.py",
+            "--label-source",
+            "classical",
             "--games",
-            "3",
+            "2",
             "--max-plies",
             "1",
             "--simulations",
+            "1",
+            "--classical-max-rollout-plies",
             "1",
             "--progress",
             "always",
@@ -1069,14 +1113,28 @@ def test_self_play_script_progress_always_writes_stderr_only(tmp_path: Path) -> 
     )
 
     assert result.returncode == 0, result.stderr
-    stdout_lines = result.stdout.strip().splitlines()
-    assert len(stdout_lines) == 1
-    assert stdout_lines[0].startswith(f"output={output}")
-    assert "games=3" in stdout_lines[0]
-    assert "samples=3" in stdout_lines[0]
-    assert "self-play:" not in result.stdout
+    _assert_one_stdout_summary(result.stdout, output=output, games=2, samples=2)
+    assert "self-play status=" in result.stderr
     assert "self-play: starting" in result.stderr
-    assert "self-play: completed=3/3" in result.stderr
+    assert "self-play: completed=1/2" in result.stderr
+    assert "self-play: completed=2/2" in result.stderr
+    assert "game_index=0" in result.stderr
+    assert "game_index=1" in result.stderr
+    _assert_worker_progress_row(
+        result.stderr,
+        "w00",
+        games="2/2",
+        processed=2,
+        remaining=0,
+        samples=2,
+        plies=2,
+        game_range="1-2",
+    )
+    assert "processed=2" in result.stderr
+    assert "remaining=0" in result.stderr
+    assert "samples=2" in result.stderr
+    assert "plies=2" in result.stderr
+    _assert_tui_progress_bar(result.stderr)
     assert "self-play: saving" in result.stderr
     assert "self-play: done" in result.stderr
 
@@ -1089,11 +1147,15 @@ def test_self_play_script_progress_never_suppresses_stderr_progress(
         [
             sys.executable,
             "scripts/self_play.py",
+            "--label-source",
+            "classical",
             "--games",
             "1",
             "--max-plies",
             "1",
             "--simulations",
+            "1",
+            "--classical-max-rollout-plies",
             "1",
             "--progress",
             "never",
@@ -1108,10 +1170,8 @@ def test_self_play_script_progress_never_suppresses_stderr_progress(
     )
 
     assert result.returncode == 0, result.stderr
-    assert "games=1" in result.stdout
-    assert "samples=1" in result.stdout
-    assert "self-play:" not in result.stdout
-    assert "self-play:" not in result.stderr
+    _assert_one_stdout_summary(result.stdout, output=output, games=1, samples=1)
+    assert result.stderr == ""
 
 
 def test_self_play_script_accepts_batch_size_and_active_games(tmp_path: Path) -> None:
@@ -1436,11 +1496,15 @@ def test_self_play_script_parallel_progress_reports_parent_chunks(
         [
             sys.executable,
             "scripts/self_play.py",
+            "--label-source",
+            "classical",
             "--games",
             "2",
             "--max-plies",
             "1",
             "--simulations",
+            "1",
+            "--classical-max-rollout-plies",
             "1",
             "--workers",
             "2",
@@ -1457,11 +1521,36 @@ def test_self_play_script_parallel_progress_reports_parent_chunks(
     )
 
     assert result.returncode == 0, result.stderr
-    assert "games=2" in result.stdout
-    assert "samples=2" in result.stdout
-    assert "self-play:" not in result.stdout
-    assert "self-play: chunk_completed=" in result.stderr
+    _assert_one_stdout_summary(result.stdout, output=output, games=2, samples=2)
+    assert "self-play status=" in result.stderr
+    _assert_worker_progress_row(
+        result.stderr,
+        "w00",
+        games="1/1",
+        processed=1,
+        remaining=0,
+        samples=1,
+        plies=1,
+        game_range="1-1",
+    )
+    _assert_worker_progress_row(
+        result.stderr,
+        "w01",
+        games="1/1",
+        processed=1,
+        remaining=0,
+        samples=1,
+        plies=1,
+        game_range="2-2",
+    )
+    assert "games=2/2" in result.stderr
+    assert "processed=2" in result.stderr
+    assert "remaining=0" in result.stderr
+    assert "processed=1" in result.stderr
+    assert "remaining=1" in result.stderr
+    assert "self-play: chunk_completed=1/2" in result.stderr
     assert "self-play: chunk_completed=2/2" in result.stderr
+    _assert_tui_progress_bar(result.stderr)
     dataset = load_self_play_dataset(output)
     assert [record.game_index for record in dataset.games] == [0, 1]
 

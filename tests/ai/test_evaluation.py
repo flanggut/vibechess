@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
 import mlx.core as mx
+import pytest
 
+import vibechess.ai.evaluation as evaluation_module
 from vibechess.ai import MCTSConfig, NeuralMCTSConfig, RandomPlayer
 from vibechess.ai.evaluation import (
     EARLY_PROMOTION_NOTE,
@@ -25,6 +28,7 @@ from vibechess.ai.evaluation import (
 from vibechess.engine.game import Game
 from vibechess.engine.move import Move
 from vibechess.nn.checkpoint import CheckpointMetadata, save_checkpoint
+from vibechess.nn.inference import PolicyValueInference
 from vibechess.nn.model import PolicyValueConfig, PolicyValueNet
 
 
@@ -134,6 +138,77 @@ def test_promotion_criteria_are_explicit_smoke_validation_only() -> None:
     assert any(reason == "missing required baseline: mcts" for reason in failed.reasons)
     assert any("requires at least 3" in reason for reason in failed.reasons)
     assert any("score rate 0.500 below required 0.750" in reason for reason in failed.reasons)
+
+
+def test_checkpoint_evaluation_reuses_loaded_checkpoint_per_serial_match(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint_dir = tmp_path / "checkpoint"
+    save_tiny_checkpoint(checkpoint_dir)
+    original = cast(Callable[[str | Path], Any], evaluation_module.__dict__["load_checkpoint"])
+    loads = 0
+
+    def counted_load_checkpoint(path: str | Path) -> Any:
+        nonlocal loads
+        loads += 1
+        return original(path)
+
+    monkeypatch.setattr(evaluation_module, "load_checkpoint", counted_load_checkpoint)
+
+    evaluate_checkpoint_against_baselines(
+        checkpoint_dir,
+        match_config=MatchConfig(games=3, max_plies=0),
+        neural_config=NeuralMCTSConfig(simulations=1, seed=7),
+        baselines=("random",),
+        criteria=PromotionCriteria(
+            min_games_per_baseline=1,
+            min_score_rate_vs_random=0.0,
+        ),
+    )
+
+    assert loads == 1
+
+def test_checkpoint_evaluation_batches_active_neural_games(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint_dir = tmp_path / "checkpoint"
+    save_tiny_checkpoint(checkpoint_dir)
+    original = PolicyValueInference.predict_legal_batch
+    batch_sizes: list[int] = []
+
+    def counted_predict_legal_batch(
+        self: PolicyValueInference,
+        games: Any,
+        legal_moves: Any,
+        **kwargs: Any,
+    ) -> Any:
+        batch_sizes.append(len(tuple(games)))
+        return original(self, games, legal_moves, **kwargs)
+
+    monkeypatch.setattr(PolicyValueInference, "predict_legal_batch", counted_predict_legal_batch)
+
+    report = evaluate_checkpoint_against_baselines(
+        checkpoint_dir,
+        match_config=MatchConfig(games=3, max_plies=1),
+        neural_config=NeuralMCTSConfig(simulations=1, seed=7),
+        baselines=("random",),
+        criteria=PromotionCriteria(
+            min_games_per_baseline=1,
+            min_score_rate_vs_random=0.0,
+        ),
+        batch_size=2,
+        active_games=3,
+    )
+
+    records = cast(
+        list[dict[str, Any]],
+        cast(dict[str, Any], report["matches"])["random"]["records"],
+    )
+    assert [record["game_index"] for record in records] == [0, 1, 2]
+    assert 2 in batch_sizes
+
 
 
 def test_checkpoint_evaluation_loads_checkpoint_and_writes_report(tmp_path: Path) -> None:
@@ -329,6 +404,27 @@ def test_evaluate_script_rejects_invalid_workers(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "--workers must be at least 1" in result.stderr
 
+def test_evaluate_script_rejects_reuse_floor_above_simulations(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/evaluate.py",
+            "--checkpoint",
+            str(tmp_path / "missing"),
+            "--neural-simulations",
+            "1",
+            "--reuse-simulation-budget",
+            "--min-reuse-simulations",
+            "2",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "--min-reuse-simulations must be no greater than --neural-simulations" in result.stderr
+
 
 def test_evaluate_script_neural_vs_neural_smoke_defaults_opponent_settings(
     tmp_path: Path,
@@ -411,6 +507,13 @@ def test_evaluate_script_neural_vs_neural_overrides_opponent_settings(tmp_path: 
             "5",
             "--neural-temperature",
             "0.25",
+            "--neural-collection-batch-size",
+            "2",
+            "--neural-virtual-loss",
+            "3",
+            "--reuse-simulation-budget",
+            "--min-reuse-simulations",
+            "1",
             "--seed",
             "13",
             "--opponent-neural-simulations",
@@ -419,6 +522,13 @@ def test_evaluate_script_neural_vs_neural_overrides_opponent_settings(tmp_path: 
             "6",
             "--opponent-neural-temperature",
             "0.0",
+            "--opponent-neural-collection-batch-size",
+            "1",
+            "--opponent-neural-virtual-loss",
+            "0",
+            "--opponent-reuse-simulation-budget",
+            "--opponent-min-reuse-simulations",
+            "0",
             "--opponent-seed",
             "0",
         ],
@@ -434,10 +544,18 @@ def test_evaluate_script_neural_vs_neural_overrides_opponent_settings(tmp_path: 
     assert neural_configs["checkpoint"]["node_budget"] == 5
     assert neural_configs["checkpoint"]["temperature"] == 0.25
     assert neural_configs["checkpoint"]["seed"] == 13
+    assert neural_configs["checkpoint"]["collection_batch_size"] == 2
+    assert neural_configs["checkpoint"]["virtual_loss"] == 3
+    assert neural_configs["checkpoint"]["reuse_simulation_budget"] is True
+    assert neural_configs["checkpoint"]["min_reuse_simulations"] == 1
     assert neural_configs["opponent"]["simulations"] == 1
     assert neural_configs["opponent"]["node_budget"] == 6
     assert neural_configs["opponent"]["temperature"] == 0.0
     assert neural_configs["opponent"]["seed"] == 0
+    assert neural_configs["opponent"]["collection_batch_size"] == 1
+    assert neural_configs["opponent"]["virtual_loss"] == 0
+    assert neural_configs["opponent"]["reuse_simulation_budget"] is True
+    assert neural_configs["opponent"]["min_reuse_simulations"] == 0
 
 
 def test_evaluate_script_rejects_baseline_and_promotion_with_opponent_checkpoint(
@@ -503,6 +621,10 @@ def test_evaluate_script_parallel_smoke_stdout_json(tmp_path: Path) -> None:
             "1",
             "--min-score-rate-vs-random",
             "0.0",
+            "--batch-size",
+            "2",
+            "--active-games",
+            "2",
             "--workers",
             "2",
             "--output",

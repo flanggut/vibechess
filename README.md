@@ -105,14 +105,17 @@ Typical loop:
 4. Repeat only after checks and benchmark evidence justify changes.
 
 For detailed flags and formats, prefer the script `--help` output and the dataset
-loader/writer tests over duplicated prose.
+loader/writer tests over duplicated prose. `scripts/self_play.py` supports
+interactive TUI progress on stderr via `--progress auto|always|never`: `always`
+forces it, `never` disables it, and `auto` uses the TUI only when stderr is
+interactive. Stdout stays a stable final summary for automation.
 
 
-Neural self-play can opt into visit-budget-aware tree reuse with
-`scripts/self_play.py --reuse-simulation-budget`; add
-`--min-reuse-simulations N` only when reused roots must receive a fresh visit floor.
-The default is off: enabling it changes policy targets and trajectories, so treat
-datasets generated with the flag as a separate quality/speed experiment.
+Neural self-play and checkpoint evaluation can opt into visit-budget-aware tree
+reuse with `--reuse-simulation-budget`; add `--min-reuse-simulations N` only
+when reused roots must receive a fresh visit floor. Both scripts support
+cross-game neural batching with `--batch-size`/`--active-games`; evaluation also
+exposes within-search leaf batching via `--neural-collection-batch-size`.
 
 ## Development notes
 
