@@ -7,6 +7,7 @@ import argparse
 import atexit
 import json
 import os
+import shutil
 import sys
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
@@ -135,10 +136,6 @@ class _WorkerProgressState:
     def processed_games(self) -> int:
         return self.games_completed
 
-    @property
-    def remaining_games(self) -> int:
-        return max(0, self.total_games - self.games_completed)
-
 
 @dataclass(frozen=True, slots=True)
 class _ProgressRenderState:
@@ -175,6 +172,7 @@ class _AnsiProgressRenderer:
         if not self.enabled or self._finished:
             return
         lines = self._format_lines(state)
+        width = self._terminal_width()
         if not self._started:
             self.stream.write(self._CURSOR_HIDE)
             if not self._restore_registered:
@@ -187,7 +185,7 @@ class _AnsiProgressRenderer:
             self.stream.write(self._CURSOR_SHOW)
         self.stream.write("\n")
         self.stream.flush()
-        self._rendered_lines = len(lines)
+        self._rendered_lines = self._physical_rows(lines, width)
 
     def cleanup(self) -> None:
         self._restore_cursor()
@@ -200,6 +198,21 @@ class _AnsiProgressRenderer:
         self.stream.flush()
         self._finished = True
 
+    @staticmethod
+    def _terminal_width() -> int:
+        return shutil.get_terminal_size(fallback=(80, 24)).columns
+
+    @staticmethod
+    def _physical_rows(lines: list[str], width: int) -> int:
+        # A status line longer than the terminal width wraps onto multiple
+        # physical rows. The cursor-up (`\x1b[NF`) and clear-line counts in
+        # `_clear_previous` operate on physical rows, so they must account for
+        # that wrapping; otherwise the redraw clears too few rows and leaves
+        # stale, partially-overwritten copies of the status block behind.
+        if width <= 0:
+            return len(lines)
+        return sum(max(1, -(-len(line) // width)) for line in lines)
+
     def _clear_previous(self) -> None:
         if self._rendered_lines == 0:
             return
@@ -211,7 +224,6 @@ class _AnsiProgressRenderer:
     def _format_lines(self, state: _ProgressRenderState) -> list[str]:
         games_completed = sum(worker.processed_games for worker in state.workers)
         games_completed = min(state.total_games, games_completed)
-        remaining_games = max(0, state.total_games - games_completed)
         samples = sum(worker.samples for worker in state.workers)
         plies = sum(worker.plies for worker in state.workers)
         header = " ".join(
@@ -219,8 +231,6 @@ class _AnsiProgressRenderer:
                 "self-play",
                 f"status={state.status}",
                 f"games={games_completed}/{state.total_games}",
-                f"processed={games_completed}",
-                f"remaining={remaining_games}",
                 f"samples={samples}",
                 f"plies={plies}",
             ]
@@ -248,8 +258,6 @@ class _AnsiProgressRenderer:
                 f"status={worker.status}",
                 f"[{self._bar(worker.processed_games, worker.total_games)}]",
                 f"games={worker.processed_games}/{worker.total_games}",
-                f"processed={worker.processed_games}",
-                f"remaining={worker.remaining_games}",
                 f"samples={worker.samples}",
                 f"plies={worker.plies}",
                 f"range={game_range}",

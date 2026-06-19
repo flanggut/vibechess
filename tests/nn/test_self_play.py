@@ -23,6 +23,7 @@ from vibechess.nn.encode import (
     ACTION_SPACE_VERSION,
     ENCODER_VERSION,
     TENSOR_SHAPE,
+    legal_move_mask_from_action_indices_np,
     legal_move_mask_from_legal_moves_np,
     move_to_action_index,
 )
@@ -700,11 +701,13 @@ def test_self_play_profile_counts_serial_neural_search_categories() -> None:
 def test_serial_recording_reuses_precomputed_legal_masks(monkeypatch: Any) -> None:
     recorded_legal_counts: list[int] = []
 
-    def spy_legal_mask(game: Game, legal: tuple[Move, ...]) -> Any:
-        recorded_legal_counts.append(len(legal))
-        return legal_move_mask_from_legal_moves_np(game, legal)
+    def spy_legal_mask(action_indices: Sequence[int]) -> Any:
+        recorded_legal_counts.append(len(action_indices))
+        return legal_move_mask_from_action_indices_np(action_indices)
 
-    monkeypatch.setattr(self_play, "legal_move_mask_from_legal_moves_np", spy_legal_mask)
+    monkeypatch.setattr(
+        self_play, "legal_move_mask_from_action_indices_np", spy_legal_mask
+    )
 
     dataset = generate_self_play_dataset(
         FakeInference(),
@@ -1070,15 +1073,12 @@ def _assert_worker_progress_row(
     worker: str,
     *,
     games: str,
-    processed: int,
-    remaining: int,
     samples: int,
     plies: int,
     game_range: str,
 ) -> None:
     row_pattern = (
         rf"{worker} status=\w+ {_PROGRESS_BAR_RE.pattern} games={games} "
-        rf"processed={processed} remaining={remaining} "
         rf"samples={samples} plies={plies} range={game_range}"
     )
     assert re.search(row_pattern, stderr) is not None
@@ -1124,14 +1124,12 @@ def test_self_play_script_progress_always_writes_stderr_only(tmp_path: Path) -> 
         result.stderr,
         "w00",
         games="2/2",
-        processed=2,
-        remaining=0,
         samples=2,
         plies=2,
         game_range="1-2",
     )
-    assert "processed=2" in result.stderr
-    assert "remaining=0" in result.stderr
+    assert "processed=" not in result.stderr
+    assert "remaining=" not in result.stderr
     assert "samples=2" in result.stderr
     assert "plies=2" in result.stderr
     _assert_tui_progress_bar(result.stderr)
@@ -1527,8 +1525,6 @@ def test_self_play_script_parallel_progress_reports_parent_chunks(
         result.stderr,
         "w00",
         games="1/1",
-        processed=1,
-        remaining=0,
         samples=1,
         plies=1,
         game_range="1-1",
@@ -1537,17 +1533,13 @@ def test_self_play_script_parallel_progress_reports_parent_chunks(
         result.stderr,
         "w01",
         games="1/1",
-        processed=1,
-        remaining=0,
         samples=1,
         plies=1,
         game_range="2-2",
     )
     assert "games=2/2" in result.stderr
-    assert "processed=2" in result.stderr
-    assert "remaining=0" in result.stderr
-    assert "processed=1" in result.stderr
-    assert "remaining=1" in result.stderr
+    assert "processed=" not in result.stderr
+    assert "remaining=" not in result.stderr
     assert "self-play: chunk_completed=1/2" in result.stderr
     assert "self-play: chunk_completed=2/2" in result.stderr
     _assert_tui_progress_bar(result.stderr)
