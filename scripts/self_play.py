@@ -143,6 +143,7 @@ class _ProgressRenderState:
     workers: tuple[_WorkerProgressState, ...]
     status: _ProgressStatus
     message: str | None = None
+    elapsed_seconds: float = 0.0
 
 
 @dataclass(slots=True)
@@ -226,6 +227,9 @@ class _AnsiProgressRenderer:
         games_completed = min(state.total_games, games_completed)
         samples = sum(worker.samples for worker in state.workers)
         plies = sum(worker.plies for worker in state.workers)
+        eta = self._format_eta(
+            state.elapsed_seconds, games_completed, state.total_games
+        )
         header = " ".join(
             [
                 "self-play",
@@ -233,6 +237,8 @@ class _AnsiProgressRenderer:
                 f"games={games_completed}/{state.total_games}",
                 f"samples={samples}",
                 f"plies={plies}",
+                f"elapsed={self._format_duration(state.elapsed_seconds)}",
+                f"eta={eta}",
             ]
         )
         if state.message is not None:
@@ -285,6 +291,22 @@ class _AnsiProgressRenderer:
             return "none"
         return f"{start_game + 1}-{start_game + games}"
 
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        total = int(seconds) if seconds > 0 else 0
+        hours, remainder = divmod(total, 3600)
+        minutes, secs = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+    @classmethod
+    def _format_eta(cls, elapsed_seconds: float, completed: int, total: int) -> str:
+        if total <= 0 or completed >= total:
+            return cls._format_duration(0.0)
+        if completed <= 0 or elapsed_seconds <= 0:
+            return "--:--:--"
+        remaining = elapsed_seconds * (total - completed) / completed
+        return cls._format_duration(remaining)
+
 
 @dataclass(slots=True)
 class _ProgressReporter:
@@ -296,6 +318,7 @@ class _ProgressReporter:
         init=False,
     )
     _status: _ProgressStatus = field(default="pending", init=False)
+    _start_monotonic: float | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self._renderer = _AnsiProgressRenderer(
@@ -306,6 +329,7 @@ class _ProgressReporter:
     def start(self, args: argparse.Namespace) -> None:
         self._workers_by_start = self._initial_workers(args)
         self._status = "running"
+        self._start_monotonic = time.monotonic()
         self._write(
             " ".join(
                 [
@@ -468,11 +492,17 @@ class _ProgressReporter:
             ),
             status=self._status,
             message=message,
+            elapsed_seconds=self._elapsed_seconds(),
         )
         if finish:
             self._renderer.finish(snapshot)
         else:
             self._renderer.render(snapshot)
+
+    def _elapsed_seconds(self) -> float:
+        if self._start_monotonic is None:
+            return 0.0
+        return max(0.0, time.monotonic() - self._start_monotonic)
 
     def _write(self, message: str, *, finish: bool = False) -> None:
         legacy_message = (
