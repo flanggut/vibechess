@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from vibechess.nn.checkpoint import load_checkpoint
@@ -109,7 +110,7 @@ def main() -> None:
         carry_optimizer_state_across_shards=args.carry_optimizer_state_across_shards,
         validation_fraction=args.validation_fraction,
     )
-    notes = "vibechess WP15 training run"
+    notes = json.dumps(vars(args), sort_keys=True)
 
     dataset_path = Path(args.dataset)
     is_sharded = (dataset_path / DEFAULT_MANIFEST_FILENAME).is_file()

@@ -395,6 +395,27 @@ def test_train_script_consumes_dataset_and_writes_checkpoint(tmp_path: Path) -> 
     assert "epoch_metrics=" in result.stdout
     assert not (output_dir / "metrics.jsonl").exists()
     assert (output_dir / "checkpoint-final" / DEFAULT_WEIGHTS_FILENAME).is_file()
-    assert load_checkpoint_metadata(output_dir / "checkpoint-final").training_step == 1
+    checkpoint_metadata = load_checkpoint_metadata(output_dir / "checkpoint-final")
+    assert checkpoint_metadata.training_step == 1
+    assert checkpoint_metadata.notes is not None
+    assert json.loads(checkpoint_metadata.notes) == {
+        "batch_size": 1,
+        "carry_optimizer_state_across_shards": True,
+        "checkpoint_every": 0,
+        "dataset": str(dataset_dir),
+        "epochs": 1,
+        "input_checkpoint": None,
+        "learning_rate": 0.001,
+        "output": str(output_dir),
+        "policy_channels": 2,
+        "residual_blocks": 1,
+        "residual_channels": 8,
+        "seed": 0,
+        "skip_shard_checkpoints": False,
+        "validation_fraction": 0.1,
+        "value_channels": 1,
+        "value_hidden_dim": 8,
+        "warmup": 3,
+    }
     training_data = json.loads((output_dir / "training.json").read_text())
     assert training_data["training_config"]["warmup_steps"] == 3
