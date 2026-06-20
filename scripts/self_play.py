@@ -40,9 +40,11 @@ from vibechess.nn.self_play import (
 )
 from vibechess.nn.self_play_dataset import (
     SelfPlayDataset,
-    load_self_play_dataset,
-    merge_self_play_datasets,
+    SelfPlayMetadata,
+    load_self_play_shard_manifest,
+    save_merged_self_play_shards,
     save_self_play_dataset,
+    save_self_play_shard,
 )
 from vibechess.nn.self_play_profile import (
     ProfileStats,
@@ -251,15 +253,15 @@ class _ProgressReporter:
         self._status = "saving"
         self._write(f"saving output={output}")
 
-    def done(self, dataset: SelfPlayDataset) -> None:
+    def done_metadata(self, metadata: SelfPlayMetadata) -> None:
         self._status = "done"
         self._write(
             " ".join(
                 [
                     "done",
-                    f"games={dataset.metadata.game_count}",
-                    f"samples={dataset.metadata.sample_count}",
-                    f"schema={dataset.metadata.schema_version}",
+                    f"games={metadata.game_count}",
+                    f"samples={metadata.sample_count}",
+                    f"schema={metadata.schema_version}",
                 ]
             ),
             finish=True,
@@ -508,7 +510,7 @@ def _generate_chunk(task: ChunkTask) -> ChunkGenerationResult:
                 status="saving",
             )
             with profile_scope("worker.shard_save", **metadata):
-                save_self_play_dataset(dataset, task.shard_output)
+                save_self_play_shard(dataset, task.shard_output)
             _emit_worker_progress(
                 task,
                 games_completed=games_completed,
@@ -803,6 +805,8 @@ def main() -> int:
             with profile_scope("self_play.setup"):
                 progress_reporter.start(args)
             chunk_results: list[ChunkGenerationResult] = []
+            dataset: SelfPlayDataset | None = None
+            dataset_metadata: SelfPlayMetadata | None = None
             if args.workers == 1 or args.games == 1:
                 inference = None
                 if generation_args.label_source == LABEL_SOURCE_NEURAL:
@@ -935,13 +939,11 @@ def main() -> int:
                             progress_manager.shutdown()
                         if temp_checkpoint is not None:
                             temp_checkpoint.cleanup()
-                    chunk_results = [
-                        result
-                        for _start_game, result in sorted(
-                            chunk_results_by_start,
-                            key=lambda item: item[0],
-                        )
-                    ]
+                    chunk_results_with_start = sorted(
+                        chunk_results_by_start,
+                        key=lambda item: item[0],
+                    )
+                    chunk_results = [result for _start_game, result in chunk_results_with_start]
                     worker_reports = [
                         result.profile for result in chunk_results if result.profile is not None
                     ]
@@ -963,20 +965,29 @@ def main() -> int:
                             ],
                         }
                     }
-                    with profile_scope("dataset.load_shards", shards=len(chunk_results)):
-                        shard_datasets = [
-                            load_self_play_dataset(result.shard_output)
-                            for result in chunk_results
+                    with profile_scope("dataset.load_shard_manifests", shards=len(chunk_results)):
+                        shard_manifests = [
+                            load_self_play_shard_manifest(
+                                result.shard_output,
+                                start_game=start_game,
+                            )
+                            for start_game, result in chunk_results_with_start
                         ]
-                    dataset = merge_self_play_datasets(
-                        shard_datasets,
+                    progress_reporter.saving(args.output)
+                    dataset_metadata = save_merged_self_play_shards(
+                        shard_manifests,
+                        args.output,
                         config=full_config,
                         generation_settings_extra=parallel_settings,
                     )
                 finally:
                     shard_temp.cleanup()
-            progress_reporter.saving(args.output)
-            save_self_play_dataset(dataset, args.output)
+            if dataset_metadata is None:
+                if dataset is None:
+                    raise RuntimeError("self-play generation produced no dataset")
+                progress_reporter.saving(args.output)
+                save_self_play_dataset(dataset, args.output)
+                dataset_metadata = dataset.metadata
             if main_profiler.enabled:
                 main_profiler.stats.add_counter(
                     "dataset.output_bytes",
@@ -989,16 +1000,16 @@ def main() -> int:
                     worker_profiles=worker_reports,
                     derived=derived_profile,
                 )
-            progress_reporter.done(dataset)
+            progress_reporter.done_metadata(dataset_metadata)
     finally:
         progress_reporter.cleanup()
     print(
         " ".join(
             [
                 f"output={args.output}",
-                f"games={dataset.metadata.game_count}",
-                f"samples={dataset.metadata.sample_count}",
-                f"schema={dataset.metadata.schema_version}",
+                f"games={dataset_metadata.game_count}",
+                f"samples={dataset_metadata.sample_count}",
+                f"schema={dataset_metadata.schema_version}",
             ]
         )
     )

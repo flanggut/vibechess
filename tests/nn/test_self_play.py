@@ -1490,6 +1490,50 @@ def test_self_play_script_can_generate_in_parallel(tmp_path: Path) -> None:
     assert parallel_settings["workers"] == 2
     assert not any(path.name.startswith(".parallel-output-shards-") for path in tmp_path.iterdir())
 
+def test_self_play_script_streams_parallel_worker_shards(tmp_path: Path) -> None:
+    output = tmp_path / "parallel-streamed-output"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/self_play.py",
+            "--games",
+            "4",
+            "--workers",
+            "2",
+            "--batch-size",
+            "2",
+            "--max-plies",
+            "4",
+            "--simulations",
+            "2",
+            "--progress",
+            "never",
+            "--output",
+            str(output),
+        ],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    dataset = load_self_play_dataset(output)
+    assert dataset.metadata.game_count == 4
+    assert dataset.metadata.sample_count == sum(record.plies for record in dataset.games)
+    assert dataset.metadata.sample_count <= 16
+    parallel_settings = dataset.metadata.generation_settings["parallel"]
+    assert isinstance(parallel_settings, dict)
+    assert parallel_settings["chunks"] == [
+        {"start_game": 0, "games": 2, "seed": 1},
+        {"start_game": 2, "games": 2, "seed": 3},
+    ]
+    assert not any(
+        path.name.startswith(".parallel-streamed-output-shards-") for path in tmp_path.iterdir()
+    )
+
+
 
 def test_self_play_script_parallel_progress_reports_parent_chunks(
     tmp_path: Path,
@@ -1595,8 +1639,10 @@ def test_self_play_script_writes_profile_for_parallel_workers(tmp_path: Path) ->
         assert not shard_output.exists()
     assert "worker.pool_elapsed" in profile["stats"]["zones"]
     assert "worker.shard_save" in profile["stats"]["zones"]
-    assert "dataset.load_shards" in profile["stats"]["zones"]
-    assert "dataset.merge" in profile["stats"]["zones"]
+    assert "dataset.load_shard_manifests" in profile["stats"]["zones"]
+    assert "dataset.merge_shards_streamed" in profile["stats"]["zones"]
+    assert "dataset.load_shards" not in profile["stats"]["zones"]
+    assert "dataset.merge" not in profile["stats"]["zones"]
     timers = profile["stats"]["timers"]
     assert timers["search"]["completed_simulations"] == 2
     assert timers["model_single"]["calls"] == 0
