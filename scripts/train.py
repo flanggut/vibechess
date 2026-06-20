@@ -48,6 +48,15 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--learning-rate", type=float, default=1.0e-3)
     parser.add_argument(
+        "--warmup",
+        type=int,
+        default=0,
+        help=(
+            "number of optimizer steps to linearly ramp learning rate from 0 "
+            "to --learning-rate; 0 disables warmup"
+        ),
+    )
+    parser.add_argument(
         "--validation-fraction",
         type=float,
         default=0.1,
@@ -93,6 +102,7 @@ def main() -> None:
         epochs=args.epochs,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
+        warmup_steps=args.warmup,
         seed=args.seed,
         checkpoint_every=args.checkpoint_every,
         write_shard_checkpoints=not args.skip_shard_checkpoints,

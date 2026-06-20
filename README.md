@@ -104,6 +104,10 @@ Typical loop:
 3. Evaluate with `scripts/evaluate.py`.
 4. Repeat only after checks and benchmark evidence justify changes.
 
+Use `scripts/train.py --warmup N` when resuming an expanded checkpoint that keeps
+existing weights but adds fresh layers; the first `N` optimizer steps linearly
+ramp from a near-zero learning rate to `--learning-rate`.
+
 For detailed flags and formats, prefer the script `--help` output and the dataset
 loader/writer tests over duplicated prose. `scripts/self_play.py` supports
 interactive TUI progress on stderr via `--progress auto|always|never`: `always`

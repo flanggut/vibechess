@@ -44,6 +44,7 @@ class TrainingConfig:
     epochs: int = 1
     batch_size: int = 8
     learning_rate: float = 1.0e-3
+    warmup_steps: int = 0
     policy_loss_weight: float = 1.0
     value_loss_weight: float = 1.0
     seed: int | None = 0
@@ -59,6 +60,8 @@ class TrainingConfig:
             raise ValueError(f"batch_size must be at least 1, got {self.batch_size}")
         if self.learning_rate <= 0.0:
             raise ValueError(f"learning_rate must be positive, got {self.learning_rate}")
+        if self.warmup_steps < 0:
+            raise ValueError("warmup_steps must be non-negative")
         if self.policy_loss_weight < 0.0:
             raise ValueError("policy_loss_weight must be non-negative")
         if self.value_loss_weight < 0.0:
@@ -170,10 +173,13 @@ def _train_loaded_dataset(
     epoch_callback: Callable[[EpochMetrics], None] | None = None,
     write_checkpoints: bool = True,
     optimizer: Any | None = None,
+    optimizer_step_offset: int = 0,
 ) -> TrainingResult:
     """Train a loaded dataset with optional checkpoint writes for internal sharded use."""
     if initial_step < 0:
         raise ValueError("initial_step must be non-negative")
+    if optimizer_step_offset < 0:
+        raise ValueError("optimizer_step_offset must be non-negative")
     resolved_config = TrainingConfig() if config is None else config
     _validate_dataset_has_samples(dataset)
     train_dir = Path(output_dir)
@@ -209,6 +215,14 @@ def _train_loaded_dataset(
                 batch.value_targets,
                 resolved_config.policy_loss_weight,
                 resolved_config.value_loss_weight,
+            )
+            _set_optimizer_learning_rate(
+                resolved_optimizer,
+                _learning_rate_for_step(
+                    resolved_config.learning_rate,
+                    warmup_steps=resolved_config.warmup_steps,
+                    optimizer_step=optimizer_step_offset + run_step + 1,
+                ),
             )
             resolved_optimizer.update(resolved_model, gradients)
             mx.eval(resolved_model.parameters(), resolved_optimizer.state, loss_value)
@@ -394,6 +408,7 @@ def train_from_sharded_directory(
             epoch_callback=epoch_callback,
             write_checkpoints=resolved_config.write_shard_checkpoints,
             optimizer=shared_optimizer,
+            optimizer_step_offset=total_steps - initial_step,
         )
         total_steps += result.steps
         total_samples += result.samples
@@ -514,6 +529,21 @@ def _evaluate_loss(
         policy_loss=weighted_policy_loss / total_samples,
         value_loss=weighted_value_loss / total_samples,
     )
+
+
+def _learning_rate_for_step(
+    learning_rate: float,
+    *,
+    warmup_steps: int,
+    optimizer_step: int,
+) -> float:
+    if warmup_steps <= 0 or optimizer_step >= warmup_steps:
+        return learning_rate
+    return learning_rate * optimizer_step / warmup_steps
+
+
+def _set_optimizer_learning_rate(optimizer: Any, learning_rate: float) -> None:
+    optimizer.learning_rate = learning_rate
 
 
 @dataclass(frozen=True, slots=True)

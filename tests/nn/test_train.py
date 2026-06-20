@@ -37,6 +37,7 @@ from vibechess.nn.train import (
     DEFAULT_EPOCH_METRICS_FILENAME,
     EpochMetrics,
     TrainingConfig,
+    _learning_rate_for_step,
     compute_policy_value_loss,
     train_model,
 )
@@ -87,6 +88,23 @@ def tiny_dataset(sample_count: int = 2) -> SelfPlayDataset:
             )
         ],
     )
+
+
+def _parameter_arrays(model: PolicyValueNet) -> list[np.ndarray]:
+    arrays: list[np.ndarray] = []
+
+    def visit(value: object) -> None:
+        if isinstance(value, dict):
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+        else:
+            arrays.append(np.array(value))
+
+    visit(model.parameters())
+    return arrays
 
 
 def test_policy_value_loss_computes_finite_components() -> None:
@@ -210,6 +228,7 @@ def test_train_model_reserves_validation_split_and_reports_epoch_losses(tmp_path
 def test_training_config_serializes_sharded_training_settings() -> None:
     assert TrainingConfig().to_dict()["write_shard_checkpoints"] is True
     assert TrainingConfig().to_dict()["carry_optimizer_state_across_shards"] is True
+    assert TrainingConfig().to_dict()["warmup_steps"] == 0
     assert (
         TrainingConfig(write_shard_checkpoints=False).to_dict()["write_shard_checkpoints"]
         is False
@@ -220,6 +239,55 @@ def test_training_config_serializes_sharded_training_settings() -> None:
         ]
         is False
     )
+    assert TrainingConfig(warmup_steps=3).to_dict()["warmup_steps"] == 3
+
+
+def test_learning_rate_warmup_scales_initial_steps() -> None:
+    assert _learning_rate_for_step(1.0e-3, warmup_steps=0, optimizer_step=1) == 1.0e-3
+    assert _learning_rate_for_step(1.0e-3, warmup_steps=4, optimizer_step=1) == 2.5e-4
+    assert _learning_rate_for_step(1.0e-3, warmup_steps=4, optimizer_step=4) == 1.0e-3
+    assert _learning_rate_for_step(1.0e-3, warmup_steps=4, optimizer_step=5) == 1.0e-3
+
+
+def test_train_model_warmup_uses_scaled_learning_rate(tmp_path: Path) -> None:
+    dataset = tiny_dataset(sample_count=1)
+    warmup_model = PolicyValueNet(tiny_config())
+    scaled_lr_model = PolicyValueNet(tiny_config())
+    scaled_lr_model.update(warmup_model.parameters())
+
+    train_model(
+        dataset,
+        tmp_path / "warmup",
+        model=warmup_model,
+        config=TrainingConfig(
+            epochs=1,
+            batch_size=1,
+            learning_rate=4.0e-3,
+            warmup_steps=4,
+            validation_fraction=0.0,
+        ),
+    )
+    train_model(
+        dataset,
+        tmp_path / "scaled-lr",
+        model=scaled_lr_model,
+        config=TrainingConfig(
+            epochs=1,
+            batch_size=1,
+            learning_rate=1.0e-3,
+            validation_fraction=0.0,
+        ),
+    )
+
+    for warmup_param, scaled_lr_param in zip(
+        _parameter_arrays(warmup_model), _parameter_arrays(scaled_lr_model), strict=True
+    ):
+        np.testing.assert_allclose(warmup_param, scaled_lr_param)
+
+
+def test_training_config_rejects_negative_warmup_steps() -> None:
+    with pytest.raises(ValueError, match="warmup_steps"):
+        TrainingConfig(warmup_steps=-1)
 
 
 def test_train_model_rejects_empty_dataset(tmp_path: Path) -> None:
@@ -299,6 +367,8 @@ def test_train_script_consumes_dataset_and_writes_checkpoint(tmp_path: Path) -> 
             "1",
             "--learning-rate",
             "0.001",
+            "--warmup",
+            "3",
             "--residual-channels",
             "8",
             "--residual-blocks",
@@ -326,3 +396,5 @@ def test_train_script_consumes_dataset_and_writes_checkpoint(tmp_path: Path) -> 
     assert not (output_dir / "metrics.jsonl").exists()
     assert (output_dir / "checkpoint-final" / DEFAULT_WEIGHTS_FILENAME).is_file()
     assert load_checkpoint_metadata(output_dir / "checkpoint-final").training_step == 1
+    training_data = json.loads((output_dir / "training.json").read_text())
+    assert training_data["training_config"]["warmup_steps"] == 3
