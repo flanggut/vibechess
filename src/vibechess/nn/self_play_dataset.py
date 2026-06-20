@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import zipfile
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,6 +37,7 @@ SELF_PLAY_DATASET_SCHEMA_VERSION = "vibechess-selfplay-v2"
 POLICY_TARGET_FORMAT_DENSE = "dense_mcts_policies"
 POLICY_TARGET_FORMAT_SPARSE_CSR = "sparse_csr"
 DEFAULT_DATASET_FILENAME = "samples.npz"
+TEMP_SHARD_DATASET_FILENAME = "samples.tmp.npz"
 DEFAULT_METADATA_FILENAME = "metadata.json"
 DEFAULT_GAMES_FILENAME = "games.jsonl"
 
@@ -382,6 +384,41 @@ class SelfPlayDataset:
         return cached
 
 
+@dataclass(frozen=True, slots=True)
+class SelfPlayShardTensors:
+    """Tensor payload loaded from one temporary self-play shard."""
+
+    path: Path
+    metadata: SelfPlayMetadata
+    games: list[SelfPlayGameRecord]
+    positions: npt.NDArray[np.float32]
+    legal_masks: npt.NDArray[np.float32]
+    policy_offsets: npt.NDArray[np.int64]
+    policy_indices: npt.NDArray[np.int32]
+    policy_probabilities: npt.NDArray[np.float32]
+    outcomes: npt.NDArray[np.float32]
+
+    @property
+    def policy_targets(self) -> SparsePolicyTargets:
+        return SparsePolicyTargets(
+            offsets=self.policy_offsets,
+            indices=self.policy_indices,
+            probabilities=self.policy_probabilities,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SelfPlayShardManifest:
+    """Metadata needed to stream one temporary shard into the final dataset."""
+
+    path: Path
+    start_game: int
+    game_count: int
+    sample_count: int
+    policy_nnz: int
+    metadata: SelfPlayMetadata
+    games: list[SelfPlayGameRecord]
+
 def merge_self_play_datasets(
     datasets: list[SelfPlayDataset],
     *,
@@ -525,6 +562,168 @@ def save_self_play_dataset(dataset: SelfPlayDataset, directory: str | Path) -> N
                 )
             )
 
+
+def save_self_play_shard(dataset: SelfPlayDataset, directory: str | Path) -> None:
+    """Write a temporary self-play shard using uncompressed NPZ tensors."""
+    output_dir = Path(directory)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    metadata = replace(
+        dataset.metadata,
+        schema_version=SELF_PLAY_DATASET_SCHEMA_VERSION,
+        policy_target_format=POLICY_TARGET_FORMAT_SPARSE_CSR,
+    )
+    with profile_scope("dataset.save_shard"):
+        with profile_scope("dataset.save_shard_npz_uncompressed"):
+            np.savez(
+                output_dir / TEMP_SHARD_DATASET_FILENAME,
+                positions=dataset.positions,
+                legal_masks=dataset.legal_masks,
+                policy_offsets=dataset.policy_targets.offsets,
+                policy_indices=dataset.policy_targets.indices,
+                policy_probabilities=dataset.policy_targets.probabilities,
+                outcomes=dataset.outcomes,
+            )
+        _write_self_play_sidecars(output_dir, metadata, dataset.games)
+
+
+def load_self_play_shard_manifest(
+    directory: str | Path,
+    *,
+    start_game: int,
+) -> SelfPlayShardManifest:
+    """Read temporary shard metadata without constructing a full dataset."""
+    input_dir = Path(directory)
+    metadata, games = _read_self_play_sidecars(input_dir)
+    policy_shape = _npz_member_shape(input_dir / TEMP_SHARD_DATASET_FILENAME, "policy_indices")
+    policy_nnz = int(policy_shape[0]) if policy_shape else 0
+    return SelfPlayShardManifest(
+        path=input_dir,
+        start_game=start_game,
+        game_count=metadata.game_count,
+        sample_count=metadata.sample_count,
+        policy_nnz=policy_nnz,
+        metadata=metadata,
+        games=games,
+    )
+
+
+def load_self_play_shard_tensors(directory: str | Path) -> SelfPlayShardTensors:
+    """Load and validate tensors from one temporary self-play shard."""
+    input_dir = Path(directory)
+    metadata, games = _read_self_play_sidecars(input_dir)
+    with np.load(input_dir / TEMP_SHARD_DATASET_FILENAME) as tensors:
+        positions = np.asarray(tensors["positions"], dtype=np.float32)
+        legal_masks = np.asarray(tensors["legal_masks"], dtype=np.float32)
+        policy_targets = SparsePolicyTargets(
+            offsets=np.asarray(tensors["policy_offsets"], dtype=np.int64),
+            indices=np.asarray(tensors["policy_indices"], dtype=np.int32),
+            probabilities=np.asarray(tensors["policy_probabilities"], dtype=np.float32),
+        )
+        outcomes = np.asarray(tensors["outcomes"], dtype=np.float32)
+    _validate_tensor_shapes(metadata, positions, legal_masks, policy_targets, outcomes)
+    if len(games) != metadata.game_count:
+        raise ValueError("game metadata count does not match dataset metadata")
+    _validate_game_records(metadata, games, positions, legal_masks, policy_targets, outcomes)
+    return SelfPlayShardTensors(
+        path=input_dir,
+        metadata=metadata,
+        games=games,
+        positions=positions,
+        legal_masks=legal_masks,
+        policy_offsets=policy_targets.offsets,
+        policy_indices=policy_targets.indices,
+        policy_probabilities=policy_targets.probabilities,
+        outcomes=outcomes,
+    )
+
+
+def save_merged_self_play_shards(
+    shards: list[SelfPlayShardManifest],
+    output: str | Path,
+    *,
+    config: SelfPlayConfig,
+    generation_settings_extra: dict[str, object] | None = None,
+    compressed: bool = True,
+) -> SelfPlayMetadata:
+    """Stream temporary shards into one public self-play dataset output."""
+    if not shards:
+        raise ValueError("at least one self-play shard is required")
+
+    ordered = sorted(shards, key=lambda shard: shard.start_game)
+    first = ordered[0]
+    model_checkpoint_id = first.metadata.model_checkpoint_id
+    games: list[SelfPlayGameRecord] = []
+    total_samples = 0
+    total_policy_nnz = 0
+    game_cursor = 0
+    for shard in ordered:
+        if shard.start_game != game_cursor:
+            raise ValueError("self-play shard ranges must be contiguous from game zero")
+        _validate_shard_manifest(shard, model_checkpoint_id)
+        total_samples += shard.sample_count
+        total_policy_nnz += shard.policy_nnz
+        game_cursor += shard.game_count
+        for record in shard.games:
+            games.append(replace(record, game_index=len(games)))
+
+    positions = np.empty((total_samples, *TENSOR_SHAPE), dtype=np.float32)
+    legal_masks = np.empty((total_samples, ACTION_SPACE_SIZE), dtype=np.float32)
+    outcomes = np.empty((total_samples,), dtype=np.float32)
+    policy_offsets = np.empty((total_samples + 1,), dtype=np.int64)
+    policy_indices = np.empty((total_policy_nnz,), dtype=np.int32)
+    policy_probabilities = np.empty((total_policy_nnz,), dtype=np.float32)
+    policy_offsets[0] = 0
+
+    sample_cursor = 0
+    nnz_cursor = 0
+    with profile_scope("dataset.merge_shards_streamed", shards=len(ordered)):
+        for shard in ordered:
+            tensors = load_self_play_shard_tensors(shard.path)
+            row_count = tensors.metadata.sample_count
+            shard_nnz = int(tensors.policy_indices.shape[0])
+            if row_count != shard.sample_count:
+                raise ValueError("shard manifest sample count does not match tensors")
+            if shard_nnz != shard.policy_nnz:
+                raise ValueError("shard manifest policy nnz does not match tensors")
+            next_sample = sample_cursor + row_count
+            next_nnz = nnz_cursor + shard_nnz
+            positions[sample_cursor:next_sample] = tensors.positions
+            legal_masks[sample_cursor:next_sample] = tensors.legal_masks
+            outcomes[sample_cursor:next_sample] = tensors.outcomes
+            policy_offsets[sample_cursor + 1 : next_sample + 1] = (
+                tensors.policy_offsets[1:] + nnz_cursor
+            )
+            policy_indices[nnz_cursor:next_nnz] = tensors.policy_indices
+            policy_probabilities[nnz_cursor:next_nnz] = tensors.policy_probabilities
+            sample_cursor = next_sample
+            nnz_cursor = next_nnz
+
+    _validate_merge_config(config, model_checkpoint_id, game_count=len(games))
+    metadata = _merged_metadata(
+        first.metadata,
+        config=config,
+        sample_count=total_samples,
+        game_count=len(games),
+        generation_settings_extra=generation_settings_extra,
+    )
+    output_dir = Path(output)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with profile_scope("dataset.save"):
+        with profile_scope(
+            "dataset.save_npz_compressed" if compressed else "dataset.save_npz_uncompressed"
+        ):
+            save_npz = np.savez_compressed if compressed else np.savez
+            save_npz(
+                output_dir / DEFAULT_DATASET_FILENAME,
+                positions=positions,
+                legal_masks=legal_masks,
+                policy_offsets=policy_offsets,
+                policy_indices=policy_indices,
+                policy_probabilities=policy_probabilities,
+                outcomes=outcomes,
+            )
+        _write_self_play_sidecars(output_dir, metadata, games)
+    return metadata
 
 def load_self_play_dataset(directory: str | Path) -> SelfPlayDataset:
     """Load and validate a self-play dataset from disk."""
@@ -730,6 +929,117 @@ def _validate_sparse_policy_row(
     if indices.size and np.any(legal_mask[indices] <= 0.0):
         raise ValueError("policy target assigns probability to illegal moves")
 
+def _merged_metadata(
+    first_metadata: SelfPlayMetadata,
+    *,
+    config: SelfPlayConfig,
+    sample_count: int,
+    game_count: int,
+    generation_settings_extra: dict[str, object] | None,
+) -> SelfPlayMetadata:
+    metadata_batching_settings = _metadata_batching_settings(first_metadata)
+    if metadata_batching_settings is None:
+        metadata = SelfPlayMetadata.create(config, sample_count=sample_count)
+    else:
+        batching_mode, inference_batch_size = metadata_batching_settings
+        metadata = SelfPlayMetadata.create(
+            config,
+            sample_count=sample_count,
+            batching_mode=batching_mode,
+            inference_batch_size=inference_batch_size,
+        )
+    if metadata.model_checkpoint_id != first_metadata.model_checkpoint_id:
+        metadata = replace(metadata, model_checkpoint_id=first_metadata.model_checkpoint_id)
+    if metadata.game_count != game_count:
+        metadata = replace(metadata, game_count=game_count)
+    if generation_settings_extra:
+        metadata = replace(
+            metadata,
+            generation_settings={
+                **metadata.generation_settings,
+                **generation_settings_extra,
+            },
+        )
+    return metadata
+
+
+def _validate_merge_config(
+    config: SelfPlayConfig,
+    model_checkpoint_id: str | None,
+    *,
+    game_count: int,
+) -> None:
+    if config.model_checkpoint_id != model_checkpoint_id:
+        raise ValueError("merge config model checkpoint does not match shard metadata")
+    if config.games != game_count:
+        raise ValueError("merge config game count does not match shard ranges")
+
+
+def _validate_shard_manifest(
+    shard: SelfPlayShardManifest,
+    model_checkpoint_id: str | None,
+) -> None:
+    if shard.metadata.schema_version != SELF_PLAY_DATASET_SCHEMA_VERSION:
+        schema = shard.metadata.schema_version
+        raise ValueError(f"unsupported self-play shard schema: {schema}")
+    if shard.metadata.policy_target_format != POLICY_TARGET_FORMAT_SPARSE_CSR:
+        raise ValueError("temporary self-play shards must use sparse CSR policy targets")
+    if shard.metadata.action_space_version != ACTION_SPACE_VERSION:
+        action_space = shard.metadata.action_space_version
+        raise ValueError(f"unsupported action space version: {action_space}")
+    if shard.metadata.encoder_version != ENCODER_VERSION:
+        raise ValueError(f"unsupported encoder version: {shard.metadata.encoder_version}")
+    if shard.metadata.model_checkpoint_id != model_checkpoint_id:
+        raise ValueError("cannot merge shards from different model checkpoints")
+    if shard.game_count != shard.metadata.game_count:
+        raise ValueError("shard game count does not match metadata")
+    if shard.sample_count != shard.metadata.sample_count:
+        raise ValueError("shard sample count does not match metadata")
+    if len(shard.games) != shard.game_count:
+        raise ValueError("shard game records do not match metadata")
+
+
+def _write_self_play_sidecars(
+    output_dir: Path,
+    metadata: SelfPlayMetadata,
+    games: list[SelfPlayGameRecord],
+) -> None:
+    with profile_scope("dataset.write_metadata"):
+        (output_dir / DEFAULT_METADATA_FILENAME).write_text(
+            json.dumps(metadata.to_dict(), indent=2, sort_keys=True) + "\n"
+        )
+    with profile_scope("dataset.write_games_jsonl"):
+        (output_dir / DEFAULT_GAMES_FILENAME).write_text(
+            "".join(json.dumps(record.to_dict(), sort_keys=True) + "\n" for record in games)
+        )
+
+
+def _read_self_play_sidecars(input_dir: Path) -> tuple[SelfPlayMetadata, list[SelfPlayGameRecord]]:
+    metadata_data = json.loads((input_dir / DEFAULT_METADATA_FILENAME).read_text())
+    if not isinstance(metadata_data, dict):
+        raise TypeError("self-play metadata must be a JSON object")
+    metadata = SelfPlayMetadata.from_dict(metadata_data)
+    games = [
+        SelfPlayGameRecord.from_dict(record)
+        for record in _read_jsonl(input_dir / DEFAULT_GAMES_FILENAME)
+    ]
+    return metadata, games
+
+
+def _npz_member_shape(path: Path, name: str) -> tuple[int, ...]:
+    with zipfile.ZipFile(path) as archive:
+        with archive.open(f"{name}.npy") as member:
+            version = np.lib.format.read_magic(member)
+            if version == (1, 0):
+                shape, _fortran_order, _dtype = np.lib.format.read_array_header_1_0(member)
+            elif version == (2, 0):
+                shape, _fortran_order, _dtype = np.lib.format.read_array_header_2_0(member)
+            else:
+                raise ValueError(f"unsupported npy header version: {version}")
+    return tuple(int(dimension) for dimension in shape)
+
+
+
 
 def _validate_recorded_outcome(record: SelfPlayGameRecord, game: Game) -> None:
     recorded = _recorded_outcome(record)
@@ -808,8 +1118,15 @@ __all__ = [
     "SelfPlayDataset",
     "SelfPlayGameRecord",
     "SelfPlayMetadata",
+    "SelfPlayShardManifest",
+    "SelfPlayShardTensors",
     "SparsePolicyTargets",
+    "TEMP_SHARD_DATASET_FILENAME",
     "load_self_play_dataset",
+    "load_self_play_shard_manifest",
+    "load_self_play_shard_tensors",
     "merge_self_play_datasets",
+    "save_merged_self_play_shards",
     "save_self_play_dataset",
+    "save_self_play_shard",
 ]

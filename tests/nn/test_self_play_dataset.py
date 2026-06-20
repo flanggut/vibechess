@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -23,13 +24,18 @@ from vibechess.nn.self_play_dataset import (
     POLICY_TARGET_FORMAT_SPARSE_CSR,
     SELF_PLAY_DATASET_SCHEMA_VERSION,
     SELF_PLAY_DATASET_SCHEMA_VERSION_V1,
+    TEMP_SHARD_DATASET_FILENAME,
     SelfPlayDataset,
     SelfPlayGameRecord,
     SelfPlayMetadata,
     SparsePolicyTargets,
     load_self_play_dataset,
+    load_self_play_shard_manifest,
+    load_self_play_shard_tensors,
     merge_self_play_datasets,
+    save_merged_self_play_shards,
     save_self_play_dataset,
+    save_self_play_shard,
 )
 
 
@@ -132,6 +138,138 @@ def test_self_play_dataset_module_saves_and_loads_round_trip(tmp_path: Path) -> 
     np.testing.assert_array_equal(loaded.mcts_policies, dataset.mcts_policies)
     np.testing.assert_array_equal(loaded.outcomes, dataset.outcomes)
     assert loaded.games == dataset.games
+
+def test_uncompressed_shard_round_trips_to_public_dataset(tmp_path: Path) -> None:
+    shard_dir = tmp_path / "shard"
+    output_dir = tmp_path / "final"
+    dataset = _one_move_dataset(checkpoint_id="shared")
+
+    save_self_play_shard(dataset, shard_dir)
+    manifest = load_self_play_shard_manifest(shard_dir, start_game=0)
+    metadata = save_merged_self_play_shards(
+        [manifest],
+        output_dir,
+        config=SelfPlayConfig(games=1, max_plies=1, model_checkpoint_id="shared"),
+    )
+    loaded = load_self_play_dataset(output_dir)
+
+    assert (shard_dir / TEMP_SHARD_DATASET_FILENAME).is_file()
+    assert not (shard_dir / DEFAULT_DATASET_FILENAME).exists()
+    with zipfile.ZipFile(shard_dir / TEMP_SHARD_DATASET_FILENAME) as archive:
+        assert {item.compress_type for item in archive.infolist()} == {zipfile.ZIP_STORED}
+    assert metadata.schema_version == SELF_PLAY_DATASET_SCHEMA_VERSION
+    np.testing.assert_array_equal(loaded.positions, dataset.positions)
+    np.testing.assert_array_equal(loaded.legal_masks, dataset.legal_masks)
+    np.testing.assert_array_equal(
+        loaded.policy_targets.offsets,
+        dataset.policy_targets.offsets,
+    )
+    np.testing.assert_array_equal(
+        loaded.policy_targets.indices,
+        dataset.policy_targets.indices,
+    )
+    np.testing.assert_array_equal(
+        loaded.policy_targets.probabilities,
+        dataset.policy_targets.probabilities,
+    )
+    np.testing.assert_array_equal(loaded.outcomes, dataset.outcomes)
+    assert loaded.games == dataset.games
+
+
+def test_streamed_shard_merge_matches_in_memory_merge(tmp_path: Path) -> None:
+    first = _one_move_dataset(checkpoint_id="shared")
+    second = _one_move_dataset(checkpoint_id="shared")
+    first_shard = tmp_path / "first-shard"
+    second_shard = tmp_path / "second-shard"
+    streamed_dir = tmp_path / "streamed"
+    in_memory_dir = tmp_path / "in-memory"
+    config = SelfPlayConfig(games=2, max_plies=1, model_checkpoint_id="shared")
+    parallel_settings: dict[str, object] = {
+        "parallel": {
+            "workers": 2,
+            "chunks": [
+                {"start_game": 0, "games": 1, "seed": 1},
+                {"start_game": 1, "games": 1, "seed": 2},
+            ],
+        }
+    }
+
+    save_self_play_shard(first, first_shard)
+    save_self_play_shard(second, second_shard)
+    manifests = [
+        load_self_play_shard_manifest(first_shard, start_game=0),
+        load_self_play_shard_manifest(second_shard, start_game=1),
+    ]
+    save_merged_self_play_shards(
+        manifests,
+        streamed_dir,
+        config=config,
+        generation_settings_extra=parallel_settings,
+    )
+    in_memory = merge_self_play_datasets(
+        [first, second],
+        config=config,
+        generation_settings_extra=parallel_settings,
+    )
+    save_self_play_dataset(in_memory, in_memory_dir)
+
+    streamed = load_self_play_dataset(streamed_dir)
+    expected = load_self_play_dataset(in_memory_dir)
+
+    np.testing.assert_array_equal(streamed.positions, expected.positions)
+    np.testing.assert_array_equal(streamed.legal_masks, expected.legal_masks)
+    np.testing.assert_array_equal(
+        streamed.policy_targets.offsets,
+        expected.policy_targets.offsets,
+    )
+    np.testing.assert_array_equal(
+        streamed.policy_targets.indices,
+        expected.policy_targets.indices,
+    )
+    np.testing.assert_array_equal(
+        streamed.policy_targets.probabilities,
+        expected.policy_targets.probabilities,
+    )
+    np.testing.assert_array_equal(streamed.outcomes, expected.outcomes)
+    assert streamed.games == expected.games
+    assert streamed.metadata.generation_settings["parallel"] == parallel_settings["parallel"]
+
+def test_streamed_shard_merge_rejects_noncontiguous_ranges(tmp_path: Path) -> None:
+    dataset = _one_move_dataset(checkpoint_id="shared")
+    shard = tmp_path / "shard"
+    save_self_play_shard(dataset, shard)
+    manifest = load_self_play_shard_manifest(shard, start_game=1)
+
+    with pytest.raises(ValueError, match="contiguous from game zero"):
+        save_merged_self_play_shards(
+            [manifest],
+            tmp_path / "output",
+            config=SelfPlayConfig(games=1, max_plies=1, model_checkpoint_id="shared"),
+        )
+
+
+def test_streamed_shard_merge_rejects_config_checkpoint_mismatch(tmp_path: Path) -> None:
+    dataset = _one_move_dataset(checkpoint_id="shared")
+    shard = tmp_path / "shard"
+    save_self_play_shard(dataset, shard)
+    manifest = load_self_play_shard_manifest(shard, start_game=0)
+
+    with pytest.raises(ValueError, match="model checkpoint does not match"):
+        save_merged_self_play_shards(
+            [manifest],
+            tmp_path / "output",
+            config=SelfPlayConfig(games=1, max_plies=1),
+        )
+
+
+def test_load_self_play_shard_tensors_reads_temp_npz(tmp_path: Path) -> None:
+    dataset = _one_move_dataset()
+
+    save_self_play_shard(dataset, tmp_path)
+    tensors = load_self_play_shard_tensors(tmp_path)
+
+    np.testing.assert_array_equal(tensors.positions, dataset.positions)
+    np.testing.assert_array_equal(tensors.policy_indices, dataset.policy_targets.indices)
 
 
 def test_load_self_play_dataset_accepts_legacy_v1_dense_npz(tmp_path: Path) -> None:
