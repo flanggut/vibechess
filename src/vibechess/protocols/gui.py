@@ -7,7 +7,7 @@ import math
 import sys
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, Protocol, TextIO, cast
 
@@ -220,17 +220,7 @@ class GuiSession:
             human_color = _parse_color(request["humanColor"], field_name="humanColor")
         if "seed" in request:
             seed = _optional_int(request, "seed", self.config.seed, minimum=None)
-            ai_config = GuiAiConfig(
-                kind=ai_config.kind,
-                simulations=ai_config.simulations,
-                time_limit_seconds=ai_config.time_limit_seconds,
-                node_budget=ai_config.node_budget,
-                max_rollout_plies=ai_config.max_rollout_plies,
-                checkpoint_path=ai_config.checkpoint_path,
-                puct_exploration=ai_config.puct_exploration,
-                temperature=ai_config.temperature,
-                seed=seed,
-            )
+            ai_config = replace(ai_config, seed=seed)
         if "ai" in request:
             ai_config = parse_ai_config(request["ai"], current=ai_config)
         self.human_color = human_color

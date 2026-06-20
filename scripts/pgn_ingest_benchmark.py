@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+from vibechess import _scriptutil
 from vibechess.engine.game import Game
 from vibechess.engine.pgn import PgnParsedPly
 from vibechess.engine.pgn_stream import (
@@ -330,7 +331,7 @@ def _write_limited_records(input_path: Path, output_path: Path, max_records: int
 
 
 def _directory_size(path: Path) -> int:
-    return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+    return _scriptutil.directory_size(path)
 
 
 def _directory_file_count(path: Path) -> int:
@@ -397,9 +398,7 @@ def _expect_float(value: object) -> float:
 
 
 def _rate(count: int, elapsed: float) -> float:
-    if elapsed == 0:
-        return math.inf
-    return count / elapsed
+    return _scriptutil.rate(count, elapsed)
 
 
 def _format_float(value: float) -> str:

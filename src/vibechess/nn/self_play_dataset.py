@@ -13,6 +13,7 @@ import numpy as np
 import numpy.typing as npt
 
 import vibechess
+from vibechess import _jsonio
 from vibechess.engine.game import Game
 from vibechess.engine.move import Move
 from vibechess.engine.outcome import Outcome, OutcomeReason
@@ -743,14 +744,7 @@ def _game_with_recorded_outcome(record: SelfPlayGameRecord, game: Game) -> Game:
     recorded = _recorded_outcome(record)
     if game.outcome == recorded:
         return game
-    return Game(
-        positions=game.positions,
-        moves=game.moves,
-        halfmove_clock=game.halfmove_clock,
-        fullmove_number=game.fullmove_number,
-        repetition_counts=dict(game.repetition_counts),
-        forced_outcome=recorded,
-    )
+    return game.with_forced_outcome(recorded)
 
 
 def _recorded_outcome(record: SelfPlayGameRecord) -> Outcome:
@@ -796,17 +790,11 @@ def _git_commit() -> str | None:
 
 
 def _expect_str(data: dict[str, object], key: str) -> str:
-    value = data.get(key)
-    if not isinstance(value, str):
-        raise TypeError(f"field {key!r} must be a string")
-    return value
+    return _jsonio.expect_str(data, key)
 
 
 def _expect_int(data: dict[str, object], key: str) -> int:
-    value = data.get(key)
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError(f"field {key!r} must be an integer")
-    return value
+    return _jsonio.expect_int(data, key)
 
 
 __all__ = [

@@ -10,7 +10,6 @@ API.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 
 from vibechess.engine.board import Board
@@ -25,24 +24,7 @@ from vibechess.engine.transition import (
     outcome_for_state,
     position_key,
 )
-
-
-def _profile_scope(name: str, **tags: object) -> AbstractContextManager[None]:
-    from vibechess.profiling import profile_scope
-
-    return profile_scope(name, **tags)
-
-
-def _record_counter(name: str, amount: int | float = 1, **tags: object) -> None:
-    from vibechess.profiling import record_counter
-
-    record_counter(name, amount, **tags)
-
-
-def _record_distribution(name: str, value: int | float, *, unit: str, **tags: object) -> None:
-    from vibechess.profiling import record_distribution
-
-    record_distribution(name, value, unit=unit, **tags)
+from vibechess.profiling import profile_scope, record_counter, record_distribution
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,7 +55,7 @@ class SearchState:
     @classmethod
     def from_game(cls, game: Game) -> SearchState:
         """Create a search state from ``game`` without copying its position history."""
-        with _profile_scope("search_state.from_game"):
+        with profile_scope("search_state.from_game"):
             return cls(
                 board=game.board,
                 halfmove_clock=game.halfmove_clock,
@@ -94,9 +76,9 @@ class SearchState:
         compact single-position ``Game`` for inference encoding, where only the current
         board, clocks, repetition counts, outcome, and move path are needed.
         """
-        with _profile_scope("search_state.to_game", include_positions=include_positions):
-            _record_counter("search_state.to_game.calls")
-            _record_distribution("search_state.move_path_length", len(self.move_path), unit="moves")
+        with profile_scope("search_state.to_game", include_positions=include_positions):
+            record_counter("search_state.to_game.calls")
+            record_distribution("search_state.move_path_length", len(self.move_path), unit="moves")
             positions = self._positions() if include_positions else (self.board,)
             return Game(
                 positions=positions,
@@ -115,15 +97,15 @@ class SearchState:
     @property
     def legal_moves(self) -> tuple[Move, ...]:
         """Return legal moves in the current search position."""
-        with _profile_scope("search_state.legal_moves"):
+        with profile_scope("search_state.legal_moves"):
             legal = generate_legal_moves(self.board)
-            _record_distribution("search_state.legal_moves", len(legal), unit="moves")
+            record_distribution("search_state.legal_moves", len(legal), unit="moves")
             return legal
 
     @property
     def outcome(self) -> Outcome | None:
         """Return the current outcome using the same pragmatic rules as ``Game``."""
-        with _profile_scope("search_state.outcome"):
+        with profile_scope("search_state.outcome"):
             if self.forced_outcome is not None:
                 return self.forced_outcome
             legal = self.legal_moves
@@ -131,36 +113,21 @@ class SearchState:
 
     def outcome_with_legal_moves(self, legal_moves: tuple[Move, ...]) -> Outcome | None:
         """Return the current outcome using a caller-supplied legal-move cache."""
-        with _profile_scope("search_state.outcome_with_legal_moves"):
+        with profile_scope("search_state.outcome_with_legal_moves"):
             return self._outcome_with_legal_moves_impl(legal_moves)
 
     def _outcome_with_legal_moves_impl(self, legal_moves: tuple[Move, ...]) -> Outcome | None:
-        return outcome_for_state(
-            TransitionState(
-                board=self.board,
-                halfmove_clock=self.halfmove_clock,
-                fullmove_number=self.fullmove_number,
-                repetition_counts=self.repetition_counts,
-                forced_outcome=self.forced_outcome,
-            ),
-            legal_moves,
-        )
+        return outcome_for_state(TransitionState.from_position(self), legal_moves)
 
     def play_known_legal(self, move: Move) -> SearchState:
         """Return the state after applying a move already known to be legal."""
-        with _profile_scope("search_state.play_known_legal"):
-            _record_counter("search_state.play_known_legal.calls")
+        with profile_scope("search_state.play_known_legal"):
+            record_counter("search_state.play_known_legal.calls")
             return self._play_known_legal_impl(move)
 
     def _play_known_legal_impl(self, move: Move) -> SearchState:
         result = advance_known_legal_state(
-            TransitionState(
-                board=self.board,
-                halfmove_clock=self.halfmove_clock,
-                fullmove_number=self.fullmove_number,
-                repetition_counts=self.repetition_counts,
-                forced_outcome=self.forced_outcome,
-            ),
+            TransitionState.from_position(self),
             move,
         )
 
@@ -176,7 +143,7 @@ class SearchState:
         )
 
     def _positions(self) -> tuple[Board, ...]:
-        with _profile_scope("search_state.positions_reconstruct"):
+        with profile_scope("search_state.positions_reconstruct"):
             if self._base_positions:
                 positions = list(self._base_positions)
                 board = positions[-1]

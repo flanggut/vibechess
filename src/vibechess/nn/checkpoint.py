@@ -8,6 +8,7 @@ from pathlib import Path
 
 import mlx.core as mx
 
+from vibechess import _jsonio
 from vibechess.nn.encode import ACTION_SPACE_VERSION, ENCODER_VERSION
 from vibechess.nn.model import PolicyValueConfig, PolicyValueNet
 
@@ -139,25 +140,19 @@ def load_checkpoint_metadata(directory: str | Path) -> CheckpointMetadata:
     return CheckpointMetadata.from_dict(data)
 
 
+_FIELD_LABEL = "checkpoint metadata field"
+
+
 def _expect_str(data: dict[str, object], key: str) -> str:
-    value = data.get(key)
-    if not isinstance(value, str):
-        raise TypeError(f"checkpoint metadata field {key!r} must be a string")
-    return value
+    return _jsonio.expect_str(data, key, label=_FIELD_LABEL)
 
 
 def _expect_int(data: dict[str, object], key: str) -> int:
-    value = data.get(key)
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError(f"checkpoint metadata field {key!r} must be an integer")
-    return value
+    return _jsonio.expect_int(data, key, label=_FIELD_LABEL)
 
 
 def _expect_bool(data: dict[str, object], key: str) -> bool:
-    value = data.get(key)
-    if not isinstance(value, bool):
-        raise TypeError(f"checkpoint metadata field {key!r} must be a boolean")
-    return value
+    return _jsonio.expect_bool(data, key, label=_FIELD_LABEL)
 
 
 __all__ = [

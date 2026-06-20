@@ -16,7 +16,7 @@ import numpy as np
 import vibechess.nn.self_play as self_play
 from vibechess.ai.neural_mcts import NeuralMCTSConfig, NeuralMCTSPlayer
 from vibechess.ai.search_config import MCTSConfig
-from vibechess.engine import Game, Move, OutcomeReason
+from vibechess.engine import Game, Move, Outcome, OutcomeReason
 from vibechess.nn.checkpoint import save_checkpoint
 from vibechess.nn.encode import (
     ACTION_SPACE_SIZE,
@@ -449,7 +449,7 @@ def test_batched_neural_self_play_rolls_new_game_when_slot_frees(monkeypatch: An
         original_record(state, legal, selected_move, visit_counts)
         if state.game_index == 0 and state.game_index not in forced_indexes:
             forced_indexes.add(state.game_index)
-            state.game = self_play._with_max_plies_outcome(state.game)
+            state.game = state.game.with_forced_outcome(Outcome(OutcomeReason.MAX_PLIES))
 
     monkeypatch.setattr(self_play, "_run_central_neural_searches", spy_run)
     monkeypatch.setattr(self_play, "_record_batched_decision", force_first_game_complete)

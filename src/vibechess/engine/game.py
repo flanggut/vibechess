@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import random
 from collections.abc import Callable, Mapping
-from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 
 import vibechess.engine.transition as _transition
@@ -14,23 +13,12 @@ from vibechess.engine.move import Move
 from vibechess.engine.outcome import Outcome, OutcomeReason
 from vibechess.engine.piece import Piece
 from vibechess.engine.square import Square
+from vibechess.profiling import profile_scope, record_counter
 
 PositionKey = _transition.PositionKey
 MoveSelector = Callable[[Board, tuple[Move, ...]], Move]
 # Backward-compatible module seam for tests and callers that patch the old name.
 generate_legal_moves = legal_moves
-
-
-def _profile_scope(name: str, **tags: object) -> AbstractContextManager[None]:
-    from vibechess.profiling import profile_scope
-
-    return profile_scope(name, **tags)
-
-
-def _record_counter(name: str, amount: int | float = 1, **tags: object) -> None:
-    from vibechess.profiling import record_counter
-
-    record_counter(name, amount, **tags)
 
 
 def _current_legal_moves(board: Board) -> tuple[Move, ...]:
@@ -112,13 +100,13 @@ class Game:
     @property
     def legal_moves(self) -> tuple[Move, ...]:
         """Return legal moves in the current position."""
-        with _profile_scope("game.legal_moves"):
+        with profile_scope("game.legal_moves"):
             return legal_moves(self.board)
 
     @property
     def outcome(self) -> Outcome | None:
         """Return the current outcome, or ``None`` if the game is ongoing."""
-        with _profile_scope("game.outcome"):
+        with profile_scope("game.outcome"):
             return determine_outcome(self)
 
     def play(self, move: Move) -> Game:
@@ -144,16 +132,10 @@ class Game:
         Normal callers should use :meth:`play`, which preserves terminal and legal-move
         validation before delegating here.
         """
-        with _profile_scope("game.play_known_legal"):
-            _record_counter("game.play_known_legal.calls")
+        with profile_scope("game.play_known_legal"):
+            record_counter("game.play_known_legal.calls")
             result = _transition.advance_known_legal_state(
-                _transition.TransitionState(
-                    board=self.board,
-                    halfmove_clock=self.halfmove_clock,
-                    fullmove_number=self.fullmove_number,
-                    repetition_counts=self.repetition_counts,
-                    forced_outcome=self.forced_outcome,
-                ),
+                _transition.TransitionState.from_position(self),
                 move,
             )
 
@@ -166,25 +148,61 @@ class Game:
                 forced_outcome=None,
             )
 
+    def with_forced_outcome(self, outcome: Outcome) -> Game:
+        """Return a copy of this game with ``forced_outcome`` set to ``outcome``.
+
+        The position history, moves, and counters are preserved; only the recorded
+        outcome changes. Used to stamp a terminal result (for example a ply-cap
+        draw) onto a game whose board state is otherwise unchanged.
+        """
+        return Game(
+            positions=self.positions,
+            moves=self.moves,
+            halfmove_clock=self.halfmove_clock,
+            fullmove_number=self.fullmove_number,
+            repetition_counts=dict(self.repetition_counts),
+            forced_outcome=outcome,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class GameRecordFields:
+    """Serializable per-game fields shared by self-play and evaluation records."""
+
+    plies: int
+    outcome_reason: str
+    winner: str | None
+    final_fen: str
+    moves_uci: list[str]
+
+
+def game_record_fields(game: Game, outcome: Outcome) -> GameRecordFields:
+    """Extract the common serializable record fields for ``game`` and its ``outcome``.
+
+    Callers resolve a concrete (non-``None``) outcome first — for example by stamping
+    a ply-cap draw or raising — and pass it in, so this helper stays agnostic to how
+    each harness treats unfinished games.
+    """
+    return GameRecordFields(
+        plies=len(game.moves),
+        outcome_reason=outcome.reason.value,
+        winner=None if outcome.winner is None else outcome.winner.value,
+        final_fen=game.to_fen(),
+        moves_uci=[move.to_uci() for move in game.moves],
+    )
+
 
 def determine_outcome(
     game: Game, *, legal_moves: tuple[Move, ...] | None = None
 ) -> Outcome | None:
     """Return the pragmatic game outcome, or ``None`` if the game is ongoing."""
-    with _profile_scope("game.determine_outcome"):
-        _record_counter("game.determine_outcome.calls")
+    with profile_scope("game.determine_outcome"):
+        record_counter("game.determine_outcome.calls")
         if game.forced_outcome is not None:
             return game.forced_outcome
-        board = game.board
-        moves = legal_moves if legal_moves is not None else _current_legal_moves(board)
+        moves = legal_moves if legal_moves is not None else _current_legal_moves(game.board)
         return _transition.outcome_for_state(
-            _transition.TransitionState(
-                board=board,
-                halfmove_clock=game.halfmove_clock,
-                fullmove_number=game.fullmove_number,
-                repetition_counts=game.repetition_counts,
-                forced_outcome=game.forced_outcome,
-            ),
+            _transition.TransitionState.from_position(game),
             moves,
         )
 
@@ -208,7 +226,7 @@ def simulate_game(
             return current
         current = current.play(selector(current.board, moves))
     if current.outcome is None:
-        return _with_max_plies_draw(current)
+        return current.with_forced_outcome(Outcome(OutcomeReason.MAX_PLIES))
     return current
 
 
@@ -237,14 +255,3 @@ def _is_capture(board: Board, move: Move, moving_piece: Piece) -> bool:
 
 def _square_color(square: Square) -> int:
     return _transition.square_color(square)
-
-
-def _with_max_plies_draw(game: Game) -> Game:
-    return Game(
-        positions=game.positions,
-        moves=game.moves,
-        halfmove_clock=game.halfmove_clock,
-        fullmove_number=game.fullmove_number,
-        repetition_counts=dict(game.repetition_counts),
-        forced_outcome=Outcome(OutcomeReason.MAX_PLIES),
-    )

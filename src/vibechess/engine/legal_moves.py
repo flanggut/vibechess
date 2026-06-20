@@ -3,31 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from contextlib import AbstractContextManager
 
 from vibechess.engine.board import Board
 from vibechess.engine.move import Move
 from vibechess.engine.piece import Color, Piece, PieceType
 from vibechess.engine.square import Square, validate_square
-
-
-def _profile_scope(name: str, **tags: object) -> AbstractContextManager[None]:
-    from vibechess.profiling import profile_scope
-
-    return profile_scope(name, **tags)
-
-
-def _record_counter(name: str, amount: int | float = 1, **tags: object) -> None:
-    from vibechess.profiling import record_counter
-
-    record_counter(name, amount, **tags)
-
-
-def _record_distribution(name: str, value: int | float, *, unit: str, **tags: object) -> None:
-    from vibechess.profiling import record_distribution
-
-    record_distribution(name, value, unit=unit, **tags)
-
+from vibechess.profiling import profile_scope, record_counter, record_distribution
 
 PROMOTION_PIECES = (PieceType.QUEEN, PieceType.ROOK, PieceType.BISHOP, PieceType.KNIGHT)
 
@@ -106,7 +87,7 @@ def pseudo_legal_moves(board: Board) -> tuple[Move, ...]:
     Pseudo-legal moves follow piece movement rules, including castling and en passant,
     but may leave the moving side's king in check.
     """
-    with _profile_scope("legal.pseudo"):
+    with profile_scope("legal.pseudo"):
         moves: list[Move] = []
         side_to_move = board.side_to_move
         for square_index, piece in enumerate(board.squares):
@@ -133,16 +114,16 @@ def pseudo_legal_moves(board: Board) -> tuple[Move, ...]:
             elif piece.kind is PieceType.KING:
                 _append_king_moves(moves, board, square_index, piece.color)
         result = tuple(moves)
-        _record_distribution("legal.pseudo_moves", len(result), unit="moves")
+        record_distribution("legal.pseudo_moves", len(result), unit="moves")
         return result
 
 
 def legal_moves(board: Board) -> tuple[Move, ...]:
     """Return legal moves for the side to move."""
-    with _profile_scope("legal.legal_moves"):
+    with profile_scope("legal.legal_moves"):
         pseudo_moves = pseudo_legal_moves(board)
         if not pseudo_moves:
-            _record_distribution("legal.legal_moves", 0, unit="moves")
+            record_distribution("legal.legal_moves", 0, unit="moves")
             return ()
 
         legal: list[Move] = []
@@ -152,9 +133,9 @@ def legal_moves(board: Board) -> tuple[Move, ...]:
         moving_color = board.side_to_move
         opponent = moving_color.opposite
         king_index = int(_king_square(board, moving_color))
-        with _profile_scope("legal.filter"):
-            _record_counter("legal.filter_candidates", len(pseudo_moves))
-            _record_distribution("legal.filter_candidates", len(pseudo_moves), unit="moves")
+        with profile_scope("legal.filter"):
+            record_counter("legal.filter_candidates", len(pseudo_moves))
+            record_distribution("legal.filter_candidates", len(pseudo_moves), unit="moves")
             for move in pseudo_moves:
                 moving_piece = squares[int(move.from_square)]
                 if _king_safe_after_move(
@@ -162,13 +143,13 @@ def legal_moves(board: Board) -> tuple[Move, ...]:
                 ):
                     legal.append(move)
         result = tuple(legal)
-        _record_distribution("legal.legal_moves", len(result), unit="moves")
+        record_distribution("legal.legal_moves", len(result), unit="moves")
         return result
 
 
 def has_legal_move(board: Board) -> bool:
     """Return whether the side to move has at least one legal move."""
-    with _profile_scope("legal.has_legal_move"):
+    with profile_scope("legal.has_legal_move"):
         pseudo_moves = pseudo_legal_moves(board)
         if not pseudo_moves:
             return False
@@ -179,8 +160,8 @@ def has_legal_move(board: Board) -> bool:
         moving_color = board.side_to_move
         opponent = moving_color.opposite
         king_index = int(_king_square(board, moving_color))
-        with _profile_scope("legal.filter"):
-            _record_counter("legal.filter_candidates", len(pseudo_moves))
+        with profile_scope("legal.filter"):
+            record_counter("legal.filter_candidates", len(pseudo_moves))
             for move in pseudo_moves:
                 moving_piece = squares[int(move.from_square)]
                 if _king_safe_after_move(
@@ -202,16 +183,16 @@ def perft(board: Board, depth: int) -> int:
 
 def is_in_check(board: Board, color: Color) -> bool:
     """Return whether ``color``'s king is attacked."""
-    with _profile_scope("legal.is_in_check"):
-        _record_counter("legal.in_check_calls")
+    with profile_scope("legal.is_in_check"):
+        record_counter("legal.in_check_calls")
         king_square = _king_square(board, color)
         return is_square_attacked(board, king_square, color.opposite)
 
 
 def is_square_attacked(board: Board, square: Square, by_color: Color) -> bool:
     """Return whether ``square`` is attacked by ``by_color``."""
-    with _profile_scope("legal.is_square_attacked"):
-        _record_counter("legal.is_square_attacked.calls")
+    with profile_scope("legal.is_square_attacked"):
+        record_counter("legal.is_square_attacked.calls")
         return _is_square_attacked_index(board.squares, int(validate_square(square)), by_color)
 
 
@@ -523,7 +504,7 @@ def _has_piece_at_index(
 
 
 def _king_square(board: Board, color: Color) -> Square:
-    with _profile_scope("legal.king_square"):
+    with profile_scope("legal.king_square"):
         for square_index, piece in enumerate(board.squares):
             if piece is not None and piece.color is color and piece.kind is PieceType.KING:
                 return Square(square_index)

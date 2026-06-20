@@ -14,6 +14,7 @@ import mlx.core as mx
 import numpy as np
 
 from vibechess.ai.player import NoLegalMoveError
+from vibechess.ai.player import simulations_per_second as _simulations_per_second
 from vibechess.ai.search_state import SearchState
 from vibechess.engine.game import Game
 from vibechess.engine.game import determine_outcome as _game_determine_outcome
@@ -311,9 +312,7 @@ class NeuralMCTSResult:
     @property
     def simulations_per_second(self) -> float:
         """Return completed simulations per second, or infinity for zero elapsed time."""
-        if self.elapsed_seconds == 0:
-            return math.inf
-        return self.simulations / self.elapsed_seconds
+        return _simulations_per_second(self.simulations, self.elapsed_seconds)
 
 
 @dataclass(frozen=True, slots=True)
@@ -887,21 +886,145 @@ class NeuralMCTSSearchSession:
         return self._result
 
 
+def resolve_active_limit(total_games: int, batch_size: int, active_games: int | None) -> int:
+    """Return how many games may run concurrently in a batched scheduler.
+
+    Defaults to ``batch_size`` concurrent games when ``active_games`` is unset, and
+    never exceeds the total number of games to play. Shared by self-play generation
+    and the evaluation harness so both bound concurrency identically.
+    """
+    requested = batch_size if active_games is None else active_games
+    return min(total_games, requested)
+
+
+@dataclass(frozen=True, slots=True)
+class BatchedSessionProfile:
+    """Profile-scope names for :func:`run_batched_sessions`.
+
+    Supplying this enables the named profiling zones (used by self-play to keep its
+    benchmark zone contract). Leaving it ``None`` runs the scheduler without
+    profiling, which is what the evaluation harness wants.
+    """
+
+    queue_scope: str
+    predict_scope: str
+    advance_scope: str
+
+
+def run_batched_sessions(
+    sessions: Sequence[NeuralMCTSSearchSession],
+    batch_predict: _LegalBatchPredict,
+    *,
+    batch_size: int,
+    profile: BatchedSessionProfile | None = None,
+) -> list[NeuralMCTSResult]:
+    """Drive cooperative serial MCTS sessions to completion via batched inference.
+
+    Each session is advanced until it either completes or yields one pending neural
+    inference request. Up to ``batch_size`` pending requests (chosen in ascending
+    session order for determinism) are evaluated in a single batched call and resumed.
+    Returns one :class:`NeuralMCTSResult` per input session, in the input order.
+
+    This is the shared engine behind self-play's central inference queue and the
+    evaluation harness's batched neural decisions; both must stay behaviorally
+    identical, so the scheduling logic lives here once.
+    """
+    results: dict[int, NeuralMCTSResult] = {}
+    pending: dict[int, NeuralMCTSInferenceRequest] = {}
+
+    def drain_pending() -> None:
+        batch_indexes = sorted(pending)[:batch_size]
+        requests = [pending.pop(index) for index in batch_indexes]
+        games = tuple(request.game for request in requests)
+        legal_by_game = tuple(request.legal_moves for request in requests)
+        legal_indices_by_game = tuple(request.legal_action_indices for request in requests)
+        index_arrays = tuple(request.legal_action_index_array for request in requests)
+        cached_index_arrays = None if any(item is None for item in index_arrays) else index_arrays
+        encoded_inputs = tuple(request.encoded_input for request in requests)
+        cached_encoded = None if any(item is None for item in encoded_inputs) else encoded_inputs
+        if profile is None:
+            batch = _call_legal_batch_predict(
+                batch_predict,
+                games,
+                legal_by_game,
+                legal_indices_by_game,
+                cached_index_arrays,
+                cached_encoded,
+            )
+        else:
+            with profile_scope(profile.predict_scope, batch_size=len(requests)):
+                batch = _call_legal_batch_predict(
+                    batch_predict,
+                    games,
+                    legal_by_game,
+                    legal_indices_by_game,
+                    cached_index_arrays,
+                    cached_encoded,
+                )
+        for row_index, search_index in enumerate(batch_indexes):
+            sessions[search_index].resume(batch.result_at(row_index))
+
+    def advance_idle() -> bool:
+        progressed = False
+        for search_index, session in enumerate(sessions):
+            if search_index in results or session.pending_request is not None:
+                continue
+            if profile is None:
+                advanced = session.advance()
+            else:
+                with profile_scope(profile.advance_scope, game_index=session.session_id):
+                    advanced = session.advance()
+            progressed = True
+            if isinstance(advanced, NeuralMCTSResult):
+                results[search_index] = advanced
+            else:
+                pending[search_index] = advanced
+        return progressed
+
+    def run_loop() -> None:
+        while len(results) < len(sessions):
+            if pending:
+                drain_pending()
+            elif not advance_idle():
+                raise RuntimeError("batched neural session scheduler made no progress")
+
+    if profile is None:
+        run_loop()
+    else:
+        with profile_scope(profile.queue_scope, sessions=len(sessions)):
+            run_loop()
+
+    return [results[index] for index in range(len(sessions))]
+
+
+def _supported_cached_kwargs(
+    fn: Callable[..., object],
+    candidates: dict[str, Callable[[], object]],
+) -> dict[str, object]:
+    """Return cached-input kwargs that ``fn`` accepts, computed only when supported.
+
+    Custom inference implementations may omit any of the optional cached-tensor
+    keyword arguments. Each candidate is keyed by name to a zero-arg builder so the
+    (sometimes costly) cached value is materialized only for kwargs ``fn`` declares.
+    """
+    supported = _supported_keyword_parameters(fn)
+    return {name: build() for name, build in candidates.items() if name in supported}
+
+
 def _call_predict_with_cached_node(
     predict_with_legal_moves: Callable[..., InferenceResult],
     node: NeuralMCTSNode,
 ) -> InferenceResult:
     game = node.state.to_game(include_positions=False)
-    supported = _supported_keyword_parameters(predict_with_legal_moves)
-    kwargs: dict[str, object] = {}
-    if "legal_action_indices" in supported:
-        kwargs["legal_action_indices"] = node.cached_legal_action_indices()
-    if "legal_action_index_array" in supported:
-        kwargs["legal_action_index_array"] = node.cached_legal_action_index_array()
-    if "encoded_input" in supported:
-        kwargs["encoded_input"] = node.cached_encoded_input()
+    kwargs = _supported_cached_kwargs(
+        predict_with_legal_moves,
+        {
+            "legal_action_indices": node.cached_legal_action_indices,
+            "legal_action_index_array": node.cached_legal_action_index_array,
+            "encoded_input": node.cached_encoded_input,
+        },
+    )
     return predict_with_legal_moves(game, node.legal_moves, **kwargs)
-
 
 
 def _call_legal_batch_predict(
@@ -912,14 +1035,14 @@ def _call_legal_batch_predict(
     legal_action_index_arrays: Sequence[Any] | None,
     encoded_inputs: Sequence[Any] | None,
 ) -> LegalPolicyBatchResult:
-    supported = _supported_keyword_parameters(batch_predict)
-    kwargs: dict[str, object] = {}
-    if "legal_action_indices" in supported:
-        kwargs["legal_action_indices"] = legal_action_indices
-    if "legal_action_index_arrays" in supported:
-        kwargs["legal_action_index_arrays"] = legal_action_index_arrays
-    if "encoded_inputs" in supported:
-        kwargs["encoded_inputs"] = encoded_inputs
+    kwargs = _supported_cached_kwargs(
+        batch_predict,
+        {
+            "legal_action_indices": lambda: legal_action_indices,
+            "legal_action_index_arrays": lambda: legal_action_index_arrays,
+            "encoded_inputs": lambda: encoded_inputs,
+        },
+    )
     return batch_predict(games, legal_moves, **kwargs)
 
 

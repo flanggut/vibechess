@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass, field
 
 from vibechess.ai.player import NoLegalMoveError
+from vibechess.ai.player import simulations_per_second as _simulations_per_second
 from vibechess.ai.search_config import MCTSConfig
 from vibechess.engine.game import Game, determine_outcome
 from vibechess.engine.move import Move
@@ -101,9 +102,7 @@ class MCTSResult:
     @property
     def simulations_per_second(self) -> float:
         """Return completed simulations per second, or infinity for zero elapsed time."""
-        if self.elapsed_seconds == 0:
-            return math.inf
-        return self.simulations / self.elapsed_seconds
+        return _simulations_per_second(self.simulations, self.elapsed_seconds)
 
 
 @dataclass(slots=True)

@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 import mlx.core as mx
 
+from vibechess import _scriptutil
 from vibechess.ai.mcts import MCTSPlayer
 from vibechess.ai.search_config import MCTSConfig
 from vibechess.engine import (
@@ -366,9 +367,7 @@ def _model_config(*, channels: int, blocks: int, value_hidden: int) -> PolicyVal
 
 
 def _rate(count: int, elapsed: float) -> float:
-    if elapsed == 0:
-        return math.inf
-    return count / elapsed
+    return _scriptutil.rate(count, elapsed)
 
 
 def _require_at_least(name: str, value: int, minimum: int) -> None:

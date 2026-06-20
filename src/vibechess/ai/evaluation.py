@@ -8,18 +8,20 @@ from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import TypeVar
 
 from vibechess.ai.mcts import MCTSPlayer
 from vibechess.ai.neural_mcts import (
     NeuralMCTSConfig,
-    NeuralMCTSInferenceRequest,
     NeuralMCTSPlayer,
     NeuralMCTSResult,
     NeuralMCTSSearchSession,
+    resolve_active_limit,
+    run_batched_sessions,
 )
 from vibechess.ai.player import Player, RandomPlayer, play_game
 from vibechess.ai.search_config import MCTSConfig
-from vibechess.engine.game import Game
+from vibechess.engine.game import Game, game_record_fields
 from vibechess.engine.move import Move
 from vibechess.engine.outcome import Outcome, OutcomeReason
 from vibechess.engine.piece import Color
@@ -143,6 +145,41 @@ def _run_match_records(
     return records
 
 
+def _run_match_chunk_records(
+    player_a: PlayerSpec,
+    player_b: PlayerSpec,
+    config: MatchConfig,
+    *,
+    start_game: int,
+    games: int,
+    batch_size: int,
+    active_games: int | None,
+) -> list[MatchGameRecord]:
+    """Run one chunk of games, using batched scheduling only when it can help.
+
+    The batched scheduler is used when ``batch_size > 1`` and more than one game is
+    in play; otherwise games run serially. Both paths produce identical records, so
+    this branch is centralized here rather than repeated at every call site.
+    """
+    if batch_size > 1 and games > 1:
+        return _run_batched_match_records(
+            player_a,
+            player_b,
+            config,
+            start_game=start_game,
+            games=games,
+            batch_size=batch_size,
+            active_games=active_games,
+        )
+    return _run_match_records(
+        player_a,
+        player_b,
+        config,
+        start_game=start_game,
+        games=games,
+    )
+
+
 def _match_game_record(
     game_index: int,
     game: Game,
@@ -153,16 +190,17 @@ def _match_game_record(
     outcome = game.outcome
     if outcome is None:
         raise RuntimeError("evaluated game ended without an outcome")
+    fields = game_record_fields(game, outcome)
     return MatchGameRecord(
         game_index=game_index,
         player_a_color=Color.WHITE.value if player_a_is_white else Color.BLACK.value,
         player_b_color=Color.BLACK.value if player_a_is_white else Color.WHITE.value,
-        plies=len(game.moves),
-        outcome_reason=outcome.reason.value,
-        winner=outcome.winner.value if outcome.winner is not None else None,
+        plies=fields.plies,
+        outcome_reason=fields.outcome_reason,
+        winner=fields.winner,
         player_a_score=score,
-        final_fen=game.to_fen(),
-        moves_uci=[move.to_uci() for move in game.moves],
+        final_fen=fields.final_fen,
+        moves_uci=fields.moves_uci,
     )
 
 
@@ -365,7 +403,7 @@ def _run_batched_match_records(
     batch_size: int,
     active_games: int | None,
 ) -> list[MatchGameRecord]:
-    active_limit = min(games, batch_size if active_games is None else active_games)
+    active_limit = resolve_active_limit(games, batch_size, active_games)
     active: dict[int, _BatchedMatchGameState] = {}
     completed: dict[int, MatchGameRecord] = {}
     next_game_index = start_game
@@ -388,7 +426,7 @@ def _run_batched_match_records(
         active.pop(state.game_index, None)
         game = state.game
         if game.outcome is None:
-            game = _with_max_plies_outcome(game)
+            game = game.with_forced_outcome(Outcome(OutcomeReason.MAX_PLIES))
         completed[state.game_index] = _match_game_record(
             state.game_index,
             game,
@@ -457,70 +495,26 @@ def _run_batched_neural_decisions(
     *,
     batch_size: int,
 ) -> list[tuple[_BatchedMatchGameState, tuple[Move, ...], NeuralMCTSResult]]:
-    searches = [
-        (
-            decision.state,
-            decision.legal,
-            NeuralMCTSSearchSession(
-                decision.player,
-                decision.state.game,
-                session_id=decision.state.game_index,
-            ),
+    ordered = sorted(decisions, key=lambda item: item.state.game_index)
+    sessions = [
+        NeuralMCTSSearchSession(
+            decision.player,
+            decision.state.game,
+            session_id=decision.state.game_index,
         )
-        for decision in sorted(decisions, key=lambda item: item.state.game_index)
+        for decision in ordered
     ]
-    results: dict[int, NeuralMCTSResult] = {}
-    pending: dict[int, NeuralMCTSInferenceRequest] = {}
-    while len(results) < len(searches):
-        progressed = False
-        if pending:
-            batch_indexes = sorted(pending)[:batch_size]
-            requests = [pending.pop(index) for index in batch_indexes]
-            legal_index_arrays = tuple(request.legal_action_index_array for request in requests)
-            encoded_inputs = tuple(request.encoded_input for request in requests)
-            batch = inference.predict_legal_batch(
-                tuple(request.game for request in requests),
-                tuple(request.legal_moves for request in requests),
-                legal_action_indices=tuple(request.legal_action_indices for request in requests),
-                legal_action_index_arrays=(
-                    None
-                    if any(item is None for item in legal_index_arrays)
-                    else legal_index_arrays
-                ),
-                encoded_inputs=(
-                    None if any(item is None for item in encoded_inputs) else encoded_inputs
-                ),
-            )
-            for row_index, search_index in enumerate(batch_indexes):
-                searches[search_index][2].resume(batch.result_at(row_index))
-            progressed = True
-        else:
-            for search_index, (_state, _legal, session) in enumerate(searches):
-                if search_index in results or session.pending_request is not None:
-                    continue
-                advanced = session.advance()
-                progressed = True
-                if isinstance(advanced, NeuralMCTSResult):
-                    results[search_index] = advanced
-                else:
-                    pending[search_index] = advanced
-        if not progressed:
-            raise RuntimeError("batched neural evaluation queue made no progress")
-    return [
-        (state, legal, results[search_index])
-        for search_index, (state, legal, _session) in enumerate(searches)
-    ]
-
-
-def _with_max_plies_outcome(game: Game) -> Game:
-    return Game(
-        positions=game.positions,
-        moves=game.moves,
-        halfmove_clock=game.halfmove_clock,
-        fullmove_number=game.fullmove_number,
-        repetition_counts=dict(game.repetition_counts),
-        forced_outcome=Outcome(OutcomeReason.MAX_PLIES),
+    results = run_batched_sessions(
+        sessions,
+        inference.predict_legal_batch,
+        batch_size=batch_size,
     )
+    return [
+        (decision.state, decision.legal, result)
+        for decision, result in zip(ordered, results, strict=True)
+    ]
+
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -542,6 +536,29 @@ def _validate_batching(batch_size: int, active_games: int | None) -> None:
     if active_games is not None and active_games < 1:
         raise ValueError(f"active_games must be at least 1, got {active_games}")
 
+_ChunkT = TypeVar("_ChunkT")
+_ResultT = TypeVar("_ResultT")
+
+
+def _map_chunks(
+    worker: Callable[..., _ResultT],
+    chunks: Sequence[_ChunkT],
+    broadcast_args: Sequence[object],
+    *,
+    workers: int,
+) -> list[_ResultT]:
+    """Run ``worker`` over ``chunks`` in a process pool, broadcasting shared args.
+
+    Each entry in ``broadcast_args`` is repeated once per chunk so it is passed
+    positionally to every worker call (matching ``executor.map`` fan-out). Results
+    are returned in chunk order. Shared by the baseline and head-to-head parallel
+    evaluators, which differ only in their worker, chunk type, and aggregation.
+    """
+    broadcasts = [[arg] * len(chunks) for arg in broadcast_args]
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        return list(executor.map(worker, chunks, *broadcasts))
+
+
 def _run_parallel_evaluation(
     checkpoint_dir: Path,
     *,
@@ -560,19 +577,14 @@ def _run_parallel_evaluation(
     records_by_baseline: dict[str, list[MatchGameRecord]] = {
         baseline: [] for baseline in selected_baselines
     }
-    with ProcessPoolExecutor(max_workers=effective_workers) as executor:
-        for baseline, records in executor.map(
-            _run_evaluation_chunk,
-            chunks,
-            [checkpoint_dir] * len(chunks),
-            [match_config] * len(chunks),
-            [neural_config] * len(chunks),
-            [mcts_config] * len(chunks),
-            [random_seed] * len(chunks),
-            [batch_size] * len(chunks),
-            [active_games] * len(chunks),
-        ):
-            records_by_baseline[baseline].extend(records)
+    for baseline, records in _map_chunks(
+        _run_evaluation_chunk,
+        chunks,
+        [checkpoint_dir, match_config, neural_config, mcts_config, random_seed,
+         batch_size, active_games],
+        workers=effective_workers,
+    ):
+        records_by_baseline[baseline].extend(records)
 
     return {
         baseline: _match_result_from_records("checkpoint", baseline, records_by_baseline[baseline])
@@ -623,24 +635,14 @@ def _run_evaluation_chunk(
         config=neural_config,
     )
     baseline = _baseline_spec(chunk.baseline, mcts_config=mcts_config, random_seed=random_seed)
-    records = (
-        _run_batched_match_records(
-            checkpoint,
-            baseline,
-            match_config,
-            start_game=chunk.start_game,
-            games=chunk.games,
-            batch_size=batch_size,
-            active_games=active_games,
-        )
-        if batch_size > 1 and chunk.games > 1
-        else _run_match_records(
-            checkpoint,
-            baseline,
-            match_config,
-            start_game=chunk.start_game,
-            games=chunk.games,
-        )
+    records = _run_match_chunk_records(
+        checkpoint,
+        baseline,
+        match_config,
+        start_game=chunk.start_game,
+        games=chunk.games,
+        batch_size=batch_size,
+        active_games=active_games,
     )
     return chunk.baseline, records
 
@@ -677,19 +679,14 @@ def _run_parallel_checkpoint_match(
     chunk_size = max(1, math.ceil(match_config.games / effective_workers))
     chunks = _match_chunks(match_config.games, chunk_size=chunk_size)
     records: list[MatchGameRecord] = []
-    with ProcessPoolExecutor(max_workers=effective_workers) as executor:
-        for chunk_records in executor.map(
-            _run_checkpoint_match_chunk,
-            chunks,
-            [checkpoint_dir] * len(chunks),
-            [opponent_checkpoint_dir] * len(chunks),
-            [match_config] * len(chunks),
-            [neural_config] * len(chunks),
-            [opponent_neural_config] * len(chunks),
-            [batch_size] * len(chunks),
-            [active_games] * len(chunks),
-        ):
-            records.extend(chunk_records)
+    for chunk_records in _map_chunks(
+        _run_checkpoint_match_chunk,
+        chunks,
+        [checkpoint_dir, opponent_checkpoint_dir, match_config, neural_config,
+         opponent_neural_config, batch_size, active_games],
+        workers=effective_workers,
+    ):
+        records.extend(chunk_records)
     return _match_result_from_records("checkpoint", "opponent_checkpoint", records)
 
 
@@ -713,22 +710,14 @@ def _run_checkpoint_match_chunk(
         name="opponent_checkpoint",
         config=opponent_neural_config,
     )
-    if batch_size > 1 and chunk.games > 1:
-        return _run_batched_match_records(
-            checkpoint,
-            opponent,
-            match_config,
-            start_game=chunk.start_game,
-            games=chunk.games,
-            batch_size=batch_size,
-            active_games=active_games,
-        )
-    return _run_match_records(
+    return _run_match_chunk_records(
         checkpoint,
         opponent,
         match_config,
         start_game=chunk.start_game,
         games=chunk.games,
+        batch_size=batch_size,
+        active_games=active_games,
     )
 
 
@@ -771,24 +760,14 @@ def evaluate_checkpoints_head_to_head(
             name="opponent_checkpoint",
             config=resolved_opponent_config,
         )
-        records = (
-            _run_batched_match_records(
-                checkpoint,
-                opponent,
-                resolved_match_config,
-                start_game=0,
-                games=resolved_match_config.games,
-                batch_size=batch_size,
-                active_games=active_games,
-            )
-            if batch_size > 1 and resolved_match_config.games > 1
-            else _run_match_records(
-                checkpoint,
-                opponent,
-                resolved_match_config,
-                start_game=0,
-                games=resolved_match_config.games,
-            )
+        records = _run_match_chunk_records(
+            checkpoint,
+            opponent,
+            resolved_match_config,
+            start_game=0,
+            games=resolved_match_config.games,
+            batch_size=batch_size,
+            active_games=active_games,
         )
         result = _match_result_from_records("checkpoint", "opponent_checkpoint", records)
     else:
@@ -843,22 +822,18 @@ def evaluate_checkpoint_against_baselines(
             "mcts": mcts_player_spec(config=mcts_config),
         }
         results = {
-            baseline: (
-                _match_result_from_records(
-                    "checkpoint",
-                    baseline,
-                    _run_batched_match_records(
-                        checkpoint,
-                        baseline_specs[baseline],
-                        resolved_match_config,
-                        start_game=0,
-                        games=resolved_match_config.games,
-                        batch_size=batch_size,
-                        active_games=active_games,
-                    ),
-                )
-                if batch_size > 1 and resolved_match_config.games > 1
-                else run_match(checkpoint, baseline_specs[baseline], resolved_match_config)
+            baseline: _match_result_from_records(
+                "checkpoint",
+                baseline,
+                _run_match_chunk_records(
+                    checkpoint,
+                    baseline_specs[baseline],
+                    resolved_match_config,
+                    start_game=0,
+                    games=resolved_match_config.games,
+                    batch_size=batch_size,
+                    active_games=active_games,
+                ),
             )
             for baseline in selected_baselines
         }

@@ -3,26 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from contextlib import AbstractContextManager
 from dataclasses import dataclass
 
 from vibechess.engine.move import Move
 from vibechess.engine.piece import Color, Piece, PieceType
 from vibechess.engine.square import BOARD_SIZE, Square, parse_square, square_name, validate_square
+from vibechess.profiling import profile_scope, record_counter
 
 STARTING_POSITION = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
-
-
-def _profile_scope(name: str, **tags: object) -> AbstractContextManager[None]:
-    from vibechess.profiling import profile_scope
-
-    return profile_scope(name, **tags)
-
-
-def _record_counter(name: str, amount: int | float = 1, **tags: object) -> None:
-    from vibechess.profiling import record_counter
-
-    record_counter(name, amount, **tags)
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,8 +135,8 @@ class Board:
         not validate full legal move membership, king safety, history, clocks, or
         outcomes.
         """
-        with _profile_scope("board.apply_move"):
-            _record_counter("board.apply_move.calls")
+        with profile_scope("board.apply_move"):
+            record_counter("board.apply_move.calls")
             moving_piece = self.piece_at(move.from_square)
             if moving_piece is None:
                 msg = f"cannot move from empty square {move.from_square}"

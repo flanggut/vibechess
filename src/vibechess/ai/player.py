@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
@@ -14,6 +15,13 @@ from vibechess.engine.piece import Color
 
 class NoLegalMoveError(ValueError):
     """Raised when a player is asked to move in a terminal/no-legal-move position."""
+
+
+def simulations_per_second(simulations: int, elapsed_seconds: float) -> float:
+    """Return completed simulations per second, or infinity for zero elapsed time."""
+    if elapsed_seconds == 0:
+        return math.inf
+    return simulations / elapsed_seconds
 
 
 @runtime_checkable
@@ -81,12 +89,5 @@ def play_game(
             raise ValueError(msg)
         current = current.play(move)
     if current.outcome is None:
-        return Game(
-            positions=current.positions,
-            moves=current.moves,
-            halfmove_clock=current.halfmove_clock,
-            fullmove_number=current.fullmove_number,
-            repetition_counts=dict(current.repetition_counts),
-            forced_outcome=Outcome(OutcomeReason.MAX_PLIES),
-        )
+        return current.with_forced_outcome(Outcome(OutcomeReason.MAX_PLIES))
     return current

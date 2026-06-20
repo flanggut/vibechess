@@ -18,6 +18,7 @@ from statistics import median
 from tempfile import TemporaryDirectory
 from typing import Any, Literal
 
+from vibechess import _jsonio, _scriptutil
 from vibechess.nn.checkpoint import save_checkpoint
 from vibechess.nn.model import PolicyValueConfig, PolicyValueNet
 from vibechess.nn.self_play_profile import (
@@ -1237,17 +1238,11 @@ def _read_ply_count(output_dir: Path) -> int:
 
 
 def _directory_size(directory: Path) -> int:
-    total = 0
-    for path in directory.rglob("*"):
-        if path.is_file():
-            total += path.stat().st_size
-    return total
+    return _scriptutil.directory_size(directory)
 
 
 def _rate(count: int, elapsed_seconds: float) -> float:
-    if elapsed_seconds == 0.0:
-        return float("inf")
-    return count / elapsed_seconds
+    return _scriptutil.rate(count, elapsed_seconds)
 
 
 def _object_number(value: object) -> float:
@@ -1257,10 +1252,7 @@ def _object_number(value: object) -> float:
 
 
 def _expect_int(data: dict[str, object], key: str) -> int:
-    value = data.get(key)
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError(f"metadata field {key!r} must be an integer")
-    return value
+    return _jsonio.expect_int(data, key, label="metadata field")
 
 
 def _optional_int(data: dict[str, object], key: str) -> int | None:
@@ -1273,10 +1265,7 @@ def _optional_int(data: dict[str, object], key: str) -> int | None:
 
 
 def _expect_number(data: dict[str, object], key: str) -> float:
-    value = data.get(key)
-    if isinstance(value, bool) or not isinstance(value, (float, int)):
-        raise TypeError(f"profile field {key!r} must be a number")
-    return float(value)
+    return _jsonio.expect_number(data, key, label="profile field")
 
 
 def _expect_mapping(data: dict[str, object], key: str) -> dict[str, object]:

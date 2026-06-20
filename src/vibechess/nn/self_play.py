@@ -11,16 +11,17 @@ import numpy.typing as npt
 
 from vibechess.ai.mcts import MCTSPlayer
 from vibechess.ai.neural_mcts import (
+    BatchedSessionProfile,
     NeuralInference,
     NeuralMCTSConfig,
-    NeuralMCTSInferenceRequest,
     NeuralMCTSPlayer,
     NeuralMCTSResult,
     NeuralMCTSSearchSession,
-    _call_legal_batch_predict,
+    resolve_active_limit,
+    run_batched_sessions,
 )
 from vibechess.ai.search_config import MCTSConfig
-from vibechess.engine.game import Game, determine_outcome
+from vibechess.engine.game import Game, determine_outcome, game_record_fields
 from vibechess.engine.move import Move
 from vibechess.engine.outcome import Outcome, OutcomeReason
 from vibechess.engine.piece import Color
@@ -235,7 +236,7 @@ def _generate_serial_self_play_dataset(
                         game_sides.append(game.board.side_to_move)
                         game = game.play_known_legal(result.move)
                 if game.outcome is None:
-                    game = _with_max_plies_outcome(game)
+                    game = game.with_forced_outcome(Outcome(OutcomeReason.MAX_PLIES))
                 with profile_scope("record.outcome_values"):
                     outcome_values.extend(_outcome_values(game, game_sides))
                 with profile_scope("record.game_record"):
@@ -277,18 +278,15 @@ class _BatchedGameState:
     policies: list[PolicyTargetRow] = field(default_factory=list)
 
 
-@dataclass(slots=True)
-class _CentralSearch:
-    state: _BatchedGameState
-    legal: tuple[Move, ...]
-    session: NeuralMCTSSearchSession
+_CENTRAL_QUEUE_PROFILE = BatchedSessionProfile(
+    queue_scope="self_play.central_inference_queue",
+    predict_scope="self_play.central_predict_legal_batch",
+    advance_scope="self_play.central_session_advance",
+)
 
 
 def _resolved_active_game_limit(config: SelfPlayConfig) -> int:
-    requested_active_games = (
-        config.batch_size if config.active_games is None else config.active_games
-    )
-    return min(config.games, requested_active_games)
+    return resolve_active_limit(config.games, config.batch_size, config.active_games)
 
 
 def _new_batched_game_state(
@@ -337,76 +335,20 @@ def _run_central_neural_searches(
     batch_size: int,
 ) -> list[tuple[_BatchedGameState, tuple[Move, ...], NeuralMCTSResult]]:
     """Run searches with deterministic ordering and inference calls capped by batch_size."""
-    searches = [
-        _CentralSearch(
-            state=state,
-            legal=legal,
-            session=NeuralMCTSSearchSession(
-                state.player,
-                state.game,
-                session_id=state.game_index,
-            ),
-        )
-        for state, legal in sorted(decisions, key=lambda item: item[0].game_index)
+    ordered = sorted(decisions, key=lambda item: item[0].game_index)
+    sessions = [
+        NeuralMCTSSearchSession(state.player, state.game, session_id=state.game_index)
+        for state, _legal in ordered
     ]
-    results: dict[int, NeuralMCTSResult] = {}
-    pending: dict[int, NeuralMCTSInferenceRequest] = {}
-
-    with profile_scope("self_play.central_inference_queue", sessions=len(searches)):
-        while len(results) < len(searches):
-            progressed = False
-            if pending:
-                batch_indexes = sorted(pending)[:batch_size]
-                requests = [pending.pop(index) for index in batch_indexes]
-                games = tuple(request.game for request in requests)
-                legal_by_game = tuple(request.legal_moves for request in requests)
-                legal_indices_by_game = tuple(
-                    request.legal_action_indices for request in requests
-                )
-                legal_index_arrays = tuple(request.legal_action_index_array for request in requests)
-                cached_index_arrays = (
-                    None if any(item is None for item in legal_index_arrays) else legal_index_arrays
-                )
-                encoded_inputs = tuple(request.encoded_input for request in requests)
-                cached_encoded_inputs = (
-                    None if any(item is None for item in encoded_inputs) else encoded_inputs
-                )
-                with profile_scope(
-                    "self_play.central_predict_legal_batch",
-                    batch_size=len(requests),
-                ):
-                    batch = _call_legal_batch_predict(
-                        inference.predict_legal_batch,
-                        games,
-                        legal_by_game,
-                        legal_indices_by_game,
-                        cached_index_arrays,
-                        cached_encoded_inputs,
-                    )
-                for row_index, search_index in enumerate(batch_indexes):
-                    searches[search_index].session.resume(batch.result_at(row_index))
-                progressed = True
-            else:
-                for search_index, search in enumerate(searches):
-                    if search_index in results or search.session.pending_request is not None:
-                        continue
-                    with profile_scope(
-                        "self_play.central_session_advance",
-                        game_index=search.state.game_index,
-                    ):
-                        advanced = search.session.advance()
-                    progressed = True
-                    if isinstance(advanced, NeuralMCTSResult):
-                        results[search_index] = advanced
-                    else:
-                        pending[search_index] = advanced
-
-            if not progressed:
-                raise RuntimeError("central neural inference queue made no progress")
-
+    results = run_batched_sessions(
+        sessions,
+        inference.predict_legal_batch,
+        batch_size=batch_size,
+        profile=_CENTRAL_QUEUE_PROFILE,
+    )
     return [
-        (search.state, search.legal, results[search_index])
-        for search_index, search in enumerate(searches)
+        (state, legal, result)
+        for (state, legal), result in zip(ordered, results, strict=True)
     ]
 
 
@@ -421,7 +363,7 @@ def _append_completed_batched_state(
 ) -> SelfPlayGameRecord:
     with profile_scope("self_play.game", game_index=state.game_index):
         if state.game.outcome is None:
-            state.game = _with_max_plies_outcome(state.game)
+            state.game = state.game.with_forced_outcome(Outcome(OutcomeReason.MAX_PLIES))
         positions.extend(state.positions)
         legal_masks.extend(state.legal_masks)
         policies.extend(state.policies)
@@ -706,25 +648,17 @@ def _game_record(game_index: int, game: Game) -> SelfPlayGameRecord:
     outcome = game.outcome
     if outcome is None:
         outcome = Outcome(OutcomeReason.MAX_PLIES)
+    fields = game_record_fields(game, outcome)
     return SelfPlayGameRecord(
         game_index=game_index,
-        plies=len(game.moves),
-        outcome_reason=outcome.reason.value,
-        winner=None if outcome.winner is None else outcome.winner.value,
-        final_fen=game.to_fen(),
-        moves_uci=[move.to_uci() for move in game.moves],
+        plies=fields.plies,
+        outcome_reason=fields.outcome_reason,
+        winner=fields.winner,
+        final_fen=fields.final_fen,
+        moves_uci=fields.moves_uci,
     )
 
 
-def _with_max_plies_outcome(game: Game) -> Game:
-    return Game(
-        positions=game.positions,
-        moves=game.moves,
-        halfmove_clock=game.halfmove_clock,
-        fullmove_number=game.fullmove_number,
-        repetition_counts=dict(game.repetition_counts),
-        forced_outcome=Outcome(OutcomeReason.MAX_PLIES),
-    )
 
 
 def _stack_or_empty(

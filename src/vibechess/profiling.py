@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from heapq import heappush, heappushpop
 from typing import Literal, Protocol, Self
 
+from vibechess import _jsonio
+
 ProfileLevel = Literal["none", "summary", "detailed"]
 PROFILE_FORMAT_VERSION = 2
 SLOW_ITEM_LIMIT = 20
@@ -671,22 +673,16 @@ def _timer_ns(data: Mapping[str, object], prefix: str) -> int:
     return int(seconds * 1_000_000_000)
 
 
+_FIELD_LABEL = "profile field"
+
+
 def _expect_int(data: Mapping[str, object], key: str) -> int:
-    value = data.get(key)
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError(f"profile field {key!r} must be an integer")
-    return value
+    return _jsonio.expect_int(data, key, label=_FIELD_LABEL)
 
 
 def _expect_float(data: Mapping[str, object], key: str) -> float:
-    value = data.get(key)
-    if isinstance(value, bool) or not isinstance(value, (float, int)):
-        raise TypeError(f"profile field {key!r} must be a number")
-    return float(value)
+    return _jsonio.expect_number(data, key, label=_FIELD_LABEL)
 
 
 def _expect_str(data: Mapping[str, object], key: str) -> str:
-    value = data.get(key)
-    if not isinstance(value, str):
-        raise TypeError(f"profile field {key!r} must be a string")
-    return value
+    return _jsonio.expect_str(data, key, label=_FIELD_LABEL)

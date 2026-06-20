@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Protocol
 
 from vibechess.engine.board import Board
 from vibechess.engine.legal_moves import is_in_check
@@ -21,6 +22,25 @@ from vibechess.engine.square import Square, file_index, rank_index
 PositionKey = tuple[tuple[Piece | None, ...], Color, frozenset[str], Square | None]
 
 
+class PositionState(Protocol):
+    """Anything exposing the fields needed to build a :class:`TransitionState`.
+
+    Both :class:`~vibechess.engine.game.Game` and
+    :class:`~vibechess.ai.search_state.SearchState` satisfy this structurally.
+    """
+
+    @property
+    def board(self) -> Board: ...
+    @property
+    def halfmove_clock(self) -> int: ...
+    @property
+    def fullmove_number(self) -> int: ...
+    @property
+    def repetition_counts(self) -> Mapping[PositionKey, int]: ...
+    @property
+    def forced_outcome(self) -> Outcome | None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class TransitionState:
     """Minimal game-state data needed to advance clocks and outcomes."""
@@ -30,6 +50,17 @@ class TransitionState:
     fullmove_number: int
     repetition_counts: Mapping[PositionKey, int]
     forced_outcome: Outcome | None = None
+
+    @classmethod
+    def from_position(cls, position: PositionState) -> TransitionState:
+        """Build a transition state by copying fields from a game/search state."""
+        return cls(
+            board=position.board,
+            halfmove_clock=position.halfmove_clock,
+            fullmove_number=position.fullmove_number,
+            repetition_counts=position.repetition_counts,
+            forced_outcome=position.forced_outcome,
+        )
 
 
 @dataclass(frozen=True, slots=True)
