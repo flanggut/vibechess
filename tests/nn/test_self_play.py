@@ -23,6 +23,7 @@ from vibechess.nn.encode import (
     ACTION_SPACE_VERSION,
     ENCODER_VERSION,
     TENSOR_SHAPE,
+    legal_action_indices,
     legal_move_mask_from_action_indices_np,
     legal_move_mask_from_legal_moves_np,
     move_to_action_index,
@@ -841,7 +842,7 @@ def test_policy_target_falls_back_to_selected_move_when_all_root_visits_are_zero
 def test_sparse_policy_target_builder_matches_row_builder_for_positive_visits() -> None:
     game = Game.new()
     legal = game.legal_moves
-    action_indices = self_play.legal_action_indices(game, legal)
+    action_indices = legal_action_indices(game, legal)
     visit_counts = {legal[1]: 3, legal[0]: 1, legal[2]: 0}
 
     expected = self_play._policy_target_row(
@@ -869,7 +870,7 @@ def test_sparse_policy_target_builder_matches_row_builder_for_positive_visits() 
 def test_sparse_policy_target_builder_matches_selected_fallback() -> None:
     game = Game.new()
     legal = game.legal_moves
-    action_indices = self_play.legal_action_indices(game, legal)
+    action_indices = legal_action_indices(game, legal)
     selected = legal[0]
 
     expected = self_play._policy_target_row(
@@ -897,7 +898,7 @@ def test_sparse_policy_target_builder_matches_selected_fallback() -> None:
 def test_sparse_policy_target_builder_accumulates_multiple_rows() -> None:
     game = Game.new()
     legal = game.legal_moves
-    action_indices = self_play.legal_action_indices(game, legal)
+    action_indices = legal_action_indices(game, legal)
     builder = self_play.SparsePolicyTargetBuilder()
 
     builder.append_from_visits(

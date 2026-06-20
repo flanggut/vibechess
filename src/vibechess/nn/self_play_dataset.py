@@ -1027,15 +1027,14 @@ def _read_self_play_sidecars(input_dir: Path) -> tuple[SelfPlayMetadata, list[Se
 
 
 def _npz_member_shape(path: Path, name: str) -> tuple[int, ...]:
-    with zipfile.ZipFile(path) as archive:
-        with archive.open(f"{name}.npy") as member:
-            version = np.lib.format.read_magic(member)
-            if version == (1, 0):
-                shape, _fortran_order, _dtype = np.lib.format.read_array_header_1_0(member)
-            elif version == (2, 0):
-                shape, _fortran_order, _dtype = np.lib.format.read_array_header_2_0(member)
-            else:
-                raise ValueError(f"unsupported npy header version: {version}")
+    with zipfile.ZipFile(path) as archive, archive.open(f"{name}.npy") as member:
+        version = np.lib.format.read_magic(member)
+        if version == (1, 0):
+            shape, _fortran_order, _dtype = np.lib.format.read_array_header_1_0(member)
+        elif version == (2, 0):
+            shape, _fortran_order, _dtype = np.lib.format.read_array_header_2_0(member)
+        else:
+            raise ValueError(f"unsupported npy header version: {version}")
     return tuple(int(dimension) for dimension in shape)
 
 
