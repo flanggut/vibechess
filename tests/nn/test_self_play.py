@@ -838,6 +838,88 @@ def test_policy_target_falls_back_to_selected_move_when_all_root_visits_are_zero
     assert dataset.mcts_policies[0, selected_index] == 1.0
     assert dataset.mcts_policies[0].sum() == 1.0
 
+def test_sparse_policy_target_builder_matches_row_builder_for_positive_visits() -> None:
+    game = Game.new()
+    legal = game.legal_moves
+    action_indices = self_play.legal_action_indices(game, legal)
+    visit_counts = {legal[1]: 3, legal[0]: 1, legal[2]: 0}
+
+    expected = self_play._policy_target_row(
+        game,
+        visit_counts,
+        legal[1],
+        legal,
+        action_indices,
+    )
+    builder = self_play.SparsePolicyTargetBuilder()
+    builder.append_from_visits(
+        board=game.board,
+        legal=legal,
+        action_indices=action_indices,
+        visit_counts=visit_counts,
+        selected_move=legal[1],
+    )
+    actual = builder.build()
+
+    np.testing.assert_array_equal(actual.offsets, np.asarray([0, 2], dtype=np.int64))
+    np.testing.assert_array_equal(actual.indices, expected[0])
+    np.testing.assert_array_equal(actual.probabilities, expected[1])
+
+
+def test_sparse_policy_target_builder_matches_selected_fallback() -> None:
+    game = Game.new()
+    legal = game.legal_moves
+    action_indices = self_play.legal_action_indices(game, legal)
+    selected = legal[0]
+
+    expected = self_play._policy_target_row(
+        game,
+        {selected: 0, legal[1]: -1},
+        selected,
+        legal,
+        action_indices,
+    )
+    builder = self_play.SparsePolicyTargetBuilder()
+    builder.append_from_visits(
+        board=game.board,
+        legal=legal,
+        action_indices=action_indices,
+        visit_counts={selected: 0, legal[1]: -1},
+        selected_move=selected,
+    )
+    actual = builder.build()
+
+    np.testing.assert_array_equal(actual.offsets, np.asarray([0, 1], dtype=np.int64))
+    np.testing.assert_array_equal(actual.indices, expected[0])
+    np.testing.assert_array_equal(actual.probabilities, expected[1])
+
+
+def test_sparse_policy_target_builder_accumulates_multiple_rows() -> None:
+    game = Game.new()
+    legal = game.legal_moves
+    action_indices = self_play.legal_action_indices(game, legal)
+    builder = self_play.SparsePolicyTargetBuilder()
+
+    builder.append_from_visits(
+        board=game.board,
+        legal=legal,
+        action_indices=action_indices,
+        visit_counts={legal[0]: 2, legal[1]: 2},
+        selected_move=legal[0],
+    )
+    builder.append_from_visits(
+        board=game.board,
+        legal=legal,
+        action_indices=action_indices,
+        visit_counts={},
+        selected_move=legal[2],
+    )
+    targets = builder.build()
+
+    assert targets.sample_count == 2
+    np.testing.assert_array_equal(targets.offsets, np.asarray([0, 2, 3], dtype=np.int64))
+    np.testing.assert_allclose(targets.probabilities, np.asarray([0.5, 0.5, 1.0], dtype=np.float32))
+
 
 def test_load_self_play_dataset_rejects_inconsistent_game_records(tmp_path: Path) -> None:
     dataset = generate_self_play_dataset(
