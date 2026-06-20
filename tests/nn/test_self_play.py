@@ -1077,10 +1077,14 @@ def _assert_worker_progress_row(
     game_range: str,
 ) -> None:
     row_pattern = (
-        rf"{worker} status=\w+ {_PROGRESS_BAR_RE.pattern} games={games} "
+        rf"{worker}[ ]+{_PROGRESS_BAR_RE.pattern} games={games} "
         rf"samples={samples} range={game_range}"
     )
-    assert re.search(row_pattern, stderr) is not None
+    match = re.search(row_pattern, stderr)
+    assert match is not None
+    row = match.group(0)
+    assert f"{worker} status=" not in row
+    assert row.index("[") == len("total ")
 
 
 def test_self_play_script_progress_always_writes_stderr_only(tmp_path: Path) -> None:

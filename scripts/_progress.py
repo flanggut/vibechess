@@ -56,9 +56,9 @@ class AnsiProgressRenderer:
     _restore_registered: bool = False
 
     _BAR_WIDTH: ClassVar[int] = 24
-    # Pad the "total" label so its bar lines up with the per-worker bars, which
-    # begin after the "wNN status=running " prefix.
-    _TOTAL_LABEL_WIDTH: ClassVar[int] = len("w00 status=running")
+    # Pad row labels so each progress bar begins in the same column after
+    # removing per-worker status from the TUI rows.
+    _ROW_LABEL_WIDTH: ClassVar[int] = len("total")
     _CLEAR_LINE: ClassVar[str] = "\x1b[2K"
     _CURSOR_HIDE: ClassVar[str] = "\x1b[?25l"
     _CURSOR_SHOW: ClassVar[str] = "\x1b[?25h"
@@ -146,7 +146,7 @@ class AnsiProgressRenderer:
             header = f"{header} {state.message}"
         total = " ".join(
             [
-                f"{'total':<{self._TOTAL_LABEL_WIDTH}}",
+                f"{'total':<{self._ROW_LABEL_WIDTH}}",
                 f"[{self._bar(games_completed, state.total_games)}]",
                 self._percent(games_completed, state.total_games),
             ]
@@ -160,8 +160,7 @@ class AnsiProgressRenderer:
         game_range = self._game_range(worker.start_game, worker.total_games)
         return " ".join(
             [
-                f"w{worker.worker_id:02d}",
-                f"status={worker.status}",
+                f"{f'w{worker.worker_id:02d}':<{self._ROW_LABEL_WIDTH}}",
                 f"[{self._bar(worker.processed_games, worker.total_games)}]",
                 f"games={worker.processed_games}/{worker.total_games}",
                 f"samples={worker.samples}",
