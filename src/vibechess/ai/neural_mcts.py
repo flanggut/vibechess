@@ -144,6 +144,13 @@ class NeuralMCTSEdge:
         return self.total_value / self.visits
 
 
+def _edge_puct_score(edge: NeuralMCTSEdge, exploration_bonus: float) -> float:
+    # Edge values are from the child/opponent perspective, so negate for the
+    # current node's side to move.
+    q_value = -(edge.total_value / edge.visits) if edge.visits else 0.0
+    u_value = exploration_bonus * edge.prior / (1 + edge.visits)
+    return q_value + u_value
+
 
 @dataclass(slots=True)
 class NeuralMCTSNode:
@@ -265,19 +272,14 @@ class NeuralMCTSNode:
                 msg = "cannot select best edge from an unexpanded leaf"
                 raise ValueError(msg)
             parent_visits = max(1, self.visits)
+            exploration_bonus = exploration * math.sqrt(parent_visits)
 
-            def score(edge: NeuralMCTSEdge) -> float:
-                # Edge values are from the child/opponent perspective, so negate for
-                # the current node's side to move.
-                q_value = -edge.mean_value
-                u_value = exploration * edge.prior * math.sqrt(parent_visits) / (1 + edge.visits)
-                return q_value + u_value
             edge_iter = iter(self.edges.values())
             best = next(edge_iter)
-            best_score = score(best)
+            best_score = _edge_puct_score(best, exploration_bonus)
             best_move_key = _move_uci_order_key(best.move)
             for edge in edge_iter:
-                edge_score = score(edge)
+                edge_score = _edge_puct_score(edge, exploration_bonus)
                 if edge_score > best_score:
                     best = edge
                     best_score = edge_score
@@ -929,12 +931,15 @@ def run_batched_sessions(
     evaluation harness's batched neural decisions; both must stay behaviorally
     identical, so the scheduling logic lives here once.
     """
-    results: dict[int, NeuralMCTSResult] = {}
-    pending: dict[int, NeuralMCTSInferenceRequest] = {}
+    results: list[NeuralMCTSResult | None] = [None] * len(sessions)
+    completed_count = 0
+    pending: list[tuple[int, NeuralMCTSInferenceRequest]] = []
 
     def drain_pending() -> None:
-        batch_indexes = sorted(pending)[:batch_size]
-        requests = [pending.pop(index) for index in batch_indexes]
+        del pending_batch[:]
+        pending_batch.extend(pending[:batch_size])
+        del pending[: len(pending_batch)]
+        requests = [request for _index, request in pending_batch]
         games = tuple(request.game for request in requests)
         legal_by_game = tuple(request.legal_moves for request in requests)
         legal_indices_by_game = tuple(request.legal_action_indices for request in requests)
@@ -961,13 +966,14 @@ def run_batched_sessions(
                     cached_index_arrays,
                     cached_encoded,
                 )
-        for row_index, search_index in enumerate(batch_indexes):
+        for row_index, (search_index, _request) in enumerate(pending_batch):
             sessions[search_index].resume(batch.result_at(row_index))
 
     def advance_idle() -> bool:
+        nonlocal completed_count
         progressed = False
         for search_index, session in enumerate(sessions):
-            if search_index in results or session.pending_request is not None:
+            if results[search_index] is not None or session.pending_request is not None:
                 continue
             if profile is None:
                 advanced = session.advance()
@@ -977,24 +983,31 @@ def run_batched_sessions(
             progressed = True
             if isinstance(advanced, NeuralMCTSResult):
                 results[search_index] = advanced
+                completed_count += 1
             else:
-                pending[search_index] = advanced
+                pending.append((search_index, advanced))
         return progressed
 
     def run_loop() -> None:
-        while len(results) < len(sessions):
+        while completed_count < len(sessions):
             if pending:
                 drain_pending()
             elif not advance_idle():
                 raise RuntimeError("batched neural session scheduler made no progress")
 
+    pending_batch: list[tuple[int, NeuralMCTSInferenceRequest]] = []
     if profile is None:
         run_loop()
     else:
         with profile_scope(profile.queue_scope, sessions=len(sessions)):
             run_loop()
 
-    return [results[index] for index in range(len(sessions))]
+    completed_results: list[NeuralMCTSResult] = []
+    for result in results:
+        if result is None:  # pragma: no cover - completed_count guards this invariant.
+            raise RuntimeError("batched neural session scheduler returned incomplete results")
+        completed_results.append(result)
+    return completed_results
 
 
 def _supported_cached_kwargs(
@@ -1184,8 +1197,13 @@ def _normalize_priors(raw_priors: dict[Move, float]) -> dict[Move, float]:
     total = sum(raw_priors.values())
     if total <= 0.0 or not math.isfinite(total):
         uniform = 1.0 / len(raw_priors)
-        return {move: uniform for move in raw_priors}
-    return {move: prior / total for move, prior in raw_priors.items()}
+        for move in raw_priors:
+            raw_priors[move] = uniform
+        return raw_priors
+    inverse_total = 1.0 / total
+    for move, prior in raw_priors.items():
+        raw_priors[move] = prior * inverse_total
+    return raw_priors
 
 
 def _terminal_value(outcome: Outcome | None, side_to_move: Color) -> float:
@@ -1210,12 +1228,18 @@ def _select_by_temperature(
                 key=lambda edge: (
                     edge.visits,
                     -edge.mean_value,
-                    edge.move.to_uci(),
+                    _move_uci_order_key(edge.move),
                 ),
             ).move
-        weights = [float(edge.visits) ** (1.0 / temperature) for edge in edges]
-        if sum(weights) <= 0.0:
+        if temperature == 1.0:
+            weights = [float(edge.visits) for edge in edges]
+        else:
+            inverse_temperature = 1.0 / temperature
+            weights = [float(edge.visits) ** inverse_temperature for edge in edges]
+        total_weight = sum(weights)
+        if total_weight <= 0.0:
             weights = [edge.prior for edge in edges]
-        if sum(weights) <= 0.0:
+            total_weight = sum(weights)
+        if total_weight <= 0.0:
             weights = [1.0 for _edge in edges]
         return rng.choices([edge.move for edge in edges], weights=weights, k=1)[0]

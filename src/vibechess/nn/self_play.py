@@ -451,7 +451,7 @@ def _generate_batched_neural_self_play_dataset(
         while next_output_game_index < config.games:
             decisions: list[tuple[_BatchedGameState, tuple[Move, ...]]] = []
             completed_before_decisions = False
-            for state in [active_states[index] for index in sorted(active_states)]:
+            for state in tuple(active_states.values()):
                 ply_index = len(state.game.moves)
                 with profile_scope(
                     "self_play.ply",
