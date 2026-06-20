@@ -1,3 +1,4 @@
+```
 uv run python scripts/train.py --dataset data/selfplay/lichess_100k --output data/checkpoints/res8 --epochs 2 --batch-size 64 --residual-channels 96 --residual-blocks 6 --policy-channels 8 --value-channels 4 --value-hidden-dim 128 --learning-rate 0.001
 uv run python scripts/train.py --dataset data/selfplay/lichess_100k --output data/checkpoints/res8_01 --epochs 5 --batch-size 64 --input-checkpoint data/checkpoints/res8/checkpoint-final --learning-rate 0.0005
 uv run python scripts/train.py --dataset data/selfplay/lichess_100k --output data/checkpoints/res8_02 --epochs 3 --batch-size 64 --input-checkpoint data/checkpoints/res8_01/checkpoint-final --learning-rate 0.0005
@@ -6,3 +7,8 @@ uv run python scripts/train.py --dataset data/selfplay/lichess_100k --output dat
 uv run python scripts/self_play.py --checkpoint data/checkpoints/strongest --output data/selfplay/res8_sp_10k_iter_0 --games 10000 --max-plies 300 --simulations 300 --temperature 1.0 --workers 8 --batch-size 32
 
 uv run python scripts/train.py --dataset data/selfplay/res8_sp_10k_iter_0 --output data/checkpoints/res8_10k_iter_0 --epochs 3 --batch-size 64 --input-checkpoint data/checkpoints/strongest --learning-rate 0.00005
+
+ uv run python scripts/self_play.py --checkpoint data/checkpoints/res8_10k_iter_0/checkpoint-final --output data/selfplay/res8_sp_10k_iter_1 --games 10000 --max-plies 300 --simulations 300 --temperature 1.0 --workers 8 --batch-size 8
+
+uv run python scripts/train.py --dataset data/selfplay/res8_sp_10k_iter_1 --output data/checkpoints/res8_10k_iter_1 --epochs 3 --batch-size 64 --input-checkpoint data/checkpoints/res8_10k_iter_0/checkpoint-final --learning-rate 0.00005
+```

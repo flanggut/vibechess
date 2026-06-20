@@ -12,7 +12,7 @@
   },
   "action_space_version": "az-8x8x73-v1",
   "encoder_version": "vibechess-board-v1",
-  "training_step": 1625093,
+  "training_step": 1720796,
   "optimizer_state_available": false,
   "notes": "vibechess WP15 training run"
 }
