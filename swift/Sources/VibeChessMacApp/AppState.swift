@@ -30,7 +30,7 @@ final class AppState: ObservableObject {
         humanColor: BackendColor = .white,
         aiConfig: BackendAIConfig = BackendAIConfig(
             kind: .neural,
-            simulations: 200,
+            simulations: 400,
             checkpointPath: "../data/checkpoints/strongest"
         ),
         boardOrientation: BackendColor = .white
