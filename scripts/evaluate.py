@@ -212,8 +212,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--neural-temperature",
         type=float,
-        default=0.0,
-        help="Neural move temperature",
+        default=1.0,
+        help="Neural move temperature; default 1.0 lets per-game seeds sample moves",
     )
     parser.add_argument(
         "--neural-collection-batch-size",

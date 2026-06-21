@@ -461,6 +461,46 @@ def test_evaluate_script_rejects_reuse_floor_above_simulations(tmp_path: Path) -
     assert "--min-reuse-simulations must be no greater than --neural-simulations" in result.stderr
 
 
+def test_evaluate_script_neural_vs_neural_default_temperature_samples_games(
+    tmp_path: Path,
+) -> None:
+    checkpoint_dir = tmp_path / "checkpoint"
+    opponent_dir = tmp_path / "opponent"
+    save_tiny_checkpoint(checkpoint_dir)
+    save_tiny_checkpoint(opponent_dir)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/evaluate.py",
+            "--checkpoint",
+            str(checkpoint_dir),
+            "--opponent-checkpoint",
+            str(opponent_dir),
+            "--games",
+            "4",
+            "--max-plies",
+            "4",
+            "--neural-simulations",
+            "1",
+            "--seed",
+            "7",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    neural_configs = report["neural_configs"]
+    assert neural_configs["checkpoint"]["temperature"] == 1.0
+    assert neural_configs["opponent"]["temperature"] == 1.0
+    records = report["match"]["records"]
+    assert records[0]["moves_uci"] != records[2]["moves_uci"]
+    assert records[1]["moves_uci"] != records[3]["moves_uci"]
+
+
 def test_evaluate_script_neural_vs_neural_smoke_defaults_opponent_settings(
     tmp_path: Path,
 ) -> None:
