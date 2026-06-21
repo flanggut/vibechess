@@ -210,6 +210,41 @@ def test_checkpoint_evaluation_batches_active_neural_games(
     assert 2 in batch_sizes
 
 
+def test_checkpoint_evaluation_derives_per_game_seeds_from_base_seed(
+    tmp_path: Path,
+) -> None:
+    checkpoint_dir = tmp_path / "checkpoint"
+    save_tiny_checkpoint(checkpoint_dir)
+
+    def random_records(workers: int) -> list[dict[str, Any]]:
+        report = evaluate_checkpoint_against_baselines(
+            checkpoint_dir,
+            match_config=MatchConfig(games=4, max_plies=6),
+            neural_config=NeuralMCTSConfig(simulations=1, seed=7),
+            random_seed=7,
+            baselines=("random",),
+            criteria=PromotionCriteria(
+                min_games_per_baseline=1,
+                min_score_rate_vs_random=0.0,
+            ),
+            workers=workers,
+        )
+        return cast(
+            list[dict[str, Any]],
+            cast(dict[str, Any], report["matches"])["random"]["records"],
+        )
+
+    serial_records = random_records(workers=1)
+    parallel_records = random_records(workers=2)
+
+    assert [record["game_index"] for record in serial_records] == [0, 1, 2, 3]
+    assert [record["moves_uci"] for record in parallel_records] == [
+        record["moves_uci"] for record in serial_records
+    ]
+    assert serial_records[0]["moves_uci"] != serial_records[2]["moves_uci"]
+    assert serial_records[1]["moves_uci"] != serial_records[3]["moves_uci"]
+
+
 
 def test_checkpoint_evaluation_loads_checkpoint_and_writes_report(tmp_path: Path) -> None:
     checkpoint_dir = tmp_path / "checkpoint"

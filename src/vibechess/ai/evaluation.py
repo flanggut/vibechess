@@ -6,9 +6,10 @@ import json
 import math
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
+from hashlib import blake2b
 from pathlib import Path
-from typing import TypeVar
+from typing import TypeAlias, TypeVar
 
 from vibechess.ai.mcts import MCTSPlayer
 from vibechess.ai.neural_mcts import (
@@ -29,6 +30,7 @@ from vibechess.nn.checkpoint import load_checkpoint
 from vibechess.nn.inference import PolicyValueInference
 
 PlayerFactory = Callable[[], Player]
+SeededPlayerFactory: TypeAlias = Callable[[int, str], Player]
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,10 +39,33 @@ class PlayerSpec:
 
     A factory is used instead of a long-lived player instance so each game can be
     reproducible and independent even when players own local RNG/search state.
+    Seeded factories additionally receive the global game index and player role so
+    evaluation runs can derive stable per-game RNG streams from one base seed.
     """
 
     name: str
     factory: PlayerFactory
+    seeded_factory: SeededPlayerFactory | None = None
+
+    def create(self, *, game_index: int, role: str) -> Player:
+        """Create a player for one evaluated game."""
+        if self.seeded_factory is not None:
+            return self.seeded_factory(game_index, role)
+        return self.factory()
+
+
+def _derive_game_seed(
+    base_seed: int | None,
+    *,
+    game_index: int,
+    role: str,
+    player_name: str,
+) -> int | None:
+    """Derive a stable per-game seed from a match-level seed."""
+    if base_seed is None:
+        return None
+    payload = f"vibechess-evaluation-seed-v1:{base_seed}:{game_index}:{role}:{player_name}"
+    return int.from_bytes(blake2b(payload.encode(), digest_size=8).digest(), "big")
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,8 +163,16 @@ def _run_match_records(
     records: list[MatchGameRecord] = []
     for game_index in range(start_game, start_game + games):
         a_is_white = (game_index % 2 == 0) or not config.alternate_colors
-        white = player_a.factory() if a_is_white else player_b.factory()
-        black = player_b.factory() if a_is_white else player_a.factory()
+        white = (
+            player_a.create(game_index=game_index, role="player_a")
+            if a_is_white
+            else player_b.create(game_index=game_index, role="player_b")
+        )
+        black = (
+            player_b.create(game_index=game_index, role="player_b")
+            if a_is_white
+            else player_a.create(game_index=game_index, role="player_a")
+        )
         game = play_game(white, black, game=Game.new(), max_plies=config.max_plies)
         records.append(_match_game_record(game_index, game, player_a_is_white=a_is_white))
     return records
@@ -319,11 +352,14 @@ def checkpoint_player_spec(
     *,
     name: str | None = None,
     config: NeuralMCTSConfig | None = None,
+    derive_game_seeds: bool = False,
 ) -> PlayerSpec:
     """Create a neural-MCTS player spec backed by one loaded MLX checkpoint.
 
     The returned factory still creates a fresh ``NeuralMCTSPlayer`` for each game,
-    so RNG and tree state are not shared across games.
+    so RNG and tree state are not shared across games. When ``derive_game_seeds`` is
+    enabled, each game receives a stable seed derived from ``config.seed`` and the
+    global game index instead of restarting from the same seed.
     """
     path = Path(checkpoint_dir)
     player_name = name or path.name
@@ -334,7 +370,20 @@ def checkpoint_player_spec(
     def factory() -> Player:
         return NeuralMCTSPlayer(inference, config=search_config)
 
-    return PlayerSpec(name=player_name, factory=factory)
+    def seeded_factory(game_index: int, role: str) -> Player:
+        seed = _derive_game_seed(
+            search_config.seed,
+            game_index=game_index,
+            role=role,
+            player_name=player_name,
+        )
+        return NeuralMCTSPlayer(inference, config=replace(search_config, seed=seed))
+
+    return PlayerSpec(
+        name=player_name,
+        factory=factory,
+        seeded_factory=seeded_factory if derive_game_seeds else None,
+    )
 
 
 def _checkpoint_player_spec_reusing_loaded_checkpoint(
@@ -343,22 +392,42 @@ def _checkpoint_player_spec_reusing_loaded_checkpoint(
     name: str,
     config: NeuralMCTSConfig | None,
 ) -> PlayerSpec:
-    return checkpoint_player_spec(checkpoint_dir, name=name, config=config)
+    return checkpoint_player_spec(
+        checkpoint_dir,
+        name=name,
+        config=config,
+        derive_game_seeds=True,
+    )
 
 
-def random_player_spec(*, seed: int | None = None, name: str = "random") -> PlayerSpec:
+def random_player_spec(
+    *,
+    seed: int | None = None,
+    name: str = "random",
+    derive_game_seeds: bool = False,
+) -> PlayerSpec:
     """Return a random-player baseline spec."""
 
     def factory() -> Player:
         return RandomPlayer(seed=seed)
 
-    return PlayerSpec(name=name, factory=factory)
+    def seeded_factory(game_index: int, role: str) -> Player:
+        return RandomPlayer(
+            seed=_derive_game_seed(seed, game_index=game_index, role=role, player_name=name)
+        )
+
+    return PlayerSpec(
+        name=name,
+        factory=factory,
+        seeded_factory=seeded_factory if derive_game_seeds else None,
+    )
 
 
 def mcts_player_spec(
     *,
     config: MCTSConfig | None = None,
     name: str = "mcts",
+    derive_game_seeds: bool = False,
 ) -> PlayerSpec:
     """Return a classical-MCTS baseline spec."""
     search_config = MCTSConfig(simulations=1, max_rollout_plies=0) if config is None else config
@@ -366,7 +435,20 @@ def mcts_player_spec(
     def factory() -> Player:
         return MCTSPlayer(search_config)
 
-    return PlayerSpec(name=name, factory=factory)
+    def seeded_factory(game_index: int, role: str) -> Player:
+        seed = _derive_game_seed(
+            search_config.seed,
+            game_index=game_index,
+            role=role,
+            player_name=name,
+        )
+        return MCTSPlayer(replace(search_config, seed=seed))
+
+    return PlayerSpec(
+        name=name,
+        factory=factory,
+        seeded_factory=seeded_factory if derive_game_seeds else None,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -417,8 +499,16 @@ def _run_batched_match_records(
                 game_index=next_game_index,
                 game=Game.new(),
                 player_a_is_white=a_is_white,
-                white=player_a.factory() if a_is_white else player_b.factory(),
-                black=player_b.factory() if a_is_white else player_a.factory(),
+                white=(
+                    player_a.create(game_index=next_game_index, role="player_a")
+                    if a_is_white
+                    else player_b.create(game_index=next_game_index, role="player_b")
+                ),
+                black=(
+                    player_b.create(game_index=next_game_index, role="player_b")
+                    if a_is_white
+                    else player_a.create(game_index=next_game_index, role="player_a")
+                ),
             )
             next_game_index += 1
 
@@ -654,9 +744,9 @@ def _baseline_spec(
     random_seed: int | None,
 ) -> PlayerSpec:
     if baseline == "random":
-        return random_player_spec(seed=random_seed)
+        return random_player_spec(seed=random_seed, derive_game_seeds=True)
     if baseline == "mcts":
-        return mcts_player_spec(config=mcts_config)
+        return mcts_player_spec(config=mcts_config, derive_game_seeds=True)
     raise ValueError(f"unsupported baseline {baseline!r}; expected random or mcts")
 
 
@@ -754,11 +844,13 @@ def evaluate_checkpoints_head_to_head(
             checkpoint_path,
             name="checkpoint",
             config=resolved_neural_config,
+            derive_game_seeds=True,
         )
         opponent = checkpoint_player_spec(
             opponent_path,
             name="opponent_checkpoint",
             config=resolved_opponent_config,
+            derive_game_seeds=True,
         )
         records = _run_match_chunk_records(
             checkpoint,
@@ -816,10 +908,19 @@ def evaluate_checkpoint_against_baselines(
     _validate_baselines(selected_baselines)
 
     if workers == 1 or len(selected_baselines) * resolved_match_config.games <= 1:
-        checkpoint = checkpoint_player_spec(checkpoint_dir, name="checkpoint", config=neural_config)
+        checkpoint = checkpoint_player_spec(
+            checkpoint_dir,
+            name="checkpoint",
+            config=neural_config,
+            derive_game_seeds=True,
+        )
         baseline_specs = {
-            "random": random_player_spec(seed=random_seed),
-            "mcts": mcts_player_spec(config=mcts_config),
+            baseline: _baseline_spec(
+                baseline,
+                mcts_config=mcts_config,
+                random_seed=random_seed,
+            )
+            for baseline in selected_baselines
         }
         results = {
             baseline: _match_result_from_records(

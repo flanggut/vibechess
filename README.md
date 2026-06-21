@@ -120,6 +120,8 @@ reuse with `--reuse-simulation-budget`; add `--min-reuse-simulations N` only
 when reused roots must receive a fresh visit floor. Both scripts support
 cross-game neural batching with `--batch-size`/`--active-games`; evaluation also
 exposes within-search leaf batching via `--neural-collection-batch-size`.
+Evaluation derives deterministic per-game player seeds from `--seed`, so larger
+runs do not restart every game from the same RNG stream.
 
 ## Development notes
 
