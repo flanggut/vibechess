@@ -56,7 +56,9 @@ def tiny_model_config() -> PolicyValueConfig:
 def save_tiny_checkpoint(checkpoint_dir: Path) -> None:
     model = PolicyValueNet(tiny_model_config())
     mx.eval(model.parameters())
-    save_checkpoint(model, checkpoint_dir, metadata=CheckpointMetadata.initial(model.config))
+    save_checkpoint(
+        model, checkpoint_dir, metadata=CheckpointMetadata.initial(model.config)
+    )
 
 
 def test_run_match_records_legal_outcomes_and_alternates_colors() -> None:
@@ -140,7 +142,9 @@ def test_promotion_criteria_are_explicit_smoke_validation_only() -> None:
     assert failed.promoted is False
     assert any(reason == "missing required baseline: mcts" for reason in failed.reasons)
     assert any("requires at least 3" in reason for reason in failed.reasons)
-    assert any("score rate 0.500 below required 0.750" in reason for reason in failed.reasons)
+    assert any(
+        "score rate 0.500 below required 0.750" in reason for reason in failed.reasons
+    )
 
 
 def test_generated_openings_are_unique_or_rejected() -> None:
@@ -160,7 +164,9 @@ def test_checkpoint_evaluation_reuses_loaded_checkpoint_per_serial_match(
 ) -> None:
     checkpoint_dir = tmp_path / "checkpoint"
     save_tiny_checkpoint(checkpoint_dir)
-    original = cast(Callable[[str | Path], Any], evaluation_module.__dict__["load_checkpoint"])
+    original = cast(
+        Callable[[str | Path], Any], evaluation_module.__dict__["load_checkpoint"]
+    )
     loads = 0
 
     def counted_load_checkpoint(path: str | Path) -> Any:
@@ -183,6 +189,7 @@ def test_checkpoint_evaluation_reuses_loaded_checkpoint_per_serial_match(
 
     assert loads == 1
 
+
 def test_checkpoint_evaluation_batches_active_neural_games(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -201,7 +208,9 @@ def test_checkpoint_evaluation_batches_active_neural_games(
         batch_sizes.append(len(tuple(games)))
         return original(self, games, legal_moves, **kwargs)
 
-    monkeypatch.setattr(PolicyValueInference, "predict_legal_batch", counted_predict_legal_batch)
+    monkeypatch.setattr(
+        PolicyValueInference, "predict_legal_batch", counted_predict_legal_batch
+    )
 
     report = evaluate_checkpoint_against_baselines(
         checkpoint_dir,
@@ -259,15 +268,18 @@ def test_checkpoint_evaluation_derives_per_game_seeds_from_base_seed(
     assert serial_records[1]["moves_uci"] != serial_records[3]["moves_uci"]
 
 
-
-def test_checkpoint_evaluation_loads_checkpoint_and_writes_report(tmp_path: Path) -> None:
+def test_checkpoint_evaluation_loads_checkpoint_and_writes_report(
+    tmp_path: Path,
+) -> None:
     checkpoint_dir = tmp_path / "checkpoint"
     model = PolicyValueNet(tiny_model_config())
     mx.eval(model.parameters())
     save_checkpoint(
         model,
         checkpoint_dir,
-        metadata=CheckpointMetadata.initial(model.config, training_step=1, notes="eval test"),
+        metadata=CheckpointMetadata.initial(
+            model.config, training_step=1, notes="eval test"
+        ),
     )
 
     report = evaluate_checkpoint_against_baselines(
@@ -297,7 +309,9 @@ def test_checkpoint_evaluation_rejects_invalid_workers(tmp_path: Path) -> None:
     checkpoint_dir = tmp_path / "checkpoint"
     model = PolicyValueNet(tiny_model_config())
     mx.eval(model.parameters())
-    save_checkpoint(model, checkpoint_dir, metadata=CheckpointMetadata.initial(model.config))
+    save_checkpoint(
+        model, checkpoint_dir, metadata=CheckpointMetadata.initial(model.config)
+    )
 
     try:
         evaluate_checkpoint_against_baselines(checkpoint_dir, workers=0)
@@ -311,7 +325,9 @@ def test_checkpoint_evaluation_parallel_merges_ordered_records(tmp_path: Path) -
     checkpoint_dir = tmp_path / "checkpoint"
     model = PolicyValueNet(tiny_model_config())
     mx.eval(model.parameters())
-    save_checkpoint(model, checkpoint_dir, metadata=CheckpointMetadata.initial(model.config))
+    save_checkpoint(
+        model, checkpoint_dir, metadata=CheckpointMetadata.initial(model.config)
+    )
 
     report = evaluate_checkpoint_against_baselines(
         checkpoint_dir,
@@ -351,7 +367,9 @@ def test_checkpoint_head_to_head_report_skips_baselines_and_orders_parallel_reco
         checkpoint_dir,
         opponent_dir,
         match_config=MatchConfig(games=3, max_plies=1),
-        neural_config=NeuralMCTSConfig(simulations=1, node_budget=5, temperature=0.0, seed=7),
+        neural_config=NeuralMCTSConfig(
+            simulations=1, node_budget=5, temperature=0.0, seed=7
+        ),
         opponent_neural_config=NeuralMCTSConfig(
             simulations=1,
             node_budget=6,
@@ -375,10 +393,16 @@ def test_checkpoint_head_to_head_report_skips_baselines_and_orders_parallel_reco
     assert match["player_b"] == "opponent_checkpoint"
     records = cast(list[dict[str, Any]], match["records"])
     assert [record["game_index"] for record in records] == [0, 1, 2]
-    assert [record["player_a_color"] for record in records] == ["white", "black", "white"]
+    assert [record["player_a_color"] for record in records] == [
+        "white",
+        "black",
+        "white",
+    ]
 
 
-def test_checkpoint_head_to_head_api_defaults_opponent_config_to_main(tmp_path: Path) -> None:
+def test_checkpoint_head_to_head_api_defaults_opponent_config_to_main(
+    tmp_path: Path,
+) -> None:
     checkpoint_dir = tmp_path / "checkpoint"
     opponent_dir = tmp_path / "opponent"
     save_tiny_checkpoint(checkpoint_dir)
@@ -388,7 +412,9 @@ def test_checkpoint_head_to_head_api_defaults_opponent_config_to_main(tmp_path: 
         checkpoint_dir,
         opponent_dir,
         match_config=MatchConfig(games=1, max_plies=0),
-        neural_config=NeuralMCTSConfig(simulations=2, node_budget=5, temperature=0.25, seed=0),
+        neural_config=NeuralMCTSConfig(
+            simulations=2, node_budget=5, temperature=0.25, seed=0
+        ),
     )
 
     neural_configs = cast(dict[str, dict[str, object]], report["neural_configs"])
@@ -400,7 +426,9 @@ def test_evaluate_script_smoke(tmp_path: Path) -> None:
     output = tmp_path / "report.json"
     model = PolicyValueNet(tiny_model_config())
     mx.eval(model.parameters())
-    save_checkpoint(model, checkpoint_dir, metadata=CheckpointMetadata.initial(model.config))
+    save_checkpoint(
+        model, checkpoint_dir, metadata=CheckpointMetadata.initial(model.config)
+    )
 
     result = subprocess.run(
         [
@@ -475,7 +503,7 @@ def test_evaluate_script_progress_always_writes_stderr_only(tmp_path: Path) -> N
     assert "evaluation: completed=2/2" in result.stderr
     assert "evaluation: done" in result.stderr
     assert "evaluation status=" not in result.stdout
-    assert result.stdout.startswith("game opponent=random ")
+    assert result.stdout.startswith("game index=")
 
 
 def test_evaluate_script_progress_reports_effective_workers(tmp_path: Path) -> None:
@@ -522,7 +550,9 @@ def test_evaluate_script_progress_reports_effective_workers(tmp_path: Path) -> N
     assert "w04" not in result.stderr
 
 
-def test_evaluate_script_stdout_prints_one_line_per_game_then_summary(tmp_path: Path) -> None:
+def test_evaluate_script_stdout_prints_one_line_per_game_then_summary(
+    tmp_path: Path,
+) -> None:
     checkpoint_dir = tmp_path / "checkpoint"
     save_tiny_checkpoint(checkpoint_dir)
 
@@ -553,8 +583,12 @@ def test_evaluate_script_stdout_prints_one_line_per_game_then_summary(tmp_path: 
     assert result.returncode == 0, result.stderr
     stdout_lines = result.stdout.strip().splitlines()
     assert len([line for line in stdout_lines if line.startswith("game ")]) == 12
-    assert all("winner_player=draw" in line for line in stdout_lines if line.startswith("game "))
-    assert stdout_lines[-1].startswith("total opponent=random games=12 ")
+    assert all(
+        "winner_player=draw" in line
+        for line in stdout_lines
+        if line.startswith("game ")
+    )
+    assert stdout_lines[-1].startswith("total games=12 ")
 
 
 def test_evaluate_script_game_summary_labels_checkpoint_winner(
@@ -577,7 +611,9 @@ def test_evaluate_script_game_summary_labels_checkpoint_winner(
         "opening_index": None,
     }
 
-    assert "winner_player=checkpoint" in format_game_summary("opponent_checkpoint", record)
+    assert "winner_player=checkpoint" in format_game_summary(
+        "opponent_checkpoint", record
+    )
     assert "winner_player=opponent_checkpoint" in format_game_summary(
         "opponent_checkpoint",
         {**record, "player_a_score": 0.0, "winner": "black"},
@@ -606,6 +642,7 @@ def test_evaluate_script_rejects_invalid_workers(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "--workers must be at least 1" in result.stderr
 
+
 def test_evaluate_script_rejects_reuse_floor_above_simulations(tmp_path: Path) -> None:
     result = subprocess.run(
         [
@@ -625,7 +662,10 @@ def test_evaluate_script_rejects_reuse_floor_above_simulations(tmp_path: Path) -
     )
 
     assert result.returncode != 0
-    assert "--min-reuse-simulations must be no greater than --neural-simulations" in result.stderr
+    assert (
+        "--min-reuse-simulations must be no greater than --neural-simulations"
+        in result.stderr
+    )
 
 
 def test_evaluate_script_neural_vs_neural_uses_unique_paired_openings(
@@ -665,10 +705,8 @@ def test_evaluate_script_neural_vs_neural_uses_unique_paired_openings(
 
     assert result.returncode == 0, result.stderr
     report = json.loads(output.read_text())
-    assert result.stdout.startswith("game opponent=opponent_checkpoint index=0 ")
-    assert result.stdout.strip().splitlines()[-1].startswith(
-        "total opponent=opponent_checkpoint "
-    )
+    assert result.stdout.startswith("game index=0 ")
+    assert result.stdout.strip().splitlines()[-1].startswith("total ")
     assert "winner_player=draw" in result.stdout
     neural_configs = report["neural_configs"]
     assert neural_configs["checkpoint"]["temperature"] == 0.0
@@ -723,12 +761,10 @@ def test_evaluate_script_neural_vs_neural_smoke_defaults_opponent_settings(
     assert result.returncode == 0, result.stderr
     report = json.loads(output.read_text())
     stdout_lines = result.stdout.strip().splitlines()
-    assert stdout_lines[0].startswith("game opponent=opponent_checkpoint index=0 ")
+    assert stdout_lines[0].startswith("game index=0 ")
     assert "winner_player=draw" in stdout_lines[0]
     assert len([line for line in stdout_lines if line.startswith("game ")]) == 2
-    assert stdout_lines[-1].startswith(
-        "total opponent=opponent_checkpoint games=2 score=1-1 "
-    )
+    assert stdout_lines[-1].startswith("total games=2 score=1-1 ")
     assert report["mode"] == "neural_vs_neural"
     assert "promotion" not in report
     assert "criteria" not in report
@@ -741,7 +777,9 @@ def test_evaluate_script_neural_vs_neural_smoke_defaults_opponent_settings(
     assert neural_configs["opponent"]["seed"] == 13
 
 
-def test_evaluate_script_neural_vs_neural_overrides_opponent_settings(tmp_path: Path) -> None:
+def test_evaluate_script_neural_vs_neural_overrides_opponent_settings(
+    tmp_path: Path,
+) -> None:
     checkpoint_dir = tmp_path / "checkpoint"
     opponent_dir = tmp_path / "opponent"
     output = tmp_path / "head-to-head-overrides.json"
@@ -800,7 +838,7 @@ def test_evaluate_script_neural_vs_neural_overrides_opponent_settings(tmp_path: 
 
     assert result.returncode == 0, result.stderr
     report = json.loads(output.read_text())
-    assert result.stdout.startswith("game opponent=opponent_checkpoint ")
+    assert result.stdout.startswith("game ")
     neural_configs = report["neural_configs"]
     assert neural_configs["checkpoint"]["simulations"] == 2
     assert neural_configs["checkpoint"]["node_budget"] == 5
@@ -833,13 +871,22 @@ def test_evaluate_script_rejects_baseline_and_promotion_with_opponent_checkpoint
     ]
 
     conflicts = [
-        (["--baseline", "random"], "--baseline cannot be used with --opponent-checkpoint"),
+        (
+            ["--baseline", "random"],
+            "--baseline cannot be used with --opponent-checkpoint",
+        ),
         (["--mcts-simulations", "7"], "--mcts-simulations cannot be used"),
         (["--mcts-node-budget", "7"], "--mcts-node-budget cannot be used"),
         (["--mcts-rollout-plies", "7"], "--mcts-rollout-plies cannot be used"),
         (["--min-games-per-baseline", "3"], "--min-games-per-baseline cannot be used"),
-        (["--min-score-rate-vs-random", "0.75"], "--min-score-rate-vs-random cannot be used"),
-        (["--min-score-rate-vs-mcts", "0.25"], "--min-score-rate-vs-mcts cannot be used"),
+        (
+            ["--min-score-rate-vs-random", "0.75"],
+            "--min-score-rate-vs-random cannot be used",
+        ),
+        (
+            ["--min-score-rate-vs-mcts", "0.25"],
+            "--min-score-rate-vs-mcts cannot be used",
+        ),
         (
             ["--require-promotion"],
             "--require-promotion cannot be used with --opponent-checkpoint",
@@ -863,7 +910,9 @@ def test_evaluate_script_parallel_smoke_stdout_summary(tmp_path: Path) -> None:
     output = tmp_path / "parallel-report.json"
     model = PolicyValueNet(tiny_model_config())
     mx.eval(model.parameters())
-    save_checkpoint(model, checkpoint_dir, metadata=CheckpointMetadata.initial(model.config))
+    save_checkpoint(
+        model, checkpoint_dir, metadata=CheckpointMetadata.initial(model.config)
+    )
 
     result = subprocess.run(
         [
@@ -900,12 +949,16 @@ def test_evaluate_script_parallel_smoke_stdout_summary(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     report = json.loads(output.read_text())
     stdout_lines = result.stdout.strip().splitlines()
-    assert stdout_lines[0].startswith("game opponent=random index=0 ")
-    assert any(line.startswith("promotion promoted=True reasons=") for line in stdout_lines)
+    assert stdout_lines[0].startswith("game index=0 ")
+    assert any(
+        line.startswith("promotion promoted=True reasons=") for line in stdout_lines
+    )
     assert len([line for line in stdout_lines if line.startswith("game ")]) == 2
-    assert stdout_lines[-1].startswith("total opponent=random games=2 ")
+    assert stdout_lines[-1].startswith("total games=2 ")
     assert set(report["matches"]) == {"random"}
-    assert [record["game_index"] for record in report["matches"]["random"]["records"]] == [
+    assert [
+        record["game_index"] for record in report["matches"]["random"]["records"]
+    ] == [
         0,
         1,
     ]

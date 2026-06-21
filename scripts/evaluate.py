@@ -76,7 +76,9 @@ class _ProgressReporter:
         }
         self._start_monotonic = time.monotonic()
         self._start_refresh()
-        mode = "neural_vs_neural" if args.opponent_checkpoint is not None else "baselines"
+        mode = (
+            "neural_vs_neural" if args.opponent_checkpoint is not None else "baselines"
+        )
         self._write(
             " ".join(
                 [
@@ -127,7 +129,9 @@ class _ProgressReporter:
 
     def done(self) -> None:
         self._status = "done"
-        completed_games = sum(worker.games_completed for worker in self._workers_by_id.values())
+        completed_games = sum(
+            worker.games_completed for worker in self._workers_by_id.values()
+        )
         completed_plies = sum(worker.plies for worker in self._workers_by_id.values())
         self._write(
             f"done games={completed_games} plies={completed_plies}",
@@ -306,7 +310,9 @@ def main() -> None:
                         if args.opponent_neural_temperature is None
                         else args.opponent_neural_temperature
                     ),
-                    seed=args.seed if args.opponent_seed is None else args.opponent_seed,
+                    seed=(
+                        args.seed if args.opponent_seed is None else args.opponent_seed
+                    ),
                     collection_batch_size=(
                         args.neural_collection_batch_size
                         if args.opponent_neural_collection_batch_size is None
@@ -401,7 +407,9 @@ def _build_neural_config(
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--checkpoint", required=True, type=Path, help="Checkpoint directory")
+    parser.add_argument(
+        "--checkpoint", required=True, type=Path, help="Checkpoint directory"
+    )
     parser.add_argument(
         "--opponent-checkpoint",
         type=Path,
@@ -564,7 +572,9 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Classical MCTS simulations",
     )
-    parser.add_argument("--mcts-node-budget", type=int, default=None, help="Optional MCTS node cap")
+    parser.add_argument(
+        "--mcts-node-budget", type=int, default=None, help="Optional MCTS node cap"
+    )
     parser.add_argument(
         "--mcts-rollout-plies",
         type=int,
@@ -589,7 +599,9 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Minimum checkpoint score rate versus MCTS for early promotion",
     )
-    parser.add_argument("--output", type=Path, default=None, help="Optional JSON report path")
+    parser.add_argument(
+        "--output", type=Path, default=None, help="Optional JSON report path"
+    )
     parser.add_argument(
         "--progress",
         choices=("auto", "always", "never"),
@@ -628,7 +640,9 @@ def _parse_args() -> argparse.Namespace:
             if getattr(parsed, attr) is not None:
                 parser.error(f"{flag} cannot be used with --opponent-checkpoint")
         if parsed.require_promotion:
-            parser.error("--require-promotion cannot be used with --opponent-checkpoint")
+            parser.error(
+                "--require-promotion cannot be used with --opponent-checkpoint"
+            )
     if parsed.baseline is None:
         parsed.baseline = ["random", "mcts"]
     if parsed.mcts_simulations is None:
@@ -732,13 +746,17 @@ def _print_report_summary(report: Mapping[str, object]) -> None:
 def _print_match_total(name: str, match: Mapping[str, object]) -> None:
     games = _expect_int(match.get("games"), f"{name}.games")
     score = _expect_number(match.get("player_a_score"), f"{name}.player_a_score")
-    opponent_score = _expect_number(match.get("player_b_score"), f"{name}.player_b_score")
-    score_rate = _expect_number(match.get("player_a_score_rate"), f"{name}.player_a_score_rate")
+    opponent_score = _expect_number(
+        match.get("player_b_score"), f"{name}.player_b_score"
+    )
+    score_rate = _expect_number(
+        match.get("player_a_score_rate"), f"{name}.player_a_score_rate"
+    )
     wins = _expect_int(match.get("player_a_wins"), f"{name}.player_a_wins")
     losses = _expect_int(match.get("player_b_wins"), f"{name}.player_b_wins")
     draws = _expect_int(match.get("draws"), f"{name}.draws")
     print(
-        f"total opponent={name} games={games} score={score:g}-{opponent_score:g} "
+        f"total games={games} score={score:g}-{opponent_score:g} "
         f"score_rate={score_rate:.1%} wins={wins} losses={losses} draws={draws}"
     )
 
@@ -755,7 +773,7 @@ def _format_game_summary(name: str, record: Mapping[str, object]) -> str:
     winner = record.get("winner")
     winner_text = "draw" if winner is None else str(winner)
     return (
-        f"game opponent={name} index={_expect_int(record.get('game_index'), 'game_index')} "
+        f"game index={_expect_int(record.get('game_index'), 'game_index')} "
         f"checkpoint_color={record.get('player_a_color')} "
         f"score={_expect_number(record.get('player_a_score'), 'player_a_score'):g} "
         f"plies={_expect_int(record.get('plies'), 'plies')} "
@@ -773,6 +791,7 @@ def _winner_player_label(name: str, record: Mapping[str, object]) -> str:
     if score == 0.0:
         return name
     return "draw"
+
 
 def _expect_mapping(value: object, field: str) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
