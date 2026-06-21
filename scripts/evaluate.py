@@ -4,16 +4,24 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
+import threading
+import time
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NoReturn
+
+from _progress import AnsiProgressRenderer as _AnsiProgressRenderer
+from _progress import ProgressRenderState as _ProgressRenderState
+from _progress import ProgressStatus as _ProgressStatus
+from _progress import WorkerProgressState as _WorkerProgressState
 
 from vibechess.ai import MCTSConfig, NeuralMCTSConfig
 from vibechess.ai.evaluation import (
     DEFAULT_EVALUATION_OPENING_COUNT,
     DEFAULT_EVALUATION_OPENING_PLIES,
+    EvaluationProgress,
     MatchConfig,
     OpeningConfig,
     PromotionCriteria,
@@ -21,6 +29,228 @@ from vibechess.ai.evaluation import (
     evaluate_checkpoints_head_to_head,
     write_evaluation_report,
 )
+
+_PROGRESS_REFRESH_SECONDS = 1.0
+_GAME_SUMMARY_LIMIT = 10
+
+
+@dataclass(slots=True)
+class _ProgressReporter:
+    enabled: bool
+    total_games: int
+    initial_workers: tuple[_WorkerProgressState, ...] | None = None
+    _renderer: _AnsiProgressRenderer = field(init=False)
+    _workers_by_id: dict[int, _WorkerProgressState] = field(init=False)
+    _status: _ProgressStatus = field(default="pending", init=False)
+    _start_monotonic: float | None = field(default=None, init=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    _refresh_stop: threading.Event = field(default_factory=threading.Event, init=False)
+    _refresh_thread: threading.Thread | None = field(default=None, init=False)
+
+    def __post_init__(self) -> None:
+        self._renderer = _AnsiProgressRenderer(
+            enabled=self.enabled,
+            total_games=self.total_games,
+            label="evaluation",
+            unit_label="plies",
+        )
+        workers = self.initial_workers or (
+            _WorkerProgressState(
+                worker_id=0,
+                start_game=0,
+                total_games=self.total_games,
+                status="pending",
+            ),
+        )
+        self._workers_by_id = {worker.worker_id: worker for worker in workers}
+
+    def start(self, args: argparse.Namespace) -> None:
+        self._status = "running"
+        self._workers_by_id = {
+            worker_id: _WorkerProgressState(
+                worker_id=worker.worker_id,
+                start_game=worker.start_game,
+                total_games=worker.total_games,
+                status="running",
+            )
+            for worker_id, worker in self._workers_by_id.items()
+        }
+        self._start_monotonic = time.monotonic()
+        self._start_refresh()
+        mode = "neural_vs_neural" if args.opponent_checkpoint is not None else "baselines"
+        self._write(
+            " ".join(
+                [
+                    "starting",
+                    f"mode={mode}",
+                    f"games={self.total_games}",
+                    f"opening_count={args.opening_count}",
+                    f"max_plies={args.max_plies}",
+                    f"neural_simulations={args.neural_simulations}",
+                    f"workers={len(self._workers_by_id)}/{args.workers}",
+                    f"batch_size={args.batch_size}",
+                    f"checkpoint={args.checkpoint}",
+                ]
+            )
+        )
+
+    def game_completed(self, progress: EvaluationProgress) -> None:
+        total_games = progress.worker_games or progress.total_games
+        if len(self._workers_by_id) == 1:
+            games_completed = progress.games_completed
+            plies = progress.completed_plies
+        else:
+            games_completed = total_games
+            plies = progress.worker_plies or 0
+        self._workers_by_id[progress.worker_id] = _WorkerProgressState(
+            worker_id=progress.worker_id,
+            start_game=progress.worker_start_game,
+            total_games=total_games,
+            games_completed=games_completed,
+            samples=plies,
+            plies=plies,
+            status="completed" if games_completed >= total_games else "running",
+        )
+        if progress.games_completed >= progress.total_games:
+            self._status = "completed"
+        fields = [
+            f"completed={progress.games_completed}/{progress.total_games}",
+            f"game_index={progress.game_index}",
+            f"plies={progress.completed_plies}",
+        ]
+        if progress.baseline is not None:
+            fields.insert(1, f"baseline={progress.baseline}")
+        self._write(" ".join(fields))
+
+    def saving(self, output: Path) -> None:
+        self._status = "saving"
+        self._write(f"saving output={output}")
+
+    def done(self) -> None:
+        self._status = "done"
+        completed_games = sum(worker.games_completed for worker in self._workers_by_id.values())
+        completed_plies = sum(worker.plies for worker in self._workers_by_id.values())
+        self._write(
+            f"done games={completed_games} plies={completed_plies}",
+            finish=True,
+        )
+
+    def _render(self, message: str | None = None, *, finish: bool = False) -> None:
+        with self._lock:
+            snapshot = _ProgressRenderState(
+                total_games=self.total_games,
+                workers=tuple(
+                    self._workers_by_id[index] for index in sorted(self._workers_by_id)
+                ),
+                status=self._status,
+                message=message,
+                elapsed_seconds=self._elapsed_seconds(),
+            )
+            if finish:
+                self._renderer.finish(snapshot)
+            else:
+                self._renderer.render(snapshot)
+
+    def _elapsed_seconds(self) -> float:
+        if self._start_monotonic is None:
+            return 0.0
+        return max(0.0, time.monotonic() - self._start_monotonic)
+
+    def _start_refresh(self) -> None:
+        if not self.enabled or self._refresh_thread is not None:
+            return
+        self._refresh_stop.clear()
+        thread = threading.Thread(
+            target=self._refresh_loop,
+            name="evaluation-progress-refresh",
+            daemon=True,
+        )
+        self._refresh_thread = thread
+        thread.start()
+
+    def _refresh_loop(self) -> None:
+        while not self._refresh_stop.wait(_PROGRESS_REFRESH_SECONDS):
+            self._render()
+
+    def _stop_refresh(self) -> None:
+        self._refresh_stop.set()
+        thread = self._refresh_thread
+        if thread is not None:
+            thread.join(timeout=_PROGRESS_REFRESH_SECONDS + 1.0)
+            self._refresh_thread = None
+
+    def _write(self, message: str, *, finish: bool = False) -> None:
+        legacy_message = (
+            message if message.startswith("evaluation: ") else f"evaluation: {message}"
+        )
+        self._render(legacy_message, finish=finish)
+
+    def cleanup(self) -> None:
+        self._stop_refresh()
+        self._renderer.cleanup()
+
+
+def _initial_progress_workers(
+    args: argparse.Namespace,
+    *,
+    total_games: int,
+) -> tuple[_WorkerProgressState, ...]:
+    if total_games <= 0:
+        return ()
+    effective_workers = min(int(args.workers), total_games)
+    if effective_workers <= 1:
+        return (
+            _WorkerProgressState(
+                worker_id=0,
+                start_game=0,
+                total_games=total_games,
+                status="pending",
+            ),
+        )
+    if args.opponent_checkpoint is not None:
+        return _progress_worker_states(
+            total_games=total_games,
+            chunk_size=_ceil_div(total_games, effective_workers),
+        )
+
+    games_per_baseline = int(args.opening_count) * 2
+    chunk_size = _ceil_div(total_games, effective_workers)
+    workers: list[_WorkerProgressState] = []
+    worker_id = 0
+    for baseline_index, _baseline in enumerate(tuple(args.baseline)):
+        baseline_offset = baseline_index * games_per_baseline
+        for start_game in range(0, games_per_baseline, chunk_size):
+            games = min(chunk_size, games_per_baseline - start_game)
+            workers.append(
+                _WorkerProgressState(
+                    worker_id=worker_id,
+                    start_game=baseline_offset + start_game,
+                    total_games=games,
+                    status="pending",
+                )
+            )
+            worker_id += 1
+    return tuple(workers)
+
+
+def _progress_worker_states(
+    *,
+    total_games: int,
+    chunk_size: int,
+) -> tuple[_WorkerProgressState, ...]:
+    return tuple(
+        _WorkerProgressState(
+            worker_id=worker_id,
+            start_game=start_game,
+            total_games=min(chunk_size, total_games - start_game),
+            status="pending",
+        )
+        for worker_id, start_game in enumerate(range(0, total_games, chunk_size))
+    )
+
+
+def _ceil_div(numerator: int, denominator: int) -> int:
+    return max(1, -(-numerator // denominator))
 
 
 def main() -> None:
@@ -44,87 +274,102 @@ def main() -> None:
         reuse_simulation_budget=args.reuse_simulation_budget,
         min_reuse_simulations=args.min_reuse_simulations,
     )
-    if args.opponent_checkpoint is not None:
-        report = evaluate_checkpoints_head_to_head(
-            args.checkpoint,
-            args.opponent_checkpoint,
-            match_config=match_config,
-            neural_config=neural_config,
-            opponent_neural_config=_build_neural_config(
-                simulations=(
-                    args.neural_simulations
-                    if args.opponent_neural_simulations is None
-                    else args.opponent_neural_simulations
+    total_games = match_config.games
+    if args.opponent_checkpoint is None:
+        total_games *= len(tuple(args.baseline))
+    progress_reporter = _ProgressReporter(
+        enabled=_progress_enabled(args.progress),
+        total_games=total_games,
+        initial_workers=_initial_progress_workers(args, total_games=total_games),
+    )
+    report: dict[str, object]
+    try:
+        progress_reporter.start(args)
+        if args.opponent_checkpoint is not None:
+            report = evaluate_checkpoints_head_to_head(
+                args.checkpoint,
+                args.opponent_checkpoint,
+                match_config=match_config,
+                neural_config=neural_config,
+                opponent_neural_config=_build_neural_config(
+                    simulations=(
+                        args.neural_simulations
+                        if args.opponent_neural_simulations is None
+                        else args.opponent_neural_simulations
+                    ),
+                    node_budget=(
+                        args.neural_node_budget
+                        if args.opponent_neural_node_budget is None
+                        else args.opponent_neural_node_budget
+                    ),
+                    temperature=(
+                        args.neural_temperature
+                        if args.opponent_neural_temperature is None
+                        else args.opponent_neural_temperature
+                    ),
+                    seed=args.seed if args.opponent_seed is None else args.opponent_seed,
+                    collection_batch_size=(
+                        args.neural_collection_batch_size
+                        if args.opponent_neural_collection_batch_size is None
+                        else args.opponent_neural_collection_batch_size
+                    ),
+                    virtual_loss=(
+                        args.neural_virtual_loss
+                        if args.opponent_neural_virtual_loss is None
+                        else args.opponent_neural_virtual_loss
+                    ),
+                    reuse_simulation_budget=(
+                        args.reuse_simulation_budget
+                        if args.opponent_reuse_simulation_budget is None
+                        else args.opponent_reuse_simulation_budget
+                    ),
+                    min_reuse_simulations=(
+                        args.min_reuse_simulations
+                        if args.opponent_min_reuse_simulations is None
+                        else args.opponent_min_reuse_simulations
+                    ),
                 ),
-                node_budget=(
-                    args.neural_node_budget
-                    if args.opponent_neural_node_budget is None
-                    else args.opponent_neural_node_budget
+                workers=args.workers,
+                batch_size=args.batch_size,
+                active_games=args.active_games,
+                opening_config=opening_config,
+                progress=progress_reporter.game_completed,
+            )
+        else:
+            baselines = tuple(args.baseline)
+            criteria = PromotionCriteria(
+                min_games_per_baseline=args.min_games_per_baseline,
+                min_score_rate_vs_random=args.min_score_rate_vs_random,
+                min_score_rate_vs_mcts=args.min_score_rate_vs_mcts,
+                required_baselines=baselines,
+            )
+            report = evaluate_checkpoint_against_baselines(
+                args.checkpoint,
+                match_config=match_config,
+                neural_config=neural_config,
+                mcts_config=MCTSConfig(
+                    simulations=args.mcts_simulations,
+                    node_budget=args.mcts_node_budget,
+                    max_rollout_plies=args.mcts_rollout_plies,
+                    seed=args.seed,
                 ),
-                temperature=(
-                    args.neural_temperature
-                    if args.opponent_neural_temperature is None
-                    else args.opponent_neural_temperature
-                ),
-                seed=args.seed if args.opponent_seed is None else args.opponent_seed,
-                collection_batch_size=(
-                    args.neural_collection_batch_size
-                    if args.opponent_neural_collection_batch_size is None
-                    else args.opponent_neural_collection_batch_size
-                ),
-                virtual_loss=(
-                    args.neural_virtual_loss
-                    if args.opponent_neural_virtual_loss is None
-                    else args.opponent_neural_virtual_loss
-                ),
-                reuse_simulation_budget=(
-                    args.reuse_simulation_budget
-                    if args.opponent_reuse_simulation_budget is None
-                    else args.opponent_reuse_simulation_budget
-                ),
-                min_reuse_simulations=(
-                    args.min_reuse_simulations
-                    if args.opponent_min_reuse_simulations is None
-                    else args.opponent_min_reuse_simulations
-                ),
-            ),
-            workers=args.workers,
-            batch_size=args.batch_size,
-            active_games=args.active_games,
-            opening_config=opening_config,
-        )
-    else:
-        baselines = tuple(args.baseline)
-        criteria = PromotionCriteria(
-            min_games_per_baseline=args.min_games_per_baseline,
-            min_score_rate_vs_random=args.min_score_rate_vs_random,
-            min_score_rate_vs_mcts=args.min_score_rate_vs_mcts,
-            required_baselines=baselines,
-        )
-        report = evaluate_checkpoint_against_baselines(
-            args.checkpoint,
-            match_config=match_config,
-            neural_config=neural_config,
-            mcts_config=MCTSConfig(
-                simulations=args.mcts_simulations,
-                node_budget=args.mcts_node_budget,
-                max_rollout_plies=args.mcts_rollout_plies,
-                seed=args.seed,
-            ),
-            random_seed=args.seed,
-            baselines=baselines,
-            criteria=criteria,
-            workers=args.workers,
-            batch_size=args.batch_size,
-            active_games=args.active_games,
-            opening_config=opening_config,
-        )
-    if args.output is not None:
-        write_evaluation_report(report, args.output)
-    print(json.dumps(report, indent=2))
-    if args.opponent_checkpoint is not None:
-        _print_head_to_head_summary(report)
-    else:
+                random_seed=args.seed,
+                baselines=baselines,
+                criteria=criteria,
+                workers=args.workers,
+                batch_size=args.batch_size,
+                active_games=args.active_games,
+                opening_config=opening_config,
+                progress=progress_reporter.game_completed,
+            )
+        if args.output is not None:
+            progress_reporter.saving(args.output)
+            write_evaluation_report(report, args.output)
+        progress_reporter.done()
+    finally:
+        progress_reporter.cleanup()
+    _print_report_summary(report)
+    if args.opponent_checkpoint is None:
         promotion = report["promotion"]
         if not isinstance(promotion, dict):
             _die("internal error: malformed promotion report")
@@ -207,10 +452,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=1,
+        default=8,
         help=(
             "cross-game neural inference batch size for independent evaluation games; "
-            "default 1 preserves serial play"
+            "default 8 matches self-play central inference batching"
         ),
     )
     parser.add_argument(
@@ -347,6 +592,12 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output", type=Path, default=None, help="Optional JSON report path")
     parser.add_argument(
+        "--progress",
+        choices=("auto", "always", "never"),
+        default="auto",
+        help="progress output mode; auto writes to stderr only when stderr is a TTY",
+    )
+    parser.add_argument(
         "--require-promotion",
         action="store_true",
         help="Exit non-zero if early criteria are not met",
@@ -447,37 +698,101 @@ def _parse_args() -> argparse.Namespace:
     return parsed
 
 
-def _print_head_to_head_summary(report: Mapping[str, object]) -> None:
-    match = report.get("match")
-    if not isinstance(match, Mapping):
-        _die("internal error: malformed neural-vs-neural match report")
+def _progress_enabled(mode: str) -> bool:
+    if mode == "always":
+        return True
+    if mode == "never":
+        return False
+    return sys.stderr.isatty()
 
-    games = match.get("games")
-    player_a_score = match.get("player_a_score")
-    player_b_score = match.get("player_b_score")
-    player_a_score_rate = match.get("player_a_score_rate")
-    player_a_wins = match.get("player_a_wins")
-    player_b_wins = match.get("player_b_wins")
-    draws = match.get("draws")
-    if not (
-        isinstance(games, int)
-        and isinstance(player_a_score, int | float)
-        and isinstance(player_b_score, int | float)
-        and isinstance(player_a_score_rate, int | float)
-        and isinstance(player_a_wins, int)
-        and isinstance(player_b_wins, int)
-        and isinstance(draws, int)
-    ):
-        _die("internal error: malformed neural-vs-neural summary fields")
 
+def _print_report_summary(report: Mapping[str, object]) -> None:
+    if "match" in report:
+        match = _expect_mapping(report.get("match"), "match")
+        _print_match_total("opponent_checkpoint", match)
+        _print_game_summaries([("opponent_checkpoint", match)])
+        return
+
+    matches = _expect_mapping(report.get("matches"), "matches")
+    match_items = [
+        (str(name), _expect_mapping(match, f"matches.{name}"))
+        for name, match in matches.items()
+    ]
+    for name, match in match_items:
+        _print_match_total(name, match)
+    promotion = _expect_mapping(report.get("promotion"), "promotion")
     print(
-        "Neural-vs-neural summary: "
-        f"checkpoint {player_a_score:g}-{player_b_score:g} opponent_checkpoint "
-        f"over {games} game{'s' if games != 1 else ''} "
-        f"({float(player_a_score_rate):.1%} score rate); "
-        f"wins {player_a_wins}-{player_b_wins}, draws {draws}",
-        file=sys.stderr,
+        "promotion "
+        f"promoted={promotion.get('promoted')} "
+        f"reasons={len(_expect_list(promotion.get('reasons'), 'promotion.reasons'))}"
     )
+    _print_game_summaries(match_items)
+
+
+def _print_match_total(name: str, match: Mapping[str, object]) -> None:
+    games = _expect_int(match.get("games"), f"{name}.games")
+    score = _expect_number(match.get("player_a_score"), f"{name}.player_a_score")
+    opponent_score = _expect_number(match.get("player_b_score"), f"{name}.player_b_score")
+    score_rate = _expect_number(match.get("player_a_score_rate"), f"{name}.player_a_score_rate")
+    wins = _expect_int(match.get("player_a_wins"), f"{name}.player_a_wins")
+    losses = _expect_int(match.get("player_b_wins"), f"{name}.player_b_wins")
+    draws = _expect_int(match.get("draws"), f"{name}.draws")
+    records = _expect_list(match.get("records"), f"{name}.records")
+    print(
+        f"total opponent={name} games={games} score={score:g}-{opponent_score:g} "
+        f"score_rate={score_rate:.1%} wins={wins} losses={losses} draws={draws} "
+        f"shown_games={min(len(records), _GAME_SUMMARY_LIMIT)}/{len(records)}"
+    )
+
+
+def _print_game_summaries(match_items: list[tuple[str, Mapping[str, object]]]) -> None:
+    remaining = _GAME_SUMMARY_LIMIT
+    for name, match in match_items:
+        records = _expect_list(match.get("records"), f"{name}.records")
+        for raw_record in records[:remaining]:
+            record = _expect_mapping(raw_record, f"{name}.records[]")
+            print(_format_game_summary(name, record))
+        remaining -= min(remaining, len(records))
+        if remaining == 0:
+            return
+
+
+def _format_game_summary(name: str, record: Mapping[str, object]) -> str:
+    winner = record.get("winner")
+    winner_text = "draw" if winner is None else str(winner)
+    return (
+        f"game opponent={name} index={_expect_int(record.get('game_index'), 'game_index')} "
+        f"checkpoint_color={record.get('player_a_color')} "
+        f"score={_expect_number(record.get('player_a_score'), 'player_a_score'):g} "
+        f"plies={_expect_int(record.get('plies'), 'plies')} "
+        f"outcome={record.get('outcome_reason')} winner={winner_text} "
+        f"moves={len(_expect_list(record.get('moves_uci'), 'moves_uci'))} "
+        f"opening={record.get('opening_index')}"
+    )
+
+
+def _expect_mapping(value: object, field: str) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        _die(f"internal error: malformed {field}")
+    return value
+
+
+def _expect_list(value: object, field: str) -> list[object]:
+    if not isinstance(value, list):
+        _die(f"internal error: malformed {field}")
+    return value
+
+
+def _expect_int(value: object, field: str) -> int:
+    if not isinstance(value, int):
+        _die(f"internal error: malformed {field}")
+    return value
+
+
+def _expect_number(value: object, field: str) -> float:
+    if not isinstance(value, int | float):
+        _die(f"internal error: malformed {field}")
+    return float(value)
 
 
 def _die(message: str) -> NoReturn:

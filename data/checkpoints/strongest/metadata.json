@@ -4,7 +4,7 @@
     "input_channels": 20,
     "board_size": 8,
     "residual_channels": 96,
-    "residual_blocks": 6,
+    "residual_blocks": 8,
     "policy_channels": 8,
     "value_channels": 4,
     "value_hidden_dim": 128,
@@ -12,7 +12,7 @@
   },
   "action_space_version": "az-8x8x73-v1",
   "encoder_version": "vibechess-board-v1",
-  "training_step": 1720796,
+  "training_step": 1873106,
   "optimizer_state_available": false,
-  "notes": "vibechess WP15 training run"
+  "notes": "{\"batch_size\": 64, \"carry_optimizer_state_across_shards\": true, \"checkpoint_every\": 0, \"dataset\": \"data/selfplay/res8_sp_10k_iter_3\", \"epochs\": 3, \"input_checkpoint\": \"data/checkpoints/res8_10k_iter_3/checkpoint-final\", \"learning_rate\": 4e-05, \"output\": \"data/checkpoints/res8_10k_iter_3.1\", \"policy_channels\": 2, \"residual_blocks\": 1, \"residual_channels\": 8, \"seed\": 0, \"skip_shard_checkpoints\": false, \"validation_fraction\": 0.1, \"value_channels\": 1, \"value_hidden_dim\": 8, \"warmup\": 0}"
 }

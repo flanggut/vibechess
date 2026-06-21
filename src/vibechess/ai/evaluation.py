@@ -32,9 +32,9 @@ from vibechess.nn.inference import PolicyValueInference
 
 PlayerFactory = Callable[[], Player]
 SeededPlayerFactory: TypeAlias = Callable[[int, str], Player]
+EvaluationProgressCallback: TypeAlias = Callable[["EvaluationProgress"], None]
 DEFAULT_EVALUATION_OPENING_COUNT = 64
 DEFAULT_EVALUATION_OPENING_PLIES = 8
-
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +56,62 @@ class PlayerSpec:
         if self.seeded_factory is not None:
             return self.seeded_factory(game_index, role)
         return self.factory()
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationProgress:
+    """Progress event emitted as checkpoint evaluation games complete."""
+
+    games_completed: int
+    total_games: int
+    completed_plies: int
+    game_index: int
+    baseline: str | None = None
+    worker_id: int = 0
+    worker_start_game: int = 0
+    worker_games: int | None = None
+    worker_plies: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _EvaluationProgressContext:
+    callback: EvaluationProgressCallback
+    total_games: int
+    completed_offset: int = 0
+    plies_offset: int = 0
+    baseline: str | None = None
+    worker_id: int = 0
+    worker_start_game: int = 0
+    worker_games: int | None = None
+    worker_plies: int | None = None
+
+
+def _emit_evaluation_progress(
+    context: _EvaluationProgressContext | None,
+    *,
+    local_games_completed: int,
+    local_plies_completed: int,
+    game_index: int,
+) -> None:
+    if context is None:
+        return
+    context.callback(
+        EvaluationProgress(
+            games_completed=context.completed_offset + local_games_completed,
+            total_games=context.total_games,
+            completed_plies=context.plies_offset + local_plies_completed,
+            game_index=game_index,
+            baseline=context.baseline,
+            worker_id=context.worker_id,
+            worker_start_game=context.worker_start_game,
+            worker_games=context.worker_games,
+            worker_plies=(
+                local_plies_completed
+                if context.worker_plies is None
+                else context.worker_plies
+            ),
+        )
+    )
 
 
 def _derive_game_seed(
@@ -302,8 +358,10 @@ def _run_match_records(
     start_game: int,
     games: int,
     opening_starts: Sequence[_GameStart] | None,
+    progress_context: _EvaluationProgressContext | None = None,
 ) -> list[MatchGameRecord]:
     records: list[MatchGameRecord] = []
+    completed_plies = 0
     for game_index in range(start_game, start_game + games):
         game_start = _game_start_for_index(opening_starts, game_index)
         a_is_white = (game_index % 2 == 0) or not config.alternate_colors
@@ -318,13 +376,19 @@ def _run_match_records(
             else player_a.create(game_index=game_index, role="player_a")
         )
         game = play_game(white, black, game=game_start.game, max_plies=config.max_plies)
-        records.append(
-            _match_game_record(
-                game_index,
-                game,
-                player_a_is_white=a_is_white,
-                game_start=game_start,
-            )
+        record = _match_game_record(
+            game_index,
+            game,
+            player_a_is_white=a_is_white,
+            game_start=game_start,
+        )
+        records.append(record)
+        completed_plies += record.plies
+        _emit_evaluation_progress(
+            progress_context,
+            local_games_completed=len(records),
+            local_plies_completed=completed_plies,
+            game_index=game_index,
         )
     return records
 
@@ -339,6 +403,7 @@ def _run_match_chunk_records(
     batch_size: int,
     active_games: int | None,
     opening_starts: Sequence[_GameStart] | None,
+    progress_context: _EvaluationProgressContext | None = None,
 ) -> list[MatchGameRecord]:
     """Run one chunk of games, using batched scheduling only when it can help.
 
@@ -356,6 +421,7 @@ def _run_match_chunk_records(
             batch_size=batch_size,
             active_games=active_games,
             opening_starts=opening_starts,
+            progress_context=progress_context,
         )
     return _run_match_records(
         player_a,
@@ -364,6 +430,7 @@ def _run_match_chunk_records(
         start_game=start_game,
         games=games,
         opening_starts=opening_starts,
+        progress_context=progress_context,
     )
 
 
@@ -646,10 +713,12 @@ def _run_batched_match_records(
     batch_size: int,
     active_games: int | None,
     opening_starts: Sequence[_GameStart] | None,
+    progress_context: _EvaluationProgressContext | None = None,
 ) -> list[MatchGameRecord]:
     active_limit = resolve_active_limit(games, batch_size, active_games)
     active: dict[int, _BatchedMatchGameState] = {}
     completed: dict[int, MatchGameRecord] = {}
+    completed_plies = 0
     next_game_index = start_game
     end_game_index = start_game + games
 
@@ -678,17 +747,25 @@ def _run_batched_match_records(
             next_game_index += 1
 
     def complete_state(state: _BatchedMatchGameState) -> None:
+        nonlocal completed_plies
         active.pop(state.game_index, None)
         game = state.game
         if game.outcome is None:
             game = game.with_forced_outcome(Outcome(OutcomeReason.MAX_PLIES))
-        completed[state.game_index] = _match_game_record(
+        record = _match_game_record(
             state.game_index,
             game,
             player_a_is_white=state.player_a_is_white,
             game_start=state.game_start,
         )
-
+        completed[state.game_index] = record
+        completed_plies += record.plies
+        _emit_evaluation_progress(
+            progress_context,
+            local_games_completed=len(completed),
+            local_plies_completed=completed_plies,
+            game_index=state.game_index,
+        )
     launch_available_games()
     while len(completed) < games:
         neural_decisions_by_inference: dict[
@@ -805,6 +882,7 @@ def _map_chunks(
     broadcast_args: Sequence[object],
     *,
     workers: int,
+    on_result: Callable[[_ChunkT, _ResultT], None] | None = None,
 ) -> list[_ResultT]:
     """Run ``worker`` over ``chunks`` in a process pool, broadcasting shared args.
 
@@ -814,8 +892,13 @@ def _map_chunks(
     evaluators, which differ only in their worker, chunk type, and aggregation.
     """
     broadcasts = [[arg] * len(chunks) for arg in broadcast_args]
+    results: list[_ResultT] = []
     with ProcessPoolExecutor(max_workers=workers) as executor:
-        return list(executor.map(worker, chunks, *broadcasts))
+        for chunk, result in zip(chunks, executor.map(worker, chunks, *broadcasts), strict=True):
+            if on_result is not None:
+                on_result(chunk, result)
+            results.append(result)
+    return results
 
 
 def _run_parallel_evaluation(
@@ -830,6 +913,7 @@ def _run_parallel_evaluation(
     batch_size: int,
     active_games: int | None,
     opening_starts: Sequence[_GameStart] | None,
+    progress: EvaluationProgressCallback | None = None,
 ) -> dict[str, MatchResult]:
     total_games = len(selected_baselines) * match_config.games
     effective_workers = min(workers, total_games)
@@ -837,6 +921,38 @@ def _run_parallel_evaluation(
     records_by_baseline: dict[str, list[MatchGameRecord]] = {
         baseline: [] for baseline in selected_baselines
     }
+    completed_games = 0
+    completed_plies = 0
+
+    def report_chunk_progress(
+        chunk: _EvaluationChunk,
+        result: tuple[str, list[MatchGameRecord]],
+    ) -> None:
+        nonlocal completed_games, completed_plies
+        if progress is None:
+            return
+        baseline, chunk_records = result
+        if not chunk_records:
+            return
+        completed_games += len(chunk_records)
+        completed_plies += sum(record.plies for record in chunk_records)
+        progress(
+            EvaluationProgress(
+                games_completed=completed_games,
+                total_games=total_games,
+                completed_plies=completed_plies,
+                game_index=chunk_records[-1].game_index,
+                baseline=baseline,
+                worker_id=chunks.index(chunk),
+                worker_start_game=(
+                    selected_baselines.index(baseline) * match_config.games
+                    + chunk.start_game
+                ),
+                worker_games=chunk.games,
+                worker_plies=sum(record.plies for record in chunk_records),
+            )
+        )
+
     for baseline, records in _map_chunks(
         _run_evaluation_chunk,
         chunks,
@@ -851,6 +967,7 @@ def _run_parallel_evaluation(
             opening_starts,
         ],
         workers=effective_workers,
+        on_result=report_chunk_progress,
     ):
         records_by_baseline[baseline].extend(records)
 
@@ -945,11 +1062,35 @@ def _run_parallel_checkpoint_match(
     batch_size: int,
     active_games: int | None,
     opening_starts: Sequence[_GameStart] | None,
+    progress: EvaluationProgressCallback | None = None,
 ) -> MatchResult:
     effective_workers = min(workers, match_config.games)
     chunk_size = max(1, math.ceil(match_config.games / effective_workers))
     chunks = _match_chunks(match_config.games, chunk_size=chunk_size)
     records: list[MatchGameRecord] = []
+    completed_games = 0
+    completed_plies = 0
+
+    def report_chunk_progress(chunk: _MatchChunk, chunk_records: list[MatchGameRecord]) -> None:
+        nonlocal completed_games, completed_plies
+        if progress is None or not chunk_records:
+            return
+        completed_games += len(chunk_records)
+        completed_plies += sum(record.plies for record in chunk_records)
+        progress(
+            EvaluationProgress(
+                games_completed=completed_games,
+                total_games=match_config.games,
+                completed_plies=completed_plies,
+                game_index=chunk_records[-1].game_index,
+                baseline="opponent_checkpoint",
+                worker_id=chunks.index(chunk),
+                worker_start_game=chunk.start_game,
+                worker_games=chunk.games,
+                worker_plies=sum(record.plies for record in chunk_records),
+            )
+        )
+
     for chunk_records in _map_chunks(
         _run_checkpoint_match_chunk,
         chunks,
@@ -964,6 +1105,7 @@ def _run_parallel_checkpoint_match(
             opening_starts,
         ],
         workers=effective_workers,
+        on_result=report_chunk_progress,
     ):
         records.extend(chunk_records)
     return _match_result_from_records("checkpoint", "opponent_checkpoint", records)
@@ -1013,6 +1155,7 @@ def evaluate_checkpoints_head_to_head(
     batch_size: int = 1,
     active_games: int | None = None,
     opening_config: OpeningConfig | None = None,
+    progress: EvaluationProgressCallback | None = None,
 ) -> dict[str, object]:
     """Compare two checkpoint-backed neural-MCTS players without baselines.
 
@@ -1055,6 +1198,14 @@ def evaluate_checkpoints_head_to_head(
             batch_size=batch_size,
             active_games=active_games,
             opening_starts=opening_starts,
+            progress_context=_EvaluationProgressContext(
+                callback=progress,
+                total_games=resolved_match_config.games,
+                baseline="opponent_checkpoint",
+                worker_games=resolved_match_config.games,
+            )
+            if progress is not None
+            else None,
         )
         result = _match_result_from_records("checkpoint", "opponent_checkpoint", records)
     else:
@@ -1068,6 +1219,7 @@ def evaluate_checkpoints_head_to_head(
             batch_size=batch_size,
             active_games=active_games,
             opening_starts=opening_starts,
+            progress=progress,
         )
 
     return {
@@ -1096,6 +1248,7 @@ def evaluate_checkpoint_against_baselines(
     batch_size: int = 1,
     active_games: int | None = None,
     opening_config: OpeningConfig | None = None,
+    progress: EvaluationProgressCallback | None = None,
 ) -> dict[str, object]:
     """Compare a checkpoint player against random/classical-MCTS baselines."""
     if workers < 1:
@@ -1122,23 +1275,34 @@ def evaluate_checkpoint_against_baselines(
             )
             for baseline in selected_baselines
         }
-        results = {
-            baseline: _match_result_from_records(
-                "checkpoint",
-                baseline,
-                _run_match_chunk_records(
-                    checkpoint,
-                    baseline_specs[baseline],
-                    resolved_match_config,
-                    start_game=0,
-                    games=resolved_match_config.games,
-                    batch_size=batch_size,
-                    active_games=active_games,
-                    opening_starts=opening_starts,
-                ),
+        results: dict[str, MatchResult] = {}
+        completed_games = 0
+        completed_plies = 0
+        total_games = len(selected_baselines) * resolved_match_config.games
+        for baseline in selected_baselines:
+            records = _run_match_chunk_records(
+                checkpoint,
+                baseline_specs[baseline],
+                resolved_match_config,
+                start_game=0,
+                games=resolved_match_config.games,
+                batch_size=batch_size,
+                active_games=active_games,
+                opening_starts=opening_starts,
+                progress_context=_EvaluationProgressContext(
+                    callback=progress,
+                    total_games=total_games,
+                    completed_offset=completed_games,
+                    plies_offset=completed_plies,
+                    baseline=baseline,
+                    worker_games=resolved_match_config.games,
+                )
+                if progress is not None
+                else None,
             )
-            for baseline in selected_baselines
-        }
+            results[baseline] = _match_result_from_records("checkpoint", baseline, records)
+            completed_games += len(records)
+            completed_plies += sum(record.plies for record in records)
     else:
         results = _run_parallel_evaluation(
             Path(checkpoint_dir),
@@ -1151,6 +1315,7 @@ def evaluate_checkpoint_against_baselines(
             batch_size=batch_size,
             active_games=active_games,
             opening_starts=opening_starts,
+            progress=progress,
         )
 
     resolved_criteria = criteria or PromotionCriteria(required_baselines=selected_baselines)
@@ -1183,6 +1348,7 @@ __all__ = [
     "EARLY_PROMOTION_NOTE",
     "DEFAULT_EVALUATION_OPENING_COUNT",
     "DEFAULT_EVALUATION_OPENING_PLIES",
+    "EvaluationProgress",
     "MatchConfig",
     "MatchGameRecord",
     "MatchResult",

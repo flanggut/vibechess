@@ -109,17 +109,22 @@ existing weights but adds fresh layers; the first `N` optimizer steps linearly
 ramp from a near-zero learning rate to `--learning-rate`.
 
 For detailed flags and formats, prefer the script `--help` output and the dataset
-loader/writer tests over duplicated prose. `scripts/self_play.py` supports
-interactive TUI progress on stderr via `--progress auto|always|never`: `always`
-forces it, `never` disables it, and `auto` uses the TUI only when stderr is
-interactive. Stdout stays a stable final summary for automation.
+loader/writer tests over duplicated prose. `scripts/self_play.py` and
+`scripts/evaluate.py` support interactive TUI progress on stderr via
+`--progress auto|always|never`: `always` forces it, `never` disables it, and
+`auto` uses the TUI only when stderr is interactive. Stdout stays stable for
+automation: self-play prints a final output summary, while evaluation prints
+aggregate match totals plus at most 10 per-game summary lines. Pass
+`scripts/evaluate.py --output report.json` when the full per-game JSON report is
+needed.
 
 
 Neural self-play and checkpoint evaluation can opt into visit-budget-aware tree
 reuse with `--reuse-simulation-budget`; add `--min-reuse-simulations N` only
 when reused roots must receive a fresh visit floor. Both scripts support
-cross-game neural batching with `--batch-size`/`--active-games`; evaluation also
-exposes within-search leaf batching via `--neural-collection-batch-size`.
+cross-game neural batching with `--batch-size`/`--active-games`; both default to
+`--batch-size 8`, and evaluation also exposes within-search leaf batching via
+`--neural-collection-batch-size`.
 Evaluation uses deterministic neural play by default and derives unique seeded
 random openings from `--seed`; `--opening-count N` produces `2N` games by playing
 each opening once per color. Reports include each game's `opening_index`,

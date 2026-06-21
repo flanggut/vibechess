@@ -434,6 +434,127 @@ def test_evaluate_script_smoke(tmp_path: Path) -> None:
     assert report["promotion"]["promoted"] is True
 
 
+def test_evaluate_script_progress_always_writes_stderr_only(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "checkpoint"
+    output = tmp_path / "progress-report.json"
+    save_tiny_checkpoint(checkpoint_dir)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/evaluate.py",
+            "--checkpoint",
+            str(checkpoint_dir),
+            "--baseline",
+            "random",
+            "--opening-count",
+            "1",
+            "--max-plies",
+            "1",
+            "--neural-simulations",
+            "1",
+            "--min-games-per-baseline",
+            "1",
+            "--min-score-rate-vs-random",
+            "0.0",
+            "--progress",
+            "always",
+            "--output",
+            str(output),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "evaluation status=" in result.stderr
+    assert "evaluation: starting" in result.stderr
+    assert "evaluation: completed=1/2" in result.stderr
+    assert "evaluation: completed=2/2" in result.stderr
+    assert "evaluation: done" in result.stderr
+    assert "evaluation status=" not in result.stdout
+    assert result.stdout.startswith("total opponent=random ")
+
+
+def test_evaluate_script_progress_reports_effective_workers(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "checkpoint"
+    output = tmp_path / "worker-progress-report.json"
+    save_tiny_checkpoint(checkpoint_dir)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/evaluate.py",
+            "--checkpoint",
+            str(checkpoint_dir),
+            "--baseline",
+            "random",
+            "--opening-count",
+            "4",
+            "--max-plies",
+            "1",
+            "--neural-simulations",
+            "1",
+            "--min-games-per-baseline",
+            "1",
+            "--min-score-rate-vs-random",
+            "0.0",
+            "--workers",
+            "4",
+            "--progress",
+            "always",
+            "--output",
+            str(output),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "workers=4/4" in result.stderr
+    assert "w00" in result.stderr
+    assert "w01" in result.stderr
+    assert "w02" in result.stderr
+    assert "w03" in result.stderr
+    assert "w04" not in result.stderr
+
+
+def test_evaluate_script_stdout_limits_game_summary_lines(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "checkpoint"
+    save_tiny_checkpoint(checkpoint_dir)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/evaluate.py",
+            "--checkpoint",
+            str(checkpoint_dir),
+            "--baseline",
+            "random",
+            "--opening-count",
+            "6",
+            "--max-plies",
+            "1",
+            "--neural-simulations",
+            "1",
+            "--min-games-per-baseline",
+            "1",
+            "--min-score-rate-vs-random",
+            "0.0",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    stdout_lines = result.stdout.strip().splitlines()
+    assert stdout_lines[0].endswith("shown_games=10/12")
+    assert len([line for line in stdout_lines if line.startswith("game ")]) == 10
+
+
 def test_evaluate_script_rejects_invalid_workers(tmp_path: Path) -> None:
     result = subprocess.run(
         [
@@ -479,6 +600,7 @@ def test_evaluate_script_neural_vs_neural_uses_unique_paired_openings(
 ) -> None:
     checkpoint_dir = tmp_path / "checkpoint"
     opponent_dir = tmp_path / "opponent"
+    output = tmp_path / "head-to-head-openings.json"
     save_tiny_checkpoint(checkpoint_dir)
     save_tiny_checkpoint(opponent_dir)
 
@@ -500,6 +622,8 @@ def test_evaluate_script_neural_vs_neural_uses_unique_paired_openings(
             "1",
             "--seed",
             "7",
+            "--output",
+            str(output),
         ],
         check=False,
         capture_output=True,
@@ -507,7 +631,9 @@ def test_evaluate_script_neural_vs_neural_uses_unique_paired_openings(
     )
 
     assert result.returncode == 0, result.stderr
-    report = json.loads(result.stdout)
+    report = json.loads(output.read_text())
+    assert result.stdout.startswith("total opponent=opponent_checkpoint ")
+    assert "game opponent=opponent_checkpoint index=0" in result.stdout
     neural_configs = report["neural_configs"]
     assert neural_configs["checkpoint"]["temperature"] == 0.0
     assert neural_configs["opponent"]["temperature"] == 0.0
@@ -559,18 +685,17 @@ def test_evaluate_script_neural_vs_neural_smoke_defaults_opponent_settings(
     )
 
     assert result.returncode == 0, result.stderr
-    stdout_report = json.loads(result.stdout)
-    file_report = json.loads(output.read_text())
-    assert stdout_report == file_report
-    assert result.stderr.strip() == (
-        "Neural-vs-neural summary: checkpoint 1-1 opponent_checkpoint "
-        "over 2 games (50.0% score rate); wins 0-0, draws 2"
+    report = json.loads(output.read_text())
+    stdout_lines = result.stdout.strip().splitlines()
+    assert stdout_lines[0].startswith(
+        "total opponent=opponent_checkpoint games=2 score=1-1 "
     )
-    assert stdout_report["mode"] == "neural_vs_neural"
-    assert "promotion" not in stdout_report
-    assert "criteria" not in stdout_report
-    assert "matches" not in stdout_report
-    neural_configs = stdout_report["neural_configs"]
+    assert len([line for line in stdout_lines if line.startswith("game ")]) == 2
+    assert report["mode"] == "neural_vs_neural"
+    assert "promotion" not in report
+    assert "criteria" not in report
+    assert "matches" not in report
+    neural_configs = report["neural_configs"]
     assert neural_configs["checkpoint"] == neural_configs["opponent"]
     assert neural_configs["opponent"]["simulations"] == 1
     assert neural_configs["opponent"]["node_budget"] == 5
@@ -581,6 +706,7 @@ def test_evaluate_script_neural_vs_neural_smoke_defaults_opponent_settings(
 def test_evaluate_script_neural_vs_neural_overrides_opponent_settings(tmp_path: Path) -> None:
     checkpoint_dir = tmp_path / "checkpoint"
     opponent_dir = tmp_path / "opponent"
+    output = tmp_path / "head-to-head-overrides.json"
     save_tiny_checkpoint(checkpoint_dir)
     save_tiny_checkpoint(opponent_dir)
 
@@ -626,6 +752,8 @@ def test_evaluate_script_neural_vs_neural_overrides_opponent_settings(tmp_path: 
             "0",
             "--opponent-seed",
             "0",
+            "--output",
+            str(output),
         ],
         check=False,
         capture_output=True,
@@ -633,7 +761,8 @@ def test_evaluate_script_neural_vs_neural_overrides_opponent_settings(tmp_path: 
     )
 
     assert result.returncode == 0, result.stderr
-    report = json.loads(result.stdout)
+    report = json.loads(output.read_text())
+    assert result.stdout.startswith("total opponent=opponent_checkpoint ")
     neural_configs = report["neural_configs"]
     assert neural_configs["checkpoint"]["simulations"] == 2
     assert neural_configs["checkpoint"]["node_budget"] == 5
@@ -691,7 +820,7 @@ def test_evaluate_script_rejects_baseline_and_promotion_with_opponent_checkpoint
         assert message in result.stderr
 
 
-def test_evaluate_script_parallel_smoke_stdout_json(tmp_path: Path) -> None:
+def test_evaluate_script_parallel_smoke_stdout_summary(tmp_path: Path) -> None:
     checkpoint_dir = tmp_path / "checkpoint"
     output = tmp_path / "parallel-report.json"
     model = PolicyValueNet(tiny_model_config())
@@ -731,11 +860,13 @@ def test_evaluate_script_parallel_smoke_stdout_json(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    stdout_report = json.loads(result.stdout)
-    file_report = json.loads(output.read_text())
-    assert stdout_report == file_report
-    assert set(stdout_report["matches"]) == {"random"}
-    assert [record["game_index"] for record in stdout_report["matches"]["random"]["records"]] == [
+    report = json.loads(output.read_text())
+    stdout_lines = result.stdout.strip().splitlines()
+    assert stdout_lines[0].startswith("total opponent=random games=2 ")
+    assert any(line.startswith("promotion promoted=True reasons=") for line in stdout_lines)
+    assert len([line for line in stdout_lines if line.startswith("game ")]) == 2
+    assert set(report["matches"]) == {"random"}
+    assert [record["game_index"] for record in report["matches"]["random"]["records"]] == [
         0,
         1,
     ]

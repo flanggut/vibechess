@@ -50,6 +50,8 @@ class AnsiProgressRenderer:
     enabled: bool
     total_games: int
     stream: TextIO = field(default_factory=lambda: sys.stderr)
+    label: str = "self-play"
+    unit_label: str = "samples"
     _rendered_lines: int = 0
     _started: bool = False
     _finished: bool = False
@@ -133,11 +135,11 @@ class AnsiProgressRenderer:
         )
         header = " ".join(
             [
-                "self-play",
+                self.label,
                 f"status={state.status}",
                 f"games={games_completed}/{state.total_games}",
-                f"samples={samples}",
-                f"samples/s={self._format_rate(samples, state.elapsed_seconds)}",
+                f"{self.unit_label}={samples}",
+                f"{self.unit_label}/s={self._format_rate(samples, state.elapsed_seconds)}",
                 f"elapsed={self._format_duration(state.elapsed_seconds)}",
                 f"eta={eta}",
             ]
@@ -163,7 +165,7 @@ class AnsiProgressRenderer:
                 f"{f'w{worker.worker_id:02d}':<{self._ROW_LABEL_WIDTH}}",
                 f"[{self._bar(worker.processed_games, worker.total_games)}]",
                 f"games={worker.processed_games}/{worker.total_games}",
-                f"samples={worker.samples}",
+                f"{self.unit_label}={worker.samples}",
                 f"range={game_range}",
             ]
         )
