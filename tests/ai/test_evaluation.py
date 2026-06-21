@@ -474,7 +474,7 @@ def test_evaluate_script_progress_always_writes_stderr_only(tmp_path: Path) -> N
     assert "evaluation: completed=2/2" in result.stderr
     assert "evaluation: done" in result.stderr
     assert "evaluation status=" not in result.stdout
-    assert result.stdout.startswith("total opponent=random ")
+    assert result.stdout.startswith("game opponent=random ")
 
 
 def test_evaluate_script_progress_reports_effective_workers(tmp_path: Path) -> None:
@@ -521,7 +521,7 @@ def test_evaluate_script_progress_reports_effective_workers(tmp_path: Path) -> N
     assert "w04" not in result.stderr
 
 
-def test_evaluate_script_stdout_limits_game_summary_lines(tmp_path: Path) -> None:
+def test_evaluate_script_stdout_prints_one_line_per_game_then_summary(tmp_path: Path) -> None:
     checkpoint_dir = tmp_path / "checkpoint"
     save_tiny_checkpoint(checkpoint_dir)
 
@@ -551,8 +551,8 @@ def test_evaluate_script_stdout_limits_game_summary_lines(tmp_path: Path) -> Non
 
     assert result.returncode == 0, result.stderr
     stdout_lines = result.stdout.strip().splitlines()
-    assert stdout_lines[0].endswith("shown_games=10/12")
-    assert len([line for line in stdout_lines if line.startswith("game ")]) == 10
+    assert len([line for line in stdout_lines if line.startswith("game ")]) == 12
+    assert stdout_lines[-1].startswith("total opponent=random games=12 ")
 
 
 def test_evaluate_script_rejects_invalid_workers(tmp_path: Path) -> None:
@@ -632,8 +632,10 @@ def test_evaluate_script_neural_vs_neural_uses_unique_paired_openings(
 
     assert result.returncode == 0, result.stderr
     report = json.loads(output.read_text())
-    assert result.stdout.startswith("total opponent=opponent_checkpoint ")
-    assert "game opponent=opponent_checkpoint index=0" in result.stdout
+    assert result.stdout.startswith("game opponent=opponent_checkpoint index=0 ")
+    assert result.stdout.strip().splitlines()[-1].startswith(
+        "total opponent=opponent_checkpoint "
+    )
     neural_configs = report["neural_configs"]
     assert neural_configs["checkpoint"]["temperature"] == 0.0
     assert neural_configs["opponent"]["temperature"] == 0.0
@@ -687,10 +689,11 @@ def test_evaluate_script_neural_vs_neural_smoke_defaults_opponent_settings(
     assert result.returncode == 0, result.stderr
     report = json.loads(output.read_text())
     stdout_lines = result.stdout.strip().splitlines()
-    assert stdout_lines[0].startswith(
+    assert stdout_lines[0].startswith("game opponent=opponent_checkpoint index=0 ")
+    assert len([line for line in stdout_lines if line.startswith("game ")]) == 2
+    assert stdout_lines[-1].startswith(
         "total opponent=opponent_checkpoint games=2 score=1-1 "
     )
-    assert len([line for line in stdout_lines if line.startswith("game ")]) == 2
     assert report["mode"] == "neural_vs_neural"
     assert "promotion" not in report
     assert "criteria" not in report
@@ -762,7 +765,7 @@ def test_evaluate_script_neural_vs_neural_overrides_opponent_settings(tmp_path: 
 
     assert result.returncode == 0, result.stderr
     report = json.loads(output.read_text())
-    assert result.stdout.startswith("total opponent=opponent_checkpoint ")
+    assert result.stdout.startswith("game opponent=opponent_checkpoint ")
     neural_configs = report["neural_configs"]
     assert neural_configs["checkpoint"]["simulations"] == 2
     assert neural_configs["checkpoint"]["node_budget"] == 5
@@ -862,9 +865,10 @@ def test_evaluate_script_parallel_smoke_stdout_summary(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     report = json.loads(output.read_text())
     stdout_lines = result.stdout.strip().splitlines()
-    assert stdout_lines[0].startswith("total opponent=random games=2 ")
+    assert stdout_lines[0].startswith("game opponent=random index=0 ")
     assert any(line.startswith("promotion promoted=True reasons=") for line in stdout_lines)
     assert len([line for line in stdout_lines if line.startswith("game ")]) == 2
+    assert stdout_lines[-1].startswith("total opponent=random games=2 ")
     assert set(report["matches"]) == {"random"}
     assert [record["game_index"] for record in report["matches"]["random"]["records"]] == [
         0,

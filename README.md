@@ -113,8 +113,8 @@ loader/writer tests over duplicated prose. `scripts/self_play.py` and
 `scripts/evaluate.py` support interactive TUI progress on stderr via
 `--progress auto|always|never`: `always` forces it, `never` disables it, and
 `auto` uses the TUI only when stderr is interactive. Stdout stays stable for
-automation: self-play prints a final output summary, while evaluation prints
-aggregate match totals plus at most 10 per-game summary lines. Pass
+automation: self-play prints a final output summary, while evaluation prints one
+line per evaluated game followed by aggregate match totals. Pass
 `scripts/evaluate.py --output report.json` when the full per-game JSON report is
 needed.
 

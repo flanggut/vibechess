@@ -31,7 +31,6 @@ from vibechess.ai.evaluation import (
 )
 
 _PROGRESS_REFRESH_SECONDS = 1.0
-_GAME_SUMMARY_LIMIT = 10
 
 
 @dataclass(slots=True)
@@ -709,8 +708,9 @@ def _progress_enabled(mode: str) -> bool:
 def _print_report_summary(report: Mapping[str, object]) -> None:
     if "match" in report:
         match = _expect_mapping(report.get("match"), "match")
+        match_items = [("opponent_checkpoint", match)]
+        _print_game_summaries(match_items)
         _print_match_total("opponent_checkpoint", match)
-        _print_game_summaries([("opponent_checkpoint", match)])
         return
 
     matches = _expect_mapping(report.get("matches"), "matches")
@@ -718,15 +718,15 @@ def _print_report_summary(report: Mapping[str, object]) -> None:
         (str(name), _expect_mapping(match, f"matches.{name}"))
         for name, match in matches.items()
     ]
-    for name, match in match_items:
-        _print_match_total(name, match)
+    _print_game_summaries(match_items)
     promotion = _expect_mapping(report.get("promotion"), "promotion")
     print(
         "promotion "
         f"promoted={promotion.get('promoted')} "
         f"reasons={len(_expect_list(promotion.get('reasons'), 'promotion.reasons'))}"
     )
-    _print_game_summaries(match_items)
+    for name, match in match_items:
+        _print_match_total(name, match)
 
 
 def _print_match_total(name: str, match: Mapping[str, object]) -> None:
@@ -737,24 +737,18 @@ def _print_match_total(name: str, match: Mapping[str, object]) -> None:
     wins = _expect_int(match.get("player_a_wins"), f"{name}.player_a_wins")
     losses = _expect_int(match.get("player_b_wins"), f"{name}.player_b_wins")
     draws = _expect_int(match.get("draws"), f"{name}.draws")
-    records = _expect_list(match.get("records"), f"{name}.records")
     print(
         f"total opponent={name} games={games} score={score:g}-{opponent_score:g} "
-        f"score_rate={score_rate:.1%} wins={wins} losses={losses} draws={draws} "
-        f"shown_games={min(len(records), _GAME_SUMMARY_LIMIT)}/{len(records)}"
+        f"score_rate={score_rate:.1%} wins={wins} losses={losses} draws={draws}"
     )
 
 
 def _print_game_summaries(match_items: list[tuple[str, Mapping[str, object]]]) -> None:
-    remaining = _GAME_SUMMARY_LIMIT
     for name, match in match_items:
         records = _expect_list(match.get("records"), f"{name}.records")
-        for raw_record in records[:remaining]:
+        for raw_record in records:
             record = _expect_mapping(raw_record, f"{name}.records[]")
             print(_format_game_summary(name, record))
-        remaining -= min(remaining, len(records))
-        if remaining == 0:
-            return
 
 
 def _format_game_summary(name: str, record: Mapping[str, object]) -> str:
