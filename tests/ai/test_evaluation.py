@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import runpy
 import subprocess
 import sys
 from collections.abc import Callable
@@ -552,7 +553,39 @@ def test_evaluate_script_stdout_prints_one_line_per_game_then_summary(tmp_path: 
     assert result.returncode == 0, result.stderr
     stdout_lines = result.stdout.strip().splitlines()
     assert len([line for line in stdout_lines if line.startswith("game ")]) == 12
+    assert all("winner_player=draw" in line for line in stdout_lines if line.startswith("game "))
     assert stdout_lines[-1].startswith("total opponent=random games=12 ")
+
+
+def test_evaluate_script_game_summary_labels_checkpoint_winner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.syspath_prepend(str(Path(__file__).parents[2] / "scripts"))
+    namespace = runpy.run_path("scripts/evaluate.py", run_name="evaluate_script_test")
+    format_game_summary = cast(
+        Callable[[str, dict[str, object]], str],
+        namespace["_format_game_summary"],
+    )
+    record = {
+        "game_index": 0,
+        "player_a_color": "white",
+        "player_a_score": 1.0,
+        "plies": 4,
+        "outcome_reason": "checkmate",
+        "winner": "white",
+        "moves_uci": ["f2f3", "e7e5", "g2g4", "d8h4"],
+        "opening_index": None,
+    }
+
+    assert "winner_player=checkpoint" in format_game_summary("opponent_checkpoint", record)
+    assert "winner_player=opponent_checkpoint" in format_game_summary(
+        "opponent_checkpoint",
+        {**record, "player_a_score": 0.0, "winner": "black"},
+    )
+    assert "winner_player=draw" in format_game_summary(
+        "opponent_checkpoint",
+        {**record, "player_a_score": 0.5, "winner": None},
+    )
 
 
 def test_evaluate_script_rejects_invalid_workers(tmp_path: Path) -> None:
@@ -636,6 +669,7 @@ def test_evaluate_script_neural_vs_neural_uses_unique_paired_openings(
     assert result.stdout.strip().splitlines()[-1].startswith(
         "total opponent=opponent_checkpoint "
     )
+    assert "winner_player=draw" in result.stdout
     neural_configs = report["neural_configs"]
     assert neural_configs["checkpoint"]["temperature"] == 0.0
     assert neural_configs["opponent"]["temperature"] == 0.0
@@ -690,6 +724,7 @@ def test_evaluate_script_neural_vs_neural_smoke_defaults_opponent_settings(
     report = json.loads(output.read_text())
     stdout_lines = result.stdout.strip().splitlines()
     assert stdout_lines[0].startswith("game opponent=opponent_checkpoint index=0 ")
+    assert "winner_player=draw" in stdout_lines[0]
     assert len([line for line in stdout_lines if line.startswith("game ")]) == 2
     assert stdout_lines[-1].startswith(
         "total opponent=opponent_checkpoint games=2 score=1-1 "

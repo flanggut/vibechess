@@ -760,10 +760,19 @@ def _format_game_summary(name: str, record: Mapping[str, object]) -> str:
         f"score={_expect_number(record.get('player_a_score'), 'player_a_score'):g} "
         f"plies={_expect_int(record.get('plies'), 'plies')} "
         f"outcome={record.get('outcome_reason')} winner={winner_text} "
+        f"winner_player={_winner_player_label(name, record)} "
         f"moves={len(_expect_list(record.get('moves_uci'), 'moves_uci'))} "
         f"opening={record.get('opening_index')}"
     )
 
+
+def _winner_player_label(name: str, record: Mapping[str, object]) -> str:
+    score = _expect_number(record.get("player_a_score"), "player_a_score")
+    if score == 1.0:
+        return "checkpoint"
+    if score == 0.0:
+        return name
+    return "draw"
 
 def _expect_mapping(value: object, field: str) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
