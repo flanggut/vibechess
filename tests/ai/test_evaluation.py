@@ -15,11 +15,13 @@ from vibechess.ai import MCTSConfig, NeuralMCTSConfig, RandomPlayer
 from vibechess.ai.evaluation import (
     EARLY_PROMOTION_NOTE,
     MatchConfig,
+    OpeningConfig,
     PlayerSpec,
     PromotionCriteria,
     assess_promotion,
     evaluate_checkpoint_against_baselines,
     evaluate_checkpoints_head_to_head,
+    generate_unique_openings,
     mcts_player_spec,
     random_player_spec,
     run_match,
@@ -138,6 +140,17 @@ def test_promotion_criteria_are_explicit_smoke_validation_only() -> None:
     assert any(reason == "missing required baseline: mcts" for reason in failed.reasons)
     assert any("requires at least 3" in reason for reason in failed.reasons)
     assert any("score rate 0.500 below required 0.750" in reason for reason in failed.reasons)
+
+
+def test_generated_openings_are_unique_or_rejected() -> None:
+    openings = generate_unique_openings(OpeningConfig(count=8, plies=2, seed=11))
+
+    assert len({opening.starting_fen for opening in openings}) == 8
+    assert len({opening.moves_uci for opening in openings}) == 8
+    assert [opening.opening_index for opening in openings] == list(range(8))
+
+    with pytest.raises(ValueError, match="could not generate 21 unique openings"):
+        generate_unique_openings(OpeningConfig(count=21, plies=1, seed=11))
 
 
 def test_checkpoint_evaluation_reuses_loaded_checkpoint_per_serial_match(
@@ -396,7 +409,7 @@ def test_evaluate_script_smoke(tmp_path: Path) -> None:
             str(checkpoint_dir),
             "--baseline",
             "random",
-            "--games",
+            "--opening-count",
             "1",
             "--max-plies",
             "1",
@@ -461,7 +474,7 @@ def test_evaluate_script_rejects_reuse_floor_above_simulations(tmp_path: Path) -
     assert "--min-reuse-simulations must be no greater than --neural-simulations" in result.stderr
 
 
-def test_evaluate_script_neural_vs_neural_default_temperature_samples_games(
+def test_evaluate_script_neural_vs_neural_uses_unique_paired_openings(
     tmp_path: Path,
 ) -> None:
     checkpoint_dir = tmp_path / "checkpoint"
@@ -477,7 +490,9 @@ def test_evaluate_script_neural_vs_neural_default_temperature_samples_games(
             str(checkpoint_dir),
             "--opponent-checkpoint",
             str(opponent_dir),
-            "--games",
+            "--opening-count",
+            "2",
+            "--opening-plies",
             "4",
             "--max-plies",
             "4",
@@ -494,11 +509,16 @@ def test_evaluate_script_neural_vs_neural_default_temperature_samples_games(
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout)
     neural_configs = report["neural_configs"]
-    assert neural_configs["checkpoint"]["temperature"] == 1.0
-    assert neural_configs["opponent"]["temperature"] == 1.0
+    assert neural_configs["checkpoint"]["temperature"] == 0.0
+    assert neural_configs["opponent"]["temperature"] == 0.0
+    assert report["opening_config"] == {"count": 2, "plies": 4, "seed": 7}
     records = report["match"]["records"]
-    assert records[0]["moves_uci"] != records[2]["moves_uci"]
-    assert records[1]["moves_uci"] != records[3]["moves_uci"]
+    assert [record["opening_index"] for record in records] == [0, 0, 1, 1]
+    assert records[0]["starting_fen"] == records[1]["starting_fen"]
+    assert records[2]["starting_fen"] == records[3]["starting_fen"]
+    assert records[0]["starting_fen"] != records[2]["starting_fen"]
+    assert records[0]["opening_moves_uci"] == records[1]["opening_moves_uci"]
+    assert records[2]["opening_moves_uci"] == records[3]["opening_moves_uci"]
 
 
 def test_evaluate_script_neural_vs_neural_smoke_defaults_opponent_settings(
@@ -518,7 +538,7 @@ def test_evaluate_script_neural_vs_neural_smoke_defaults_opponent_settings(
             str(checkpoint_dir),
             "--opponent-checkpoint",
             str(opponent_dir),
-            "--games",
+            "--opening-count",
             "1",
             "--max-plies",
             "1",
@@ -543,8 +563,8 @@ def test_evaluate_script_neural_vs_neural_smoke_defaults_opponent_settings(
     file_report = json.loads(output.read_text())
     assert stdout_report == file_report
     assert result.stderr.strip() == (
-        "Neural-vs-neural summary: checkpoint 0.5-0.5 opponent_checkpoint "
-        "over 1 game (50.0% score rate); wins 0-0, draws 1"
+        "Neural-vs-neural summary: checkpoint 1-1 opponent_checkpoint "
+        "over 2 games (50.0% score rate); wins 0-0, draws 2"
     )
     assert stdout_report["mode"] == "neural_vs_neural"
     assert "promotion" not in stdout_report
@@ -572,7 +592,7 @@ def test_evaluate_script_neural_vs_neural_overrides_opponent_settings(tmp_path: 
             str(checkpoint_dir),
             "--opponent-checkpoint",
             str(opponent_dir),
-            "--games",
+            "--opening-count",
             "1",
             "--max-plies",
             "1",
@@ -686,8 +706,8 @@ def test_evaluate_script_parallel_smoke_stdout_json(tmp_path: Path) -> None:
             str(checkpoint_dir),
             "--baseline",
             "random",
-            "--games",
-            "2",
+            "--opening-count",
+            "1",
             "--max-plies",
             "1",
             "--neural-simulations",

@@ -12,7 +12,10 @@ from typing import NoReturn
 
 from vibechess.ai import MCTSConfig, NeuralMCTSConfig
 from vibechess.ai.evaluation import (
+    DEFAULT_EVALUATION_OPENING_COUNT,
+    DEFAULT_EVALUATION_OPENING_PLIES,
     MatchConfig,
+    OpeningConfig,
     PromotionCriteria,
     evaluate_checkpoint_against_baselines,
     evaluate_checkpoints_head_to_head,
@@ -23,9 +26,13 @@ from vibechess.ai.evaluation import (
 def main() -> None:
     args = _parse_args()
     match_config = MatchConfig(
-        games=args.games,
+        games=args.opening_count * 2,
         max_plies=args.max_plies,
-        alternate_colors=not args.no_alternate_colors,
+    )
+    opening_config = OpeningConfig(
+        count=args.opening_count,
+        plies=args.opening_plies,
+        seed=args.opening_seed,
     )
     neural_config = _build_neural_config(
         simulations=args.neural_simulations,
@@ -84,6 +91,7 @@ def main() -> None:
             workers=args.workers,
             batch_size=args.batch_size,
             active_games=args.active_games,
+            opening_config=opening_config,
         )
     else:
         baselines = tuple(args.baseline)
@@ -109,6 +117,7 @@ def main() -> None:
             workers=args.workers,
             batch_size=args.batch_size,
             active_games=args.active_games,
+            opening_config=opening_config,
         )
     if args.output is not None:
         write_evaluation_report(report, args.output)
@@ -162,8 +171,33 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Baseline to run; repeat to select multiple (default: random and mcts)",
     )
-    parser.add_argument("--games", type=int, default=2, help="Games per baseline or match")
-    parser.add_argument("--max-plies", type=int, default=40, help="Maximum plies per game")
+    parser.add_argument(
+        "--opening-count",
+        type=int,
+        default=DEFAULT_EVALUATION_OPENING_COUNT,
+        help=(
+            "Number of unique seeded openings to evaluate; each opening is played "
+            "twice with colors swapped"
+        ),
+    )
+    parser.add_argument(
+        "--opening-plies",
+        type=int,
+        default=DEFAULT_EVALUATION_OPENING_PLIES,
+        help="Number of random legal plies used to generate each unique opening",
+    )
+    parser.add_argument(
+        "--opening-seed",
+        type=int,
+        default=None,
+        help="Opening generation seed (default: --seed)",
+    )
+    parser.add_argument(
+        "--max-plies",
+        type=int,
+        default=40,
+        help="Maximum played plies after opening",
+    )
     parser.add_argument(
         "--workers",
         type=int,
@@ -212,8 +246,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--neural-temperature",
         type=float,
-        default=1.0,
-        help="Neural move temperature; default 1.0 lets per-game seeds sample moves",
+        default=0.0,
+        help="Neural move temperature; default 0.0 uses deterministic best-move play",
     )
     parser.add_argument(
         "--neural-collection-batch-size",
@@ -311,7 +345,6 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Minimum checkpoint score rate versus MCTS for early promotion",
     )
-    parser.add_argument("--no-alternate-colors", action="store_true", help="Keep checkpoint white")
     parser.add_argument("--output", type=Path, default=None, help="Optional JSON report path")
     parser.add_argument(
         "--require-promotion",
@@ -325,6 +358,12 @@ def _parse_args() -> argparse.Namespace:
         parser.error("--batch-size must be at least 1")
     if parsed.active_games is not None and parsed.active_games < 1:
         parser.error("--active-games must be at least 1")
+    if parsed.opening_count < 1:
+        parser.error("--opening-count must be at least 1")
+    if parsed.opening_plies < 1:
+        parser.error("--opening-plies must be at least 1")
+    if parsed.opening_seed is None:
+        parsed.opening_seed = parsed.seed
     if parsed.opponent_checkpoint is not None:
         if parsed.baseline is not None:
             parser.error("--baseline cannot be used with --opponent-checkpoint")

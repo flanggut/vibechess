@@ -58,7 +58,7 @@ uv run python scripts/perft.py 3
 uv run python scripts/benchmark.py --smoke
 uv run python scripts/self_play.py --games 1 --max-plies 8 --simulations 1 --output data/selfplay/smoke
 uv run python scripts/train.py --dataset data/selfplay/smoke --output data/checkpoints/train-smoke --epochs 1 --batch-size 2
-uv run python scripts/evaluate.py --checkpoint data/checkpoints/train-smoke/checkpoint-final --games 2 --max-plies 40 --neural-simulations 1 --mcts-simulations 1
+uv run python scripts/evaluate.py --checkpoint data/checkpoints/train-smoke/checkpoint-final --opening-count 1 --max-plies 40 --neural-simulations 1 --mcts-simulations 1
 (cd swift && swift test)
 ```
 
@@ -120,10 +120,11 @@ reuse with `--reuse-simulation-budget`; add `--min-reuse-simulations N` only
 when reused roots must receive a fresh visit floor. Both scripts support
 cross-game neural batching with `--batch-size`/`--active-games`; evaluation also
 exposes within-search leaf batching via `--neural-collection-batch-size`.
-Evaluation derives deterministic per-game player seeds from `--seed`; the script's
-default neural temperature samples from those streams, so larger runs do not
-restart every game from the same deterministic line. Pass `--neural-temperature 0`
-for fully deterministic neural move choice.
+Evaluation uses deterministic neural play by default and derives unique seeded
+random openings from `--seed`; `--opening-count N` produces `2N` games by playing
+each opening once per color. Reports include each game's `opening_index`,
+`opening_seed`, `opening_moves_uci`, and `starting_fen` so duplicate openings are
+auditable.
 
 ## Development notes
 

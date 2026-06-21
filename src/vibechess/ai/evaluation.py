@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import random
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass, replace
@@ -31,6 +32,9 @@ from vibechess.nn.inference import PolicyValueInference
 
 PlayerFactory = Callable[[], Player]
 SeededPlayerFactory: TypeAlias = Callable[[int, str], Player]
+DEFAULT_EVALUATION_OPENING_COUNT = 64
+DEFAULT_EVALUATION_OPENING_PLIES = 8
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +72,97 @@ def _derive_game_seed(
     return int.from_bytes(blake2b(payload.encode(), digest_size=8).digest(), "big")
 
 
+def _derive_opening_seed(base_seed: int, candidate_index: int) -> int:
+    payload = f"vibechess-evaluation-opening-v1:{base_seed}:{candidate_index}"
+    return int.from_bytes(blake2b(payload.encode(), digest_size=8).digest(), "big")
+
+
+def generate_unique_openings(config: OpeningConfig) -> tuple[MatchOpening, ...]:
+    """Generate unique deterministic random opening positions.
+
+    Uniqueness is enforced on the resulting starting FEN. If the requested number
+    cannot be generated with the configured opening length, evaluation fails rather
+    than silently replaying a duplicate opening.
+    """
+    openings: list[MatchOpening] = []
+    seen_fens: set[str] = set()
+    max_attempts = max(config.count * 100, 1000)
+    candidate_index = 0
+    while len(openings) < config.count and candidate_index < max_attempts:
+        opening_seed = _derive_opening_seed(config.seed, candidate_index)
+        rng = random.Random(opening_seed)
+        game = Game.new()
+        moves: list[Move] = []
+        for _ in range(config.plies):
+            legal = game.legal_moves
+            if not legal or game.outcome is not None:
+                break
+            move = rng.choice(legal)
+            game = game.play_known_legal(move)
+            moves.append(move)
+        candidate_index += 1
+        if len(moves) != config.plies or game.outcome is not None:
+            continue
+        starting_fen = game.to_fen()
+        if starting_fen in seen_fens:
+            continue
+        seen_fens.add(starting_fen)
+        openings.append(
+            MatchOpening(
+                opening_index=len(openings),
+                opening_seed=opening_seed,
+                moves_uci=tuple(move.to_uci() for move in moves),
+                starting_fen=starting_fen,
+                game=game,
+            )
+        )
+    if len(openings) != config.count:
+        msg = (
+            f"could not generate {config.count} unique openings with "
+            f"{config.plies} plies after {max_attempts} attempts"
+        )
+        raise ValueError(msg)
+    return tuple(openings)
+
+
+def _paired_opening_starts(opening_config: OpeningConfig | None) -> tuple[_GameStart, ...] | None:
+    if opening_config is None:
+        return None
+    starts: list[_GameStart] = []
+    for opening in generate_unique_openings(opening_config):
+        start = _GameStart(
+            game=opening.game,
+            start_plies=len(opening.game.moves),
+            opening_index=opening.opening_index,
+            opening_seed=opening.opening_seed,
+            opening_moves_uci=opening.moves_uci,
+            starting_fen=opening.starting_fen,
+        )
+        starts.extend((start, start))
+    return tuple(starts)
+
+
+def _validate_opening_starts(
+    match_config: MatchConfig,
+    opening_starts: Sequence[_GameStart] | None,
+) -> None:
+    if opening_starts is not None and len(opening_starts) != match_config.games:
+        msg = (
+            f"paired openings produce {len(opening_starts)} games, "
+            f"but match config requests {match_config.games}"
+        )
+        raise ValueError(msg)
+
+
+def _game_start_for_index(
+    opening_starts: Sequence[_GameStart] | None,
+    game_index: int,
+) -> _GameStart:
+    if opening_starts is None:
+        return _GameStart(game=Game.new(), start_plies=0)
+    return opening_starts[game_index]
+
+
 @dataclass(frozen=True, slots=True)
 class MatchConfig:
     """Small match settings suitable for smoke tests and local checkpoint checks."""
@@ -84,6 +179,42 @@ class MatchConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class OpeningConfig:
+    """Deterministic random opening generation settings for evaluation matches."""
+
+    count: int = DEFAULT_EVALUATION_OPENING_COUNT
+    plies: int = DEFAULT_EVALUATION_OPENING_PLIES
+    seed: int = 0
+
+    def __post_init__(self) -> None:
+        if self.count < 1:
+            raise ValueError(f"opening count must be at least 1, got {self.count}")
+        if self.plies < 1:
+            raise ValueError(f"opening plies must be at least 1, got {self.plies}")
+
+
+@dataclass(frozen=True, slots=True)
+class MatchOpening:
+    """One unique generated opening position used by paired evaluation games."""
+
+    opening_index: int
+    opening_seed: int
+    moves_uci: tuple[str, ...]
+    starting_fen: str
+    game: Game
+
+
+@dataclass(frozen=True, slots=True)
+class _GameStart:
+    game: Game
+    start_plies: int
+    opening_index: int | None = None
+    opening_seed: int | None = None
+    opening_moves_uci: tuple[str, ...] = ()
+    starting_fen: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class MatchGameRecord:
     """Serializable result of one evaluated game."""
 
@@ -96,6 +227,10 @@ class MatchGameRecord:
     player_a_score: float
     final_fen: str
     moves_uci: list[str]
+    opening_index: int | None
+    opening_seed: int | None
+    opening_moves_uci: list[str]
+    starting_fen: str | None
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -148,7 +283,14 @@ def run_match(
 ) -> MatchResult:
     """Run a legal-game match between two player specs and return aggregate scores."""
     resolved = MatchConfig() if config is None else config
-    records = _run_match_records(player_a, player_b, resolved, start_game=0, games=resolved.games)
+    records = _run_match_records(
+        player_a,
+        player_b,
+        resolved,
+        start_game=0,
+        games=resolved.games,
+        opening_starts=None,
+    )
     return _match_result_from_records(player_a.name, player_b.name, records)
 
 
@@ -159,9 +301,11 @@ def _run_match_records(
     *,
     start_game: int,
     games: int,
+    opening_starts: Sequence[_GameStart] | None,
 ) -> list[MatchGameRecord]:
     records: list[MatchGameRecord] = []
     for game_index in range(start_game, start_game + games):
+        game_start = _game_start_for_index(opening_starts, game_index)
         a_is_white = (game_index % 2 == 0) or not config.alternate_colors
         white = (
             player_a.create(game_index=game_index, role="player_a")
@@ -173,8 +317,15 @@ def _run_match_records(
             if a_is_white
             else player_a.create(game_index=game_index, role="player_a")
         )
-        game = play_game(white, black, game=Game.new(), max_plies=config.max_plies)
-        records.append(_match_game_record(game_index, game, player_a_is_white=a_is_white))
+        game = play_game(white, black, game=game_start.game, max_plies=config.max_plies)
+        records.append(
+            _match_game_record(
+                game_index,
+                game,
+                player_a_is_white=a_is_white,
+                game_start=game_start,
+            )
+        )
     return records
 
 
@@ -187,6 +338,7 @@ def _run_match_chunk_records(
     games: int,
     batch_size: int,
     active_games: int | None,
+    opening_starts: Sequence[_GameStart] | None,
 ) -> list[MatchGameRecord]:
     """Run one chunk of games, using batched scheduling only when it can help.
 
@@ -203,6 +355,7 @@ def _run_match_chunk_records(
             games=games,
             batch_size=batch_size,
             active_games=active_games,
+            opening_starts=opening_starts,
         )
     return _run_match_records(
         player_a,
@@ -210,6 +363,7 @@ def _run_match_chunk_records(
         config,
         start_game=start_game,
         games=games,
+        opening_starts=opening_starts,
     )
 
 
@@ -218,6 +372,7 @@ def _match_game_record(
     game: Game,
     *,
     player_a_is_white: bool,
+    game_start: _GameStart,
 ) -> MatchGameRecord:
     score = _score_for_player_a(game, player_a_is_white=player_a_is_white)
     outcome = game.outcome
@@ -234,6 +389,10 @@ def _match_game_record(
         player_a_score=score,
         final_fen=fields.final_fen,
         moves_uci=fields.moves_uci,
+        opening_index=game_start.opening_index,
+        opening_seed=game_start.opening_seed,
+        opening_moves_uci=list(game_start.opening_moves_uci),
+        starting_fen=game_start.starting_fen,
     )
 
 
@@ -463,6 +622,8 @@ class _EvaluationChunk:
 class _BatchedMatchGameState:
     game_index: int
     game: Game
+    game_start: _GameStart
+    start_plies: int
     player_a_is_white: bool
     white: Player
     black: Player
@@ -484,6 +645,7 @@ def _run_batched_match_records(
     games: int,
     batch_size: int,
     active_games: int | None,
+    opening_starts: Sequence[_GameStart] | None,
 ) -> list[MatchGameRecord]:
     active_limit = resolve_active_limit(games, batch_size, active_games)
     active: dict[int, _BatchedMatchGameState] = {}
@@ -494,10 +656,13 @@ def _run_batched_match_records(
     def launch_available_games() -> None:
         nonlocal next_game_index
         while len(active) < active_limit and next_game_index < end_game_index:
+            game_start = _game_start_for_index(opening_starts, next_game_index)
             a_is_white = (next_game_index % 2 == 0) or not config.alternate_colors
             active[next_game_index] = _BatchedMatchGameState(
                 game_index=next_game_index,
-                game=Game.new(),
+                game=game_start.game,
+                game_start=game_start,
+                start_plies=game_start.start_plies,
                 player_a_is_white=a_is_white,
                 white=(
                     player_a.create(game_index=next_game_index, role="player_a")
@@ -521,6 +686,7 @@ def _run_batched_match_records(
             state.game_index,
             game,
             player_a_is_white=state.player_a_is_white,
+            game_start=state.game_start,
         )
 
     launch_available_games()
@@ -531,7 +697,10 @@ def _run_batched_match_records(
         ] = {}
         progressed = False
         for state in [active[index] for index in sorted(active)]:
-            if state.game.outcome is not None or len(state.game.moves) >= config.max_plies:
+            if (
+                state.game.outcome is not None
+                or len(state.game.moves) - state.start_plies >= config.max_plies
+            ):
                 complete_state(state)
                 progressed = True
                 continue
@@ -660,6 +829,7 @@ def _run_parallel_evaluation(
     workers: int,
     batch_size: int,
     active_games: int | None,
+    opening_starts: Sequence[_GameStart] | None,
 ) -> dict[str, MatchResult]:
     total_games = len(selected_baselines) * match_config.games
     effective_workers = min(workers, total_games)
@@ -670,8 +840,16 @@ def _run_parallel_evaluation(
     for baseline, records in _map_chunks(
         _run_evaluation_chunk,
         chunks,
-        [checkpoint_dir, match_config, neural_config, mcts_config, random_seed,
-         batch_size, active_games],
+        [
+            checkpoint_dir,
+            match_config,
+            neural_config,
+            mcts_config,
+            random_seed,
+            batch_size,
+            active_games,
+            opening_starts,
+        ],
         workers=effective_workers,
     ):
         records_by_baseline[baseline].extend(records)
@@ -718,6 +896,7 @@ def _run_evaluation_chunk(
     random_seed: int | None,
     batch_size: int,
     active_games: int | None,
+    opening_starts: Sequence[_GameStart] | None,
 ) -> tuple[str, list[MatchGameRecord]]:
     checkpoint = _checkpoint_player_spec_reusing_loaded_checkpoint(
         checkpoint_dir,
@@ -733,6 +912,7 @@ def _run_evaluation_chunk(
         games=chunk.games,
         batch_size=batch_size,
         active_games=active_games,
+        opening_starts=opening_starts,
     )
     return chunk.baseline, records
 
@@ -764,6 +944,7 @@ def _run_parallel_checkpoint_match(
     workers: int,
     batch_size: int,
     active_games: int | None,
+    opening_starts: Sequence[_GameStart] | None,
 ) -> MatchResult:
     effective_workers = min(workers, match_config.games)
     chunk_size = max(1, math.ceil(match_config.games / effective_workers))
@@ -772,8 +953,16 @@ def _run_parallel_checkpoint_match(
     for chunk_records in _map_chunks(
         _run_checkpoint_match_chunk,
         chunks,
-        [checkpoint_dir, opponent_checkpoint_dir, match_config, neural_config,
-         opponent_neural_config, batch_size, active_games],
+        [
+            checkpoint_dir,
+            opponent_checkpoint_dir,
+            match_config,
+            neural_config,
+            opponent_neural_config,
+            batch_size,
+            active_games,
+            opening_starts,
+        ],
         workers=effective_workers,
     ):
         records.extend(chunk_records)
@@ -789,6 +978,7 @@ def _run_checkpoint_match_chunk(
     opponent_neural_config: NeuralMCTSConfig,
     batch_size: int,
     active_games: int | None,
+    opening_starts: Sequence[_GameStart] | None,
 ) -> list[MatchGameRecord]:
     checkpoint = _checkpoint_player_spec_reusing_loaded_checkpoint(
         checkpoint_dir,
@@ -808,6 +998,7 @@ def _run_checkpoint_match_chunk(
         games=chunk.games,
         batch_size=batch_size,
         active_games=active_games,
+        opening_starts=opening_starts,
     )
 
 
@@ -821,6 +1012,7 @@ def evaluate_checkpoints_head_to_head(
     workers: int = 1,
     batch_size: int = 1,
     active_games: int | None = None,
+    opening_config: OpeningConfig | None = None,
 ) -> dict[str, object]:
     """Compare two checkpoint-backed neural-MCTS players without baselines.
 
@@ -832,6 +1024,8 @@ def evaluate_checkpoints_head_to_head(
         raise ValueError(f"workers must be at least 1, got {workers}")
     _validate_batching(batch_size, active_games)
     resolved_match_config = MatchConfig() if match_config is None else match_config
+    opening_starts = _paired_opening_starts(opening_config)
+    _validate_opening_starts(resolved_match_config, opening_starts)
     resolved_neural_config = _resolved_neural_config(neural_config)
     resolved_opponent_config = (
         resolved_neural_config if opponent_neural_config is None else opponent_neural_config
@@ -860,6 +1054,7 @@ def evaluate_checkpoints_head_to_head(
             games=resolved_match_config.games,
             batch_size=batch_size,
             active_games=active_games,
+            opening_starts=opening_starts,
         )
         result = _match_result_from_records("checkpoint", "opponent_checkpoint", records)
     else:
@@ -872,6 +1067,7 @@ def evaluate_checkpoints_head_to_head(
             workers=workers,
             batch_size=batch_size,
             active_games=active_games,
+            opening_starts=opening_starts,
         )
 
     return {
@@ -882,6 +1078,7 @@ def evaluate_checkpoints_head_to_head(
             "checkpoint": asdict(resolved_neural_config),
             "opponent": asdict(resolved_opponent_config),
         },
+        "opening_config": None if opening_config is None else asdict(opening_config),
         "match": result.to_dict(),
     }
 
@@ -898,6 +1095,7 @@ def evaluate_checkpoint_against_baselines(
     workers: int = 1,
     batch_size: int = 1,
     active_games: int | None = None,
+    opening_config: OpeningConfig | None = None,
 ) -> dict[str, object]:
     """Compare a checkpoint player against random/classical-MCTS baselines."""
     if workers < 1:
@@ -906,6 +1104,8 @@ def evaluate_checkpoint_against_baselines(
     resolved_match_config = MatchConfig() if match_config is None else match_config
     selected_baselines = tuple(baselines)
     _validate_baselines(selected_baselines)
+    opening_starts = _paired_opening_starts(opening_config)
+    _validate_opening_starts(resolved_match_config, opening_starts)
 
     if workers == 1 or len(selected_baselines) * resolved_match_config.games <= 1:
         checkpoint = checkpoint_player_spec(
@@ -934,6 +1134,7 @@ def evaluate_checkpoint_against_baselines(
                     games=resolved_match_config.games,
                     batch_size=batch_size,
                     active_games=active_games,
+                    opening_starts=opening_starts,
                 ),
             )
             for baseline in selected_baselines
@@ -949,6 +1150,7 @@ def evaluate_checkpoint_against_baselines(
             workers=workers,
             batch_size=batch_size,
             active_games=active_games,
+            opening_starts=opening_starts,
         )
 
     resolved_criteria = criteria or PromotionCriteria(required_baselines=selected_baselines)
@@ -957,6 +1159,7 @@ def evaluate_checkpoint_against_baselines(
         "checkpoint": str(Path(checkpoint_dir)),
         "criteria": resolved_criteria.to_dict(),
         "promotion": decision.to_dict(),
+        "opening_config": None if opening_config is None else asdict(opening_config),
         "matches": {name: result.to_dict() for name, result in results.items()},
     }
 
@@ -978,15 +1181,20 @@ def _score_for_player_a(game: Game, *, player_a_is_white: bool) -> float:
 
 __all__ = [
     "EARLY_PROMOTION_NOTE",
+    "DEFAULT_EVALUATION_OPENING_COUNT",
+    "DEFAULT_EVALUATION_OPENING_PLIES",
     "MatchConfig",
     "MatchGameRecord",
     "MatchResult",
+    "MatchOpening",
+    "OpeningConfig",
     "PlayerSpec",
     "PromotionCriteria",
     "PromotionDecision",
     "assess_promotion",
     "checkpoint_player_spec",
     "evaluate_checkpoint_against_baselines",
+    "generate_unique_openings",
     "evaluate_checkpoints_head_to_head",
     "mcts_player_spec",
     "random_player_spec",
