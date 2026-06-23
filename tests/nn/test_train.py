@@ -24,7 +24,7 @@ from vibechess.nn.encode import (
     legal_move_mask,
     move_to_action_index,
 )
-from vibechess.nn.model import PolicyValueConfig, PolicyValueNet
+from vibechess.nn.model import PolicyValueConfig, PolicyValueNet, PolicyValueTransformerNet
 from vibechess.nn.self_play import SelfPlayConfig
 from vibechess.nn.self_play_dataset import (
     SelfPlayDataset,
@@ -399,6 +399,7 @@ def test_train_script_consumes_dataset_and_writes_checkpoint(tmp_path: Path) -> 
     assert checkpoint_metadata.training_step == 1
     assert checkpoint_metadata.notes is not None
     assert json.loads(checkpoint_metadata.notes) == {
+        "architecture": "resnet",
         "batch_size": 1,
         "carry_optimizer_state_across_shards": True,
         "checkpoint_every": 0,
@@ -415,7 +416,61 @@ def test_train_script_consumes_dataset_and_writes_checkpoint(tmp_path: Path) -> 
         "validation_fraction": 0.1,
         "value_channels": 1,
         "value_hidden_dim": 8,
+        "transformer_heads": 8,
+        "transformer_layers": 6,
+        "transformer_mlp_dim": 896,
+        "transformer_model_dim": 224,
         "warmup": 3,
     }
     training_data = json.loads((output_dir / "training.json").read_text())
     assert training_data["training_config"]["warmup_steps"] == 3
+
+
+
+def test_train_script_starts_fresh_transformer_checkpoint(tmp_path: Path) -> None:
+    dataset_dir = tmp_path / "dataset"
+    output_dir = tmp_path / "transformer-output"
+    save_self_play_dataset(tiny_dataset(sample_count=1), dataset_dir)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/train.py",
+            "--dataset",
+            str(dataset_dir),
+            "--output",
+            str(output_dir),
+            "--architecture",
+            "transformer",
+            "--epochs",
+            "1",
+            "--batch-size",
+            "1",
+            "--learning-rate",
+            "0.001",
+            "--transformer-model-dim",
+            "16",
+            "--transformer-layers",
+            "1",
+            "--transformer-heads",
+            "4",
+            "--transformer-mlp-dim",
+            "32",
+            "--value-hidden-dim",
+            "8",
+        ],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "training complete" in result.stdout
+    loaded = load_checkpoint(output_dir / "checkpoint-final")
+    assert isinstance(loaded.model, PolicyValueTransformerNet)
+    assert loaded.metadata.model_architecture == "transformer"
+    assert loaded.metadata.training_step == 1
+    assert loaded.metadata.notes is not None
+    assert json.loads(loaded.metadata.notes)["architecture"] == "transformer"

@@ -20,6 +20,8 @@ from vibechess.nn import (
     PolicyValueInference,
     PolicyValueNet,
     PolicyValueOutput,
+    PolicyValueTransformerNet,
+    TransformerPolicyValueConfig,
     encode_game,
     legal_action_indices,
     legal_move_mask,
@@ -44,6 +46,26 @@ def tiny_config() -> PolicyValueConfig:
         value_channels=1,
         value_hidden_dim=8,
     )
+
+
+def tiny_transformer_config() -> TransformerPolicyValueConfig:
+    return TransformerPolicyValueConfig(
+        model_dim=16,
+        transformer_layers=1,
+        attention_heads=4,
+        mlp_dim=32,
+        value_hidden_dim=8,
+    )
+
+
+def parameter_count(parameters: Any) -> int:
+    if hasattr(parameters, "shape") and hasattr(parameters, "size"):
+        return int(parameters.size)
+    if isinstance(parameters, dict):
+        return sum(parameter_count(value) for value in parameters.values())
+    if isinstance(parameters, (list, tuple)):
+        return sum(parameter_count(value) for value in parameters)
+    return 0
 
 
 class FixedOutputModel:
@@ -137,6 +159,45 @@ def test_policy_value_model_rejects_wrong_input_shape() -> None:
 
     with pytest.raises(ValueError, match="expected input shape"):
         model(mx.zeros((8, 8, 20), dtype=mx.float32))
+
+
+
+def test_transformer_policy_value_model_forward_shapes_and_value_range() -> None:
+    model = PolicyValueTransformerNet(tiny_transformer_config())
+    output = model(encode_game(Game.new()))
+    mx.eval(output.policy_logits, output.value)
+
+    assert output.policy_logits.dtype == mx.float32
+    assert output.value.dtype == mx.float32
+    assert tensor_shape(output.policy_logits) == (1, ACTION_SPACE_SIZE)
+    assert tensor_shape(output.value) == (1,)
+    assert -1.0 <= scalar(output.value[0]) <= 1.0
+
+
+def test_transformer_policy_value_model_accepts_batched_channel_first_inputs() -> None:
+    model = PolicyValueTransformerNet(tiny_transformer_config())
+    tensor = encode_game(Game.new())
+    output = model(mx.stack([tensor, tensor]))
+    mx.eval(output.policy_logits, output.value)
+
+    assert tensor_shape(output.policy_logits) == (2, ACTION_SPACE_SIZE)
+    assert tensor_shape(output.value) == (2,)
+
+
+def test_transformer_default_matches_strongest_checkpoint_parameter_budget() -> None:
+    strongest_config = PolicyValueConfig(
+        residual_channels=96,
+        residual_blocks=8,
+        policy_channels=8,
+        value_channels=4,
+        value_hidden_dim=128,
+    )
+    strongest_params = parameter_count(PolicyValueNet(strongest_config).parameters())
+    transformer_params = parameter_count(PolicyValueTransformerNet().parameters())
+
+    assert strongest_params == 3_776_941
+    assert transformer_params == 3_718_538
+    assert abs(transformer_params - strongest_params) / strongest_params < 0.02
 
 
 def test_inference_wrapper_masks_policy_to_legal_moves() -> None:
@@ -475,6 +536,29 @@ def test_checkpoint_save_load_round_trips_weights_and_metadata(tmp_path: Path) -
     assert bool(mx.allclose(before.value, after.value).item())
 
 
+def test_transformer_checkpoint_save_load_round_trips_weights_and_metadata(
+    tmp_path: Path,
+) -> None:
+    config = tiny_transformer_config()
+    model = PolicyValueTransformerNet(config)
+    tensor = encode_game(Game.new())
+    before = model(tensor)
+    mx.eval(before.policy_logits, before.value)
+    metadata = CheckpointMetadata.initial(config, training_step=7, notes="transformer unit test")
+
+    saved_metadata = save_checkpoint(model, tmp_path, metadata=metadata)
+    loaded = load_checkpoint(tmp_path)
+    after = loaded.model(tensor)
+    mx.eval(after.policy_logits, after.value)
+
+    assert saved_metadata == metadata
+    assert loaded.metadata == metadata
+    assert isinstance(loaded.model, PolicyValueTransformerNet)
+    assert loaded.metadata.model_architecture == "transformer"
+    assert bool(mx.allclose(before.policy_logits, after.policy_logits).item())
+    assert bool(mx.allclose(before.value, after.value).item())
+
+
 def test_checkpoint_metadata_sidecar_schema(tmp_path: Path) -> None:
     config = tiny_config()
     metadata = save_checkpoint(PolicyValueNet(config), tmp_path)
@@ -483,6 +567,7 @@ def test_checkpoint_metadata_sidecar_schema(tmp_path: Path) -> None:
     assert metadata.schema_version == CHECKPOINT_METADATA_SCHEMA_VERSION
     assert data["schema_version"] == CHECKPOINT_METADATA_SCHEMA_VERSION
     assert data["model_config"] == config.to_dict()
+    assert data["model_architecture"] == "resnet"
     assert data["action_space_version"] == ACTION_SPACE_VERSION
     assert data["encoder_version"] == ENCODER_VERSION
     assert data["training_step"] == 0
@@ -498,9 +583,20 @@ def test_checkpoint_rejects_mismatched_metadata_config(tmp_path: Path) -> None:
         save_checkpoint(model, tmp_path, metadata=metadata)
 
 
+def test_checkpoint_rejects_mismatched_metadata_architecture(tmp_path: Path) -> None:
+    model = PolicyValueNet(tiny_config())
+    metadata = CheckpointMetadata.initial(tiny_transformer_config())
+
+    with pytest.raises(ValueError, match="model_architecture"):
+        save_checkpoint(model, tmp_path, metadata=metadata)
+
+
 def test_metadata_integer_fields_reject_booleans() -> None:
     with pytest.raises(TypeError, match="residual_channels"):
         PolicyValueConfig.from_dict({"residual_channels": True})
+
+    with pytest.raises(TypeError, match="model_dim"):
+        TransformerPolicyValueConfig.from_dict({"model_dim": True})
 
     data = CheckpointMetadata.initial(tiny_config()).to_dict()
     data["training_step"] = False

@@ -8,7 +8,11 @@ import json
 from pathlib import Path
 
 from vibechess.nn.checkpoint import load_checkpoint
-from vibechess.nn.model import PolicyValueConfig
+from vibechess.nn.model import (
+    ModelConfig,
+    PolicyValueConfig,
+    TransformerPolicyValueConfig,
+)
 from vibechess.nn.pgn_dataset import DEFAULT_MANIFEST_FILENAME
 from vibechess.nn.self_play_dataset import load_self_play_dataset
 from vibechess.nn.train import (
@@ -92,11 +96,25 @@ def main() -> None:
         "--input-checkpoint",
         help="optional existing checkpoint directory to continue model weights/config from",
     )
+    parser.add_argument(
+        "--architecture",
+        choices=("resnet", "transformer"),
+        default="resnet",
+        help="fresh model architecture to train when --input-checkpoint is not set",
+    )
     parser.add_argument("--residual-channels", type=int, default=8)
     parser.add_argument("--residual-blocks", type=int, default=1)
     parser.add_argument("--policy-channels", type=int, default=2)
     parser.add_argument("--value-channels", type=int, default=1)
-    parser.add_argument("--value-hidden-dim", type=int, default=8)
+    parser.add_argument(
+        "--value-hidden-dim",
+        type=int,
+        help="value head hidden dimension; defaults to 8 for resnet and 256 for transformer",
+    )
+    parser.add_argument("--transformer-model-dim", type=int, default=224)
+    parser.add_argument("--transformer-layers", type=int, default=6)
+    parser.add_argument("--transformer-heads", type=int, default=8)
+    parser.add_argument("--transformer-mlp-dim", type=int, default=896)
     args = parser.parse_args()
 
     train_config = TrainingConfig(
@@ -139,13 +157,29 @@ def main() -> None:
                 epoch_callback=_print_epoch_metrics,
             )
     else:
-        model_config = PolicyValueConfig(
-            residual_channels=args.residual_channels,
-            residual_blocks=args.residual_blocks,
-            policy_channels=args.policy_channels,
-            value_channels=args.value_channels,
-            value_hidden_dim=args.value_hidden_dim,
-        )
+        if args.value_hidden_dim is not None:
+            value_hidden_dim = args.value_hidden_dim
+        elif args.architecture == "transformer":
+            value_hidden_dim = 256
+        else:
+            value_hidden_dim = 8
+        model_config: ModelConfig
+        if args.architecture == "transformer":
+            model_config = TransformerPolicyValueConfig(
+                model_dim=args.transformer_model_dim,
+                transformer_layers=args.transformer_layers,
+                attention_heads=args.transformer_heads,
+                mlp_dim=args.transformer_mlp_dim,
+                value_hidden_dim=value_hidden_dim,
+            )
+        else:
+            model_config = PolicyValueConfig(
+                residual_channels=args.residual_channels,
+                residual_blocks=args.residual_blocks,
+                policy_channels=args.policy_channels,
+                value_channels=args.value_channels,
+                value_hidden_dim=value_hidden_dim,
+            )
         result = train_from_directory(
             args.dataset,
             args.output,

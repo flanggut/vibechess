@@ -17,7 +17,14 @@ import numpy.typing as npt
 
 from vibechess.nn.checkpoint import CheckpointMetadata, save_checkpoint
 from vibechess.nn.encode import ACTION_SPACE_SIZE, TENSOR_SHAPE
-from vibechess.nn.model import PolicyValueConfig, PolicyValueNet
+from vibechess.nn.model import (
+    ModelConfig,
+    PolicyValueConfig,
+    PolicyValueModel,
+    PolicyValueNet,
+    PolicyValueTransformerNet,
+    TransformerPolicyValueConfig,
+)
 
 if TYPE_CHECKING:
     from vibechess.nn.self_play_dataset import SelfPlayDataset
@@ -112,7 +119,7 @@ class TrainingResult:
 
 
 def compute_policy_value_loss(
-    model: PolicyValueNet,
+    model: PolicyValueModel,
     positions: MLXArray,
     legal_masks: MLXArray,
     policy_targets: MLXArray,
@@ -143,7 +150,7 @@ def train_model(
     dataset: SelfPlayDataset,
     output_dir: str | Path,
     *,
-    model: PolicyValueNet | None = None,
+    model: PolicyValueModel | None = None,
     config: TrainingConfig | None = None,
     notes: str | None = None,
     initial_step: int = 0,
@@ -166,7 +173,7 @@ def _train_loaded_dataset(
     dataset: SelfPlayDataset,
     output_dir: str | Path,
     *,
-    model: PolicyValueNet | None = None,
+    model: PolicyValueModel | None = None,
     config: TrainingConfig | None = None,
     notes: str | None = None,
     initial_step: int = 0,
@@ -318,7 +325,7 @@ def train_from_directory(
     dataset_dir: str | Path,
     output_dir: str | Path,
     *,
-    model_config: PolicyValueConfig | None = None,
+    model_config: ModelConfig | None = None,
     config: TrainingConfig | None = None,
     notes: str | None = None,
     epoch_callback: Callable[[EpochMetrics], None] | None = None,
@@ -338,7 +345,7 @@ def train_from_directory(
             epoch_callback=epoch_callback,
         )
 
-    model = PolicyValueNet(model_config)
+    model = _new_model(model_config)
     return train_model(
         load_self_play_dataset(input_dir),
         output_dir,
@@ -353,8 +360,8 @@ def train_from_sharded_directory(
     dataset_dir: str | Path,
     output_dir: str | Path,
     *,
-    model_config: PolicyValueConfig | None = None,
-    model: PolicyValueNet | None = None,
+    model_config: ModelConfig | None = None,
+    model: PolicyValueModel | None = None,
     config: TrainingConfig | None = None,
     notes: str | None = None,
     initial_step: int = 0,
@@ -380,7 +387,7 @@ def train_from_sharded_directory(
     epoch_metrics_path = train_dir / DEFAULT_EPOCH_METRICS_FILENAME
     epoch_metrics_path.write_text("")
 
-    model = PolicyValueNet(model_config) if model is None else model
+    model = _new_model(model_config) if model is None else model
     total_steps = initial_step
     total_samples = 0
     total_training_samples = 0
@@ -467,6 +474,16 @@ def train_from_sharded_directory(
     )
 
 
+def _new_model(config: ModelConfig | None) -> PolicyValueModel:
+    if config is None:
+        return PolicyValueNet()
+    if isinstance(config, PolicyValueConfig):
+        return PolicyValueNet(config)
+    if isinstance(config, TransformerPolicyValueConfig):
+        return PolicyValueTransformerNet(config)
+    raise TypeError("unsupported model config type")
+
+
 @dataclass(frozen=True, slots=True)
 class _LossSummary:
     loss: float
@@ -492,7 +509,7 @@ def _split_train_validation_indices(
 
 
 def _evaluate_loss(
-    model: PolicyValueNet,
+    model: PolicyValueModel,
     dataset: SelfPlayDataset,
     indices: npt.NDArray[np.int64],
     *,
@@ -564,7 +581,7 @@ class _Batch:
 
 
 def _loss_for_grad(
-    model: PolicyValueNet,
+    model: PolicyValueModel,
     positions: MLXArray,
     legal_masks: MLXArray,
     policy_targets: MLXArray,
@@ -634,7 +651,7 @@ def _validate_policy_targets(dataset: SelfPlayDataset) -> None:
 
 
 def _save_training_checkpoint(
-    model: PolicyValueNet,
+    model: PolicyValueModel,
     directory: Path,
     *,
     step: int,

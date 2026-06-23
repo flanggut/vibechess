@@ -43,6 +43,8 @@ from vibechess.nn.model import (
     PolicyValueConfig,
     PolicyValueNet,
     PolicyValueOutput,
+    PolicyValueTransformerNet,
+    TransformerPolicyValueConfig,
 )
 from vibechess.nn.train import (
     DEFAULT_EPOCH_METRICS_FILENAME,
@@ -80,6 +82,8 @@ __all__ = [
     "PolicyValueInference",
     "PolicyValueNet",
     "PolicyValueOutput",
+    "PolicyValueTransformerNet",
+    "TransformerPolicyValueConfig",
     "TrainingConfig",
     "TrainingResult",
     "action_index_to_move",

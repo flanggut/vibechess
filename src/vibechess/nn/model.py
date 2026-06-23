@@ -9,6 +9,7 @@ import mlx.core as mx
 import mlx.nn as _nn
 
 from vibechess.nn.encode import (
+    ACTION_PLANES,
     ACTION_SPACE_SIZE,
     ENCODER_CHANNELS,
     TENSOR_SHAPE,
@@ -27,6 +28,9 @@ if TYPE_CHECKING:
 
 MLXArray: TypeAlias = Any
 nn: Any = _nn
+MODEL_ARCHITECTURE_RESNET = "resnet"
+MODEL_ARCHITECTURE_TRANSFORMER = "transformer"
+
 
 _COMPAT_INFERENCE_EXPORTS = frozenset(
     {
@@ -41,10 +45,16 @@ _COMPAT_INFERENCE_EXPORTS = frozenset(
 __all__ = [
     "MLXArray",
     "nn",
+    "MODEL_ARCHITECTURE_RESNET",
+    "MODEL_ARCHITECTURE_TRANSFORMER",
+    "ModelConfig",
     "PolicyValueConfig",
+    "TransformerPolicyValueConfig",
     "PolicyValueOutput",
     "ResidualBlock",
     "PolicyValueNet",
+    "PolicyValueModel",
+    "PolicyValueTransformerNet",
     "BatchInferenceResult",
     "InferenceResult",
     "LegalPolicyBatchResult",
@@ -81,6 +91,43 @@ class PolicyValueConfig:
                     raise TypeError(f"model config field {field_name!r} must be an integer")
                 kwargs[field_name] = value
         return cls(**kwargs)
+
+
+@dataclass(frozen=True, slots=True)
+class TransformerPolicyValueConfig:
+    """Configuration for a square-token Transformer policy/value network.
+
+    Defaults target the parameter budget of ``data/checkpoints/strongest`` while
+    keeping the same encoder and 64 * 73 policy action layout as ``PolicyValueNet``.
+    """
+
+    input_channels: int = ENCODER_CHANNELS
+    board_size: int = 8
+    model_dim: int = 224
+    transformer_layers: int = 6
+    attention_heads: int = 8
+    mlp_dim: int = 896
+    value_hidden_dim: int = 256
+    action_space_size: int = ACTION_SPACE_SIZE
+
+    def to_dict(self) -> dict[str, int]:
+        """Return a JSON-serializable configuration dictionary."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, values: dict[str, object]) -> TransformerPolicyValueConfig:
+        """Build a config from metadata loaded from JSON."""
+        kwargs: dict[str, int] = {}
+        for field_name in cls.__dataclass_fields__:
+            value = values.get(field_name)
+            if value is not None:
+                if isinstance(value, bool) or not isinstance(value, int):
+                    raise TypeError(f"model config field {field_name!r} must be an integer")
+                kwargs[field_name] = value
+        return cls(**kwargs)
+
+
+ModelConfig: TypeAlias = PolicyValueConfig | TransformerPolicyValueConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +213,60 @@ class PolicyValueNet(nn.Module):  # type: ignore[misc]
         value = nn.relu(self.value_hidden(value))
         value = mx.tanh(self.value_head(value)).reshape(-1)
         return PolicyValueOutput(policy_logits=policy_logits, value=value)
+
+
+class PolicyValueTransformerNet(nn.Module):  # type: ignore[misc]
+    """Square-token Transformer with AlphaZero-style policy/value heads.
+
+    Public inputs use the encoder's channel-first shape ``[20, 8, 8]`` or batched
+    ``[N, 20, 8, 8]``. Internally each square becomes one token ordered by the
+    policy action layout: ``square * 73 + move_plane``.
+    """
+
+    def __init__(self, config: TransformerPolicyValueConfig | None = None) -> None:
+        super().__init__()
+        self.config = TransformerPolicyValueConfig() if config is None else config
+        if self.config.board_size != 8:
+            raise ValueError("PolicyValueTransformerNet currently supports only 8x8 boards")
+        if self.config.input_channels != ENCODER_CHANNELS:
+            raise ValueError(f"input_channels must be {ENCODER_CHANNELS}")
+        if self.config.action_space_size != ACTION_SPACE_SIZE:
+            raise ValueError(f"action_space_size must be {ACTION_SPACE_SIZE}")
+        if self.config.model_dim % self.config.attention_heads != 0:
+            raise ValueError("model_dim must be divisible by attention_heads")
+        token_count = self.config.board_size * self.config.board_size
+        self.token_projection = nn.Linear(self.config.input_channels, self.config.model_dim)
+        self.square_embedding = (
+            mx.random.normal((token_count, self.config.model_dim)) * self.config.model_dim**-0.5
+        )
+        self.transformer = nn.TransformerEncoder(
+            num_layers=self.config.transformer_layers,
+            dims=self.config.model_dim,
+            num_heads=self.config.attention_heads,
+            mlp_dims=self.config.mlp_dim,
+            dropout=0.0,
+            norm_first=True,
+        )
+        self.policy_head = nn.Linear(self.config.model_dim, ACTION_PLANES)
+        self.value_hidden = nn.Linear(self.config.model_dim, self.config.value_hidden_dim)
+        self.value_head = nn.Linear(self.config.value_hidden_dim, 1)
+
+    def __call__(self, inputs: MLXArray) -> PolicyValueOutput:
+        x = _prepare_batch(inputs)
+        batch_size = x.shape[0]
+        x = x.reshape(batch_size, self.config.board_size * self.config.board_size, -1)
+        x = self.token_projection(x) + self.square_embedding
+        x = self.transformer(x, None)
+
+        policy_logits = self.policy_head(x).reshape(batch_size, self.config.action_space_size)
+
+        value = mx.mean(x, axis=1)
+        value = nn.relu(self.value_hidden(value))
+        value = mx.tanh(self.value_head(value)).reshape(-1)
+        return PolicyValueOutput(policy_logits=policy_logits, value=value)
+
+
+PolicyValueModel: TypeAlias = PolicyValueNet | PolicyValueTransformerNet
 
 
 def __getattr__(name: str) -> object:
