@@ -128,6 +128,8 @@ Checkpoint metadata records `model_architecture`; missing values are treated as
 the historical residual CNN so existing checkpoints stay loadable. Fresh
 Transformer checkpoints use the same encoder and `8 * 8 * 73` policy action
 space and can be started with `scripts/train.py --architecture transformer`.
+The default Transformer uses a global-attention trunk with two-layer per-square
+policy logits and mean/max-pooled value features.
 
 
 Neural self-play and checkpoint evaluation can opt into visit-budget-aware tree

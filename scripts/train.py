@@ -114,7 +114,8 @@ def main() -> None:
     parser.add_argument("--transformer-model-dim", type=int, default=224)
     parser.add_argument("--transformer-layers", type=int, default=6)
     parser.add_argument("--transformer-heads", type=int, default=8)
-    parser.add_argument("--transformer-mlp-dim", type=int, default=896)
+    parser.add_argument("--transformer-mlp-dim", type=int, default=848)
+    parser.add_argument("--transformer-policy-hidden-dim", type=int, default=448)
     args = parser.parse_args()
 
     train_config = TrainingConfig(
@@ -170,6 +171,7 @@ def main() -> None:
                 transformer_layers=args.transformer_layers,
                 attention_heads=args.transformer_heads,
                 mlp_dim=args.transformer_mlp_dim,
+                policy_hidden_dim=args.transformer_policy_hidden_dim,
                 value_hidden_dim=value_hidden_dim,
             )
         else:

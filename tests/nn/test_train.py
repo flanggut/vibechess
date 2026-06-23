@@ -418,7 +418,8 @@ def test_train_script_consumes_dataset_and_writes_checkpoint(tmp_path: Path) -> 
         "value_hidden_dim": 8,
         "transformer_heads": 8,
         "transformer_layers": 6,
-        "transformer_mlp_dim": 896,
+        "transformer_mlp_dim": 848,
+        "transformer_policy_hidden_dim": 448,
         "transformer_model_dim": 224,
         "warmup": 3,
     }
@@ -455,6 +456,8 @@ def test_train_script_starts_fresh_transformer_checkpoint(tmp_path: Path) -> Non
             "--transformer-heads",
             "4",
             "--transformer-mlp-dim",
+            "32",
+            "--transformer-policy-hidden-dim",
             "32",
             "--value-hidden-dim",
             "8",

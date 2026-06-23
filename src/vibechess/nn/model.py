@@ -106,7 +106,8 @@ class TransformerPolicyValueConfig:
     model_dim: int = 224
     transformer_layers: int = 6
     attention_heads: int = 8
-    mlp_dim: int = 896
+    mlp_dim: int = 848
+    policy_hidden_dim: int = 448
     value_hidden_dim: int = 256
     action_space_size: int = ACTION_SPACE_SIZE
 
@@ -247,8 +248,9 @@ class PolicyValueTransformerNet(nn.Module):  # type: ignore[misc]
             dropout=0.0,
             norm_first=True,
         )
-        self.policy_head = nn.Linear(self.config.model_dim, ACTION_PLANES)
-        self.value_hidden = nn.Linear(self.config.model_dim, self.config.value_hidden_dim)
+        self.policy_hidden = nn.Linear(self.config.model_dim, self.config.policy_hidden_dim)
+        self.policy_head = nn.Linear(self.config.policy_hidden_dim, ACTION_PLANES)
+        self.value_hidden = nn.Linear(self.config.model_dim * 2, self.config.value_hidden_dim)
         self.value_head = nn.Linear(self.config.value_hidden_dim, 1)
 
     def __call__(self, inputs: MLXArray) -> PolicyValueOutput:
@@ -258,9 +260,10 @@ class PolicyValueTransformerNet(nn.Module):  # type: ignore[misc]
         x = self.token_projection(x) + self.square_embedding
         x = self.transformer(x, None)
 
-        policy_logits = self.policy_head(x).reshape(batch_size, self.config.action_space_size)
+        policy = nn.relu(self.policy_hidden(x))
+        policy_logits = self.policy_head(policy).reshape(batch_size, self.config.action_space_size)
 
-        value = mx.mean(x, axis=1)
+        value = mx.concatenate([mx.mean(x, axis=1), mx.max(x, axis=1)], axis=1)
         value = nn.relu(self.value_hidden(value))
         value = mx.tanh(self.value_head(value)).reshape(-1)
         return PolicyValueOutput(policy_logits=policy_logits, value=value)

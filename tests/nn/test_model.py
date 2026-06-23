@@ -54,6 +54,7 @@ def tiny_transformer_config() -> TransformerPolicyValueConfig:
         transformer_layers=1,
         attention_heads=4,
         mlp_dim=32,
+        policy_hidden_dim=32,
         value_hidden_dim=8,
     )
 
@@ -196,7 +197,7 @@ def test_transformer_default_matches_strongest_checkpoint_parameter_budget() -> 
     transformer_params = parameter_count(PolicyValueTransformerNet().parameters())
 
     assert strongest_params == 3_776_941
-    assert transformer_params == 3_718_538
+    assert transformer_params == 3_763_722
     assert abs(transformer_params - strongest_params) / strongest_params < 0.02
 
 
