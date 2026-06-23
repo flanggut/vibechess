@@ -42,6 +42,21 @@ DEFAULT_METADATA_FILENAME = "metadata.json"
 DEFAULT_GAMES_FILENAME = "games.jsonl"
 
 
+def _public_sidecar_paths(directory: str | Path) -> tuple[Path, Path, Path]:
+    base = Path(directory)
+    return (
+        base / DEFAULT_DATASET_FILENAME,
+        base / DEFAULT_METADATA_FILENAME,
+        base / DEFAULT_GAMES_FILENAME,
+    )
+
+
+def existing_self_play_dataset_exists(directory: str | Path) -> bool:
+    """Return true when all public self-play dataset sidecars exist."""
+    return all(path.exists() for path in _public_sidecar_paths(directory))
+
+
+
 @dataclass(frozen=True, slots=True)
 class SparsePolicyTargets:
     """CSR-style sparse policy targets for fixed-size action-space rows."""
@@ -434,6 +449,30 @@ def merge_self_play_datasets(
         )
 
 
+def append_self_play_dataset(
+    existing: SelfPlayDataset,
+    additional: SelfPlayDataset,
+    *,
+    config: SelfPlayConfig,
+    generation_settings_extra: dict[str, object] | None = None,
+) -> SelfPlayDataset:
+    """Append newly generated games after an existing complete self-play dataset."""
+    _validate_dataset_counts(existing)
+    _validate_dataset_counts(additional)
+    if existing.metadata.model_checkpoint_id != additional.metadata.model_checkpoint_id:
+        raise ValueError("cannot append datasets from different model checkpoints")
+    if config.model_checkpoint_id != existing.metadata.model_checkpoint_id:
+        raise ValueError("append config model checkpoint does not match dataset metadata")
+    expected_games = existing.metadata.game_count + additional.metadata.game_count
+    if config.games != expected_games:
+        raise ValueError("append config game count does not match appended dataset")
+    return merge_self_play_datasets(
+        [existing, additional],
+        config=config,
+        generation_settings_extra=generation_settings_extra,
+    )
+
+
 def _merge_self_play_datasets_impl(
     datasets: list[SelfPlayDataset],
     *,
@@ -607,7 +646,11 @@ def load_self_play_shard_manifest(
     )
 
 
-def load_self_play_shard_tensors(directory: str | Path) -> SelfPlayShardTensors:
+def load_self_play_shard_tensors(
+    directory: str | Path,
+    *,
+    expected_start_game: int = 0,
+) -> SelfPlayShardTensors:
     """Load and validate tensors from one temporary self-play shard."""
     input_dir = Path(directory)
     metadata, games = _read_self_play_sidecars(input_dir)
@@ -623,7 +666,20 @@ def load_self_play_shard_tensors(directory: str | Path) -> SelfPlayShardTensors:
     _validate_tensor_shapes(metadata, positions, legal_masks, policy_targets, outcomes)
     if len(games) != metadata.game_count:
         raise ValueError("game metadata count does not match dataset metadata")
-    _validate_game_records(metadata, games, positions, legal_masks, policy_targets, outcomes)
+    record_start_game = (
+        expected_start_game
+        if games and games[0].game_index == expected_start_game
+        else 0
+    )
+    _validate_game_records(
+        metadata,
+        games,
+        positions,
+        legal_masks,
+        policy_targets,
+        outcomes,
+        expected_start_game=record_start_game,
+    )
     return SelfPlayShardTensors(
         path=input_dir,
         metadata=metadata,
@@ -644,6 +700,7 @@ def save_merged_self_play_shards(
     config: SelfPlayConfig,
     generation_settings_extra: dict[str, object] | None = None,
     compressed: bool = True,
+    expected_start_game: int = 0,
 ) -> SelfPlayMetadata:
     """Stream temporary shards into one public self-play dataset output."""
     if not shards:
@@ -655,10 +712,12 @@ def save_merged_self_play_shards(
     games: list[SelfPlayGameRecord] = []
     total_samples = 0
     total_policy_nnz = 0
-    game_cursor = 0
+    game_cursor = expected_start_game
     for shard in ordered:
         if shard.start_game != game_cursor:
-            raise ValueError("self-play shard ranges must be contiguous from game zero")
+            raise ValueError(
+                f"self-play shard ranges must be contiguous from game {expected_start_game}"
+            )
         _validate_shard_manifest(shard, model_checkpoint_id)
         total_samples += shard.sample_count
         total_policy_nnz += shard.policy_nnz
@@ -678,7 +737,19 @@ def save_merged_self_play_shards(
     nnz_cursor = 0
     with profile_scope("dataset.merge_shards_streamed", shards=len(ordered)):
         for shard in ordered:
-            tensors = load_self_play_shard_tensors(shard.path)
+            tensors = load_self_play_shard_tensors(
+                shard.path,
+                expected_start_game=shard.start_game,
+            )
+            if (
+                expected_start_game != 0
+                and tensors.games
+                and tensors.games[0].game_index != shard.start_game
+            ):
+                raise ValueError(
+                    "self-play shard game records must use global game indexes "
+                    "when merging from a non-zero start"
+                )
             row_count = tensors.metadata.sample_count
             shard_nnz = int(tensors.policy_indices.shape[0])
             if row_count != shard.sample_count:
@@ -872,11 +943,16 @@ def _validate_game_records(
     legal_masks: npt.NDArray[np.float32],
     policy_targets: SparsePolicyTargets,
     outcomes: npt.NDArray[np.float32],
+    *,
+    expected_start_game: int = 0,
 ) -> None:
     sample_index = 0
-    for expected_game_index, record in enumerate(games):
+    for local_game_index, record in enumerate(games):
+        expected_game_index = expected_start_game + local_game_index
         if record.game_index != expected_game_index:
-            raise ValueError("game_index values must be contiguous starting at 0")
+            raise ValueError(
+                f"game_index values must be contiguous starting at {expected_start_game}"
+            )
         if record.plies != len(record.moves_uci):
             raise ValueError("game record plies must match moves_uci length")
         game = Game.new()
@@ -1107,6 +1183,7 @@ def _expect_int(data: dict[str, object], key: str) -> int:
 
 
 __all__ = [
+    "append_self_play_dataset",
     "DEFAULT_DATASET_FILENAME",
     "DEFAULT_GAMES_FILENAME",
     "DEFAULT_METADATA_FILENAME",
@@ -1121,6 +1198,7 @@ __all__ = [
     "SelfPlayShardTensors",
     "SparsePolicyTargets",
     "TEMP_SHARD_DATASET_FILENAME",
+    "existing_self_play_dataset_exists",
     "load_self_play_dataset",
     "load_self_play_shard_manifest",
     "load_self_play_shard_tensors",

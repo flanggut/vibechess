@@ -117,6 +117,12 @@ automation: self-play prints a final output summary, while evaluation prints one
 line per evaluated game followed by aggregate match totals. Pass
 `scripts/evaluate.py --output report.json` when the full per-game JSON report is
 needed.
+When `scripts/self_play.py --output DIR --games N` points at a complete existing
+self-play dataset, the run appends `N` additional games instead of overwriting it.
+Append runs require the same checkpoint id and content-affecting generation
+settings; mismatches fail before dataset files are replaced. Neural append runs
+without a persisted checkpoint must pass `--checkpoint-id` so checkpoint
+continuity is explicit.
 
 
 Neural self-play and checkpoint evaluation can opt into visit-budget-aware tree

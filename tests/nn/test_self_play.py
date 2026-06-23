@@ -276,6 +276,70 @@ def test_generate_self_play_dataset_reports_serial_progress() -> None:
     assert dataset.metadata.sample_count == 2
 
 
+
+def test_generate_self_play_dataset_start_game_index_matches_longer_run() -> None:
+    base_config = SelfPlayConfig(
+        games=3,
+        max_plies=2,
+        mcts=NeuralMCTSConfig(simulations=2, temperature=0.0, seed=1),
+        seed=1,
+    )
+
+    full = generate_self_play_dataset(FakeInference(), base_config)
+    continued = generate_self_play_dataset(
+        FakeInference(),
+        replace(base_config, games=1, start_game_index=2),
+    )
+
+    third_game_start = sum(record.plies for record in full.games[:2])
+    third_game_end = third_game_start + full.games[2].plies
+    np.testing.assert_array_equal(
+        continued.positions,
+        full.positions[third_game_start:third_game_end],
+    )
+    np.testing.assert_array_equal(
+        continued.legal_masks,
+        full.legal_masks[third_game_start:third_game_end],
+    )
+    np.testing.assert_array_equal(
+        continued.policy_targets.offsets,
+        full.policy_targets.offsets[third_game_start : third_game_end + 1]
+        - full.policy_targets.offsets[third_game_start],
+    )
+    np.testing.assert_array_equal(
+        continued.policy_targets.indices,
+        full.policy_targets.indices[
+            full.policy_targets.offsets[third_game_start] : full.policy_targets.offsets[
+                third_game_end
+            ]
+        ],
+    )
+    np.testing.assert_array_equal(
+        continued.policy_targets.probabilities,
+        full.policy_targets.probabilities[
+            full.policy_targets.offsets[third_game_start] : full.policy_targets.offsets[
+                third_game_end
+            ]
+        ],
+    )
+    np.testing.assert_array_equal(
+        continued.outcomes,
+        full.outcomes[third_game_start:third_game_end],
+    )
+    assert continued.games[0].game_index == 2
+    assert continued.games[0].moves_uci == full.games[2].moves_uci
+    assert continued.games[0].final_fen == full.games[2].final_fen
+
+
+def test_self_play_config_rejects_invalid_start_game_index() -> None:
+    try:
+        SelfPlayConfig(start_game_index=-1)
+    except ValueError as exc:
+        assert "start_game_index must be non-negative" in str(exc)
+    else:
+        raise AssertionError("expected invalid start_game_index to be rejected")
+
+
 def test_self_play_config_rejects_invalid_active_games() -> None:
     try:
         SelfPlayConfig(active_games=0)
@@ -364,6 +428,40 @@ def test_batched_neural_self_play_reports_progress() -> None:
     assert [event.plies for event in events] == [1, 2]
     assert [event.game_index for event in events] == [0, 1]
     assert dataset.metadata.sample_count == 2
+
+
+def test_batched_neural_self_play_records_global_start_game_indexes() -> None:
+    events: list[SelfPlayProgress] = []
+    inference = CountingPolicyValueInference(
+        PolicyValueNet(
+            PolicyValueConfig(
+                residual_channels=4,
+                residual_blocks=0,
+                policy_channels=1,
+                value_channels=1,
+                value_hidden_dim=4,
+            )
+        )
+    )
+
+    dataset = generate_self_play_dataset(
+        inference,
+        SelfPlayConfig(
+            games=2,
+            max_plies=1,
+            mcts=NeuralMCTSConfig(simulations=1, temperature=0.0, seed=23),
+            seed=23,
+            batch_size=2,
+            start_game_index=2,
+        ),
+        progress=events.append,
+    )
+
+    assert [record.game_index for record in dataset.games] == [2, 3]
+    assert [event.games_completed for event in events] == [1, 2]
+    assert [event.total_games for event in events] == [2, 2]
+    assert [event.game_index for event in events] == [2, 3]
+
 
 
 def test_batched_neural_self_play_can_decouple_active_games_from_batch_size(
@@ -1130,6 +1228,361 @@ def test_self_play_script_defaults_to_200_simulations(tmp_path: Path) -> None:
     assert mcts_settings["simulations"] == 200
 
 
+def _assert_self_play_datasets_equivalent(left: Any, right: Any) -> None:
+    np.testing.assert_array_equal(left.positions, right.positions)
+    np.testing.assert_array_equal(left.legal_masks, right.legal_masks)
+    np.testing.assert_array_equal(left.policy_targets.offsets, right.policy_targets.offsets)
+    np.testing.assert_array_equal(left.policy_targets.indices, right.policy_targets.indices)
+    np.testing.assert_array_equal(
+        left.policy_targets.probabilities,
+        right.policy_targets.probabilities,
+    )
+    np.testing.assert_array_equal(left.outcomes, right.outcomes)
+    assert [record.to_dict() for record in left.games] == [
+        record.to_dict() for record in right.games
+    ]
+
+
+
+def test_self_play_script_appends_existing_output_like_longer_run(tmp_path: Path) -> None:
+    output = tmp_path / "append-output"
+    expected_output = tmp_path / "append-expected-output"
+    base_args = [
+        sys.executable,
+        "scripts/self_play.py",
+        "--label-source",
+        "classical",
+        "--max-plies",
+        "2",
+        "--simulations",
+        "1",
+        "--classical-max-rollout-plies",
+        "1",
+        "--seed",
+        "7",
+        "--progress",
+        "never",
+    ]
+
+    first = subprocess.run(
+        [*base_args, "--games", "1", "--output", str(output)],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert first.returncode == 0, first.stderr
+    first_dataset = load_self_play_dataset(output)
+    first_games = [record.to_dict() for record in first_dataset.games]
+
+    second = subprocess.run(
+        [*base_args, "--games", "2", "--output", str(output)],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert second.returncode == 0, second.stderr
+
+    expected = subprocess.run(
+        [*base_args, "--games", "3", "--output", str(expected_output)],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert expected.returncode == 0, expected.stderr
+
+    appended_dataset = load_self_play_dataset(output)
+    expected_dataset = load_self_play_dataset(expected_output)
+    assert appended_dataset.metadata.game_count == 3
+    assert [record.to_dict() for record in appended_dataset.games[:1]] == first_games
+    _assert_self_play_datasets_equivalent(appended_dataset, expected_dataset)
+
+
+def test_self_play_script_parallel_append_uses_global_chunk_indexes(tmp_path: Path) -> None:
+    output = tmp_path / "parallel-append-output"
+    expected_output = tmp_path / "parallel-append-expected-output"
+    base_args = [
+        sys.executable,
+        "scripts/self_play.py",
+        "--label-source",
+        "classical",
+        "--max-plies",
+        "2",
+        "--simulations",
+        "1",
+        "--classical-max-rollout-plies",
+        "1",
+        "--seed",
+        "11",
+        "--workers",
+        "2",
+        "--progress",
+        "never",
+    ]
+
+    first = subprocess.run(
+        [*base_args, "--games", "1", "--output", str(output)],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert first.returncode == 0, first.stderr
+    second = subprocess.run(
+        [*base_args, "--games", "2", "--output", str(output)],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert second.returncode == 0, second.stderr
+    expected = subprocess.run(
+        [*base_args, "--games", "3", "--output", str(expected_output)],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert expected.returncode == 0, expected.stderr
+
+    appended_dataset = load_self_play_dataset(output)
+    expected_dataset = load_self_play_dataset(expected_output)
+    _assert_self_play_datasets_equivalent(appended_dataset, expected_dataset)
+    parallel_settings = appended_dataset.metadata.generation_settings["parallel"]
+    assert isinstance(parallel_settings, dict)
+    assert parallel_settings["chunks"] == [
+        {"start_game": 1, "games": 1, "seed": 12},
+        {"start_game": 2, "games": 1, "seed": 13},
+    ]
+
+
+def test_self_play_script_rejects_append_checkpoint_mismatch_before_writing(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "append-checkpoint-mismatch"
+    base_args = [
+        sys.executable,
+        "scripts/self_play.py",
+        "--games",
+        "1",
+        "--max-plies",
+        "0",
+        "--simulations",
+        "1",
+        "--checkpoint-id",
+        "shared",
+        "--progress",
+        "never",
+        "--output",
+        str(output),
+    ]
+    first = subprocess.run(
+        base_args,
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert first.returncode == 0, first.stderr
+    original_sidecars = {
+        name: (output / name).read_bytes()
+        for name in (
+            DEFAULT_DATASET_FILENAME,
+            DEFAULT_METADATA_FILENAME,
+            DEFAULT_GAMES_FILENAME,
+        )
+    }
+
+    mismatch = subprocess.run(
+        [
+            sys.executable,
+            "scripts/self_play.py",
+            "--games",
+            "1",
+            "--max-plies",
+            "0",
+            "--simulations",
+            "1",
+            "--checkpoint-id",
+            "other",
+            "--progress",
+            "never",
+            "--output",
+            str(output),
+        ],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert mismatch.returncode != 0
+    assert "model checkpoint differs" in mismatch.stderr
+    assert {
+        name: (output / name).read_bytes() for name in original_sidecars
+    } == original_sidecars
+
+
+def test_self_play_script_rejects_neural_append_without_checkpoint_id(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "append-neural-implicit-checkpoint"
+    base_args = [
+        sys.executable,
+        "scripts/self_play.py",
+        "--games",
+        "1",
+        "--max-plies",
+        "0",
+        "--simulations",
+        "1",
+        "--progress",
+        "never",
+        "--output",
+        str(output),
+    ]
+    first = subprocess.run(
+        base_args,
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert first.returncode == 0, first.stderr
+    original_sidecars = {
+        name: (output / name).read_bytes()
+        for name in (
+            DEFAULT_DATASET_FILENAME,
+            DEFAULT_METADATA_FILENAME,
+            DEFAULT_GAMES_FILENAME,
+        )
+    }
+
+    append = subprocess.run(
+        base_args,
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert append.returncode != 0
+    assert "without an explicit checkpoint id" in append.stderr
+    assert {
+        name: (output / name).read_bytes() for name in original_sidecars
+    } == original_sidecars
+
+
+def test_self_play_script_rejects_append_setting_mismatch_before_writing(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "append-setting-mismatch"
+    first = subprocess.run(
+        [
+            sys.executable,
+            "scripts/self_play.py",
+            "--games",
+            "1",
+            "--max-plies",
+            "0",
+            "--simulations",
+            "1",
+            "--checkpoint-id",
+            "shared",
+            "--progress",
+            "never",
+            "--output",
+            str(output),
+        ],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert first.returncode == 0, first.stderr
+    original_sidecars = {
+        name: (output / name).read_bytes()
+        for name in (
+            DEFAULT_DATASET_FILENAME,
+            DEFAULT_METADATA_FILENAME,
+            DEFAULT_GAMES_FILENAME,
+        )
+    }
+
+    mismatch = subprocess.run(
+        [
+            sys.executable,
+            "scripts/self_play.py",
+            "--games",
+            "1",
+            "--max-plies",
+            "1",
+            "--simulations",
+            "1",
+            "--checkpoint-id",
+            "shared",
+            "--progress",
+            "never",
+            "--output",
+            str(output),
+        ],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert mismatch.returncode != 0
+    assert "generation setting 'max_plies' differs" in mismatch.stderr
+    assert {
+        name: (output / name).read_bytes() for name in original_sidecars
+    } == original_sidecars
+
+
+def test_self_play_script_rejects_incomplete_existing_sidecars(tmp_path: Path) -> None:
+    output = tmp_path / "incomplete-sidecars"
+    output.mkdir()
+    (output / DEFAULT_METADATA_FILENAME).write_text("{}\n")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/self_play.py",
+            "--games",
+            "1",
+            "--max-plies",
+            "0",
+            "--progress",
+            "never",
+            "--output",
+            str(output),
+        ],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode != 0
+    assert "incomplete self-play dataset sidecars" in result.stderr
+    assert not (output / DEFAULT_DATASET_FILENAME).exists()
+    assert not (output / DEFAULT_GAMES_FILENAME).exists()
+
 _PROGRESS_BAR_RE = re.compile(r"\[[█░]+\]")
 
 
@@ -1355,6 +1808,8 @@ def test_self_play_script_help_describes_central_batching() -> None:
     assert "auto" in result.stdout
     assert "--reuse-simulation-budget" in result.stdout
     assert "--min-reuse-simulations" in result.stdout
+    assert "appends when a complete" in result.stdout
+    assert "dataset already exists" in result.stdout
 
 
 def test_self_play_script_rejects_removed_parallel_batch_flag(tmp_path: Path) -> None:

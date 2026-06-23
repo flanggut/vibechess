@@ -29,6 +29,8 @@ from vibechess.nn.self_play_dataset import (
     SelfPlayGameRecord,
     SelfPlayMetadata,
     SparsePolicyTargets,
+    append_self_play_dataset,
+    existing_self_play_dataset_exists,
     load_self_play_dataset,
     load_self_play_shard_manifest,
     load_self_play_shard_tensors,
@@ -139,6 +141,52 @@ def test_self_play_dataset_module_saves_and_loads_round_trip(tmp_path: Path) -> 
     np.testing.assert_array_equal(loaded.outcomes, dataset.outcomes)
     assert loaded.games == dataset.games
 
+
+def test_existing_self_play_dataset_exists_requires_all_public_sidecars(
+    tmp_path: Path,
+) -> None:
+    assert existing_self_play_dataset_exists(tmp_path) is False
+    dataset = _one_move_dataset(checkpoint_id="shared")
+    save_self_play_dataset(dataset, tmp_path)
+    assert existing_self_play_dataset_exists(tmp_path) is True
+    (tmp_path / DEFAULT_GAMES_FILENAME).unlink()
+    assert existing_self_play_dataset_exists(tmp_path) is False
+
+
+def test_append_self_play_dataset_preserves_order_and_checkpoint() -> None:
+    existing = _one_move_dataset(checkpoint_id="shared")
+    additional = _one_move_dataset(checkpoint_id="shared")
+
+    appended = append_self_play_dataset(
+        existing,
+        additional,
+        config=SelfPlayConfig(games=2, max_plies=1, model_checkpoint_id="shared"),
+    )
+
+    assert appended.metadata.game_count == 2
+    assert appended.metadata.sample_count == 2
+    assert appended.metadata.model_checkpoint_id == "shared"
+    np.testing.assert_array_equal(appended.positions[:1], existing.positions)
+    np.testing.assert_array_equal(appended.positions[1:], additional.positions)
+    np.testing.assert_array_equal(appended.outcomes[:1], existing.outcomes)
+    np.testing.assert_array_equal(appended.outcomes[1:], additional.outcomes)
+    assert [record.game_index for record in appended.games] == [0, 1]
+    assert appended.games[0].moves_uci == existing.games[0].moves_uci
+    assert appended.games[1].moves_uci == additional.games[0].moves_uci
+
+
+def test_append_self_play_dataset_rejects_checkpoint_mismatch() -> None:
+    existing = _one_move_dataset(checkpoint_id="first")
+    additional = _one_move_dataset(checkpoint_id="second")
+
+    with pytest.raises(ValueError, match="different model checkpoints"):
+        append_self_play_dataset(
+            existing,
+            additional,
+            config=SelfPlayConfig(games=2, max_plies=1, model_checkpoint_id="first"),
+        )
+
+
 def test_uncompressed_shard_round_trips_to_public_dataset(tmp_path: Path) -> None:
     shard_dir = tmp_path / "shard"
     output_dir = tmp_path / "final"
@@ -240,7 +288,7 @@ def test_streamed_shard_merge_rejects_noncontiguous_ranges(tmp_path: Path) -> No
     save_self_play_shard(dataset, shard)
     manifest = load_self_play_shard_manifest(shard, start_game=1)
 
-    with pytest.raises(ValueError, match="contiguous from game zero"):
+    with pytest.raises(ValueError, match="contiguous from game 0"):
         save_merged_self_play_shards(
             [manifest],
             tmp_path / "output",

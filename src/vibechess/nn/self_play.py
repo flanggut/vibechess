@@ -81,6 +81,7 @@ class SelfPlayConfig:
     seed: int | None = None
     batch_size: int = 1
     active_games: int | None = None
+    start_game_index: int = 0
 
     def __post_init__(self) -> None:
         if self.games < 1:
@@ -95,6 +96,10 @@ class SelfPlayConfig:
             raise ValueError(f"batch_size must be at least 1, got {self.batch_size}")
         if self.active_games is not None and self.active_games < 1:
             raise ValueError(f"active_games must be at least 1, got {self.active_games}")
+        if self.start_game_index < 0:
+            raise ValueError(
+                f"start_game_index must be non-negative, got {self.start_game_index}"
+            )
 
     def to_dict(
         self,
@@ -125,6 +130,7 @@ class SelfPlayConfig:
             "active_games": self.active_games,
             "batching_mode": resolved_batching_mode,
             "inference_batch_size": resolved_inference_batch_size,
+            "start_game_index": self.start_game_index,
         }
 
 
@@ -194,7 +200,8 @@ def _generate_serial_self_play_dataset(
     completed_plies = 0
 
     with profile_scope("self_play.serial_loop"):
-        for game_index in range(config.games):
+        for local_game_index in range(config.games):
+            game_index = config.start_game_index + local_game_index
             game = Game.new()
             player = _player_for_game(inference, config, game_index)
             game_sides: list[Color] = []
@@ -221,7 +228,9 @@ def _generate_serial_self_play_dataset(
                         with profile_scope("record.position_encode_np"):
                             positions.append(encode_game_np(game))
                         with profile_scope("record.legal_mask_np"):
-                            legal_masks.append(legal_move_mask_from_action_indices_np(action_indices))
+                            legal_masks.append(
+                                legal_move_mask_from_action_indices_np(action_indices)
+                            )
                         with profile_scope("record.policy_target"):
                             policy_builder.append_from_visits(
                                 board=game.board,
@@ -488,13 +497,14 @@ def _generate_batched_neural_self_play_dataset(
     active_states: dict[int, _BatchedGameState] = {}
     completed_states: dict[int, _BatchedGameState] = {}
     active_limit = _resolved_active_game_limit(config)
-    next_game_index = 0
-    next_output_game_index = 0
+    next_game_index = config.start_game_index
+    next_output_game_index = config.start_game_index
+    final_game_index = config.start_game_index + config.games
     completed_plies = 0
 
     def launch_available_games() -> None:
         nonlocal next_game_index
-        while len(active_states) < active_limit and next_game_index < config.games:
+        while len(active_states) < active_limit and next_game_index < final_game_index:
             active_states[next_game_index] = _new_batched_game_state(
                 inference,
                 config,
@@ -508,7 +518,7 @@ def _generate_batched_neural_self_play_dataset(
 
     with profile_scope("self_play.batched_loop"):
         launch_available_games()
-        while next_output_game_index < config.games:
+        while next_output_game_index < final_game_index:
             decisions: list[tuple[_BatchedGameState, tuple[Move, ...]]] = []
             completed_before_decisions = False
             for state in tuple(active_states.values()):

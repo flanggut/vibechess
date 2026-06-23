@@ -29,6 +29,8 @@ from vibechess.nn.checkpoint import load_checkpoint, save_checkpoint
 from vibechess.nn.inference import PolicyValueInference
 from vibechess.nn.model import PolicyValueConfig, PolicyValueNet
 from vibechess.nn.self_play import (
+    BATCHING_MODE_CENTRAL_INFERENCE_QUEUE,
+    BATCHING_MODE_SERIAL,
     DEFAULT_PROFILE_FILENAME,
     LABEL_SOURCE_CLASSICAL,
     LABEL_SOURCE_NEURAL,
@@ -39,8 +41,14 @@ from vibechess.nn.self_play import (
     self_play_profile,
 )
 from vibechess.nn.self_play_dataset import (
+    DEFAULT_DATASET_FILENAME,
+    DEFAULT_GAMES_FILENAME,
+    DEFAULT_METADATA_FILENAME,
     SelfPlayDataset,
     SelfPlayMetadata,
+    append_self_play_dataset,
+    existing_self_play_dataset_exists,
+    load_self_play_dataset,
     load_self_play_shard_manifest,
     save_merged_self_play_shards,
     save_self_play_dataset,
@@ -133,6 +141,7 @@ class ChunkGenerationResult:
 class _ProgressReporter:
     enabled: bool
     total_games: int
+    start_game_offset: int = 0
     _renderer: _AnsiProgressRenderer = field(init=False)
     _workers_by_start: dict[int, _WorkerProgressState] = field(
         default_factory=dict,
@@ -153,7 +162,8 @@ class _ProgressReporter:
             total_games=self.total_games,
         )
 
-    def start(self, args: argparse.Namespace) -> None:
+    def start(self, args: argparse.Namespace, *, start_game_offset: int = 0) -> None:
+        self.start_game_offset = start_game_offset
         self._workers_by_start = self._initial_workers(args)
         self._status = "running"
         self._start_monotonic = time.monotonic()
@@ -175,7 +185,7 @@ class _ProgressReporter:
 
     def game_completed(self, progress: SelfPlayProgress) -> None:
         self._upsert_worker(
-            start_game=0,
+            start_game=self.start_game_offset,
             total_games=progress.total_games,
             games_completed=progress.games_completed,
             samples=progress.samples,
@@ -276,6 +286,10 @@ class _ProgressReporter:
             chunks = [(0, games)]
         else:
             chunks = _split_games(games, min(requested_workers, games))
+        chunks = [
+            (self.start_game_offset + start_game, worker_games)
+            for start_game, worker_games in chunks
+        ]
         return {
             start_game: _WorkerProgressState(
                 worker_id=worker_id,
@@ -394,7 +408,13 @@ def _build_inference(args: GenerationArgs) -> PolicyValueInference:
         return PolicyValueInference(loaded.model)
 
 
-def _self_play_config(args: GenerationArgs, *, games: int, seed: int) -> SelfPlayConfig:
+def _self_play_config(
+    args: GenerationArgs,
+    *,
+    games: int,
+    seed: int,
+    start_game_index: int = 0,
+) -> SelfPlayConfig:
     return SelfPlayConfig(
         games=games,
         max_plies=args.max_plies,
@@ -418,8 +438,126 @@ def _self_play_config(args: GenerationArgs, *, games: int, seed: int) -> SelfPla
         seed=seed,
         batch_size=args.batch_size,
         active_games=args.active_games,
+        start_game_index=start_game_index,
     )
 
+
+def _self_play_sidecar_paths(output: Path) -> tuple[Path, Path, Path]:
+    return (
+        output / DEFAULT_DATASET_FILENAME,
+        output / DEFAULT_METADATA_FILENAME,
+        output / DEFAULT_GAMES_FILENAME,
+    )
+
+
+def _load_existing_dataset_for_append(
+    parser: argparse.ArgumentParser,
+    output: Path,
+) -> SelfPlayDataset | None:
+    sidecars = _self_play_sidecar_paths(output)
+    existing_sidecars = [path for path in sidecars if path.exists()]
+    if not existing_sidecars:
+        return None
+    if len(existing_sidecars) != len(sidecars):
+        present = ", ".join(path.name for path in existing_sidecars)
+        missing = ", ".join(path.name for path in sidecars if not path.exists())
+        parser.error(
+            "cannot append to incomplete self-play dataset sidecars "
+            f"in {output}: present={present}; missing={missing}"
+        )
+    if not existing_self_play_dataset_exists(output):
+        return None
+    try:
+        return load_self_play_dataset(output)
+    except Exception as exc:
+        parser.error(f"cannot append to existing self-play dataset in {output}: {exc}")
+    raise AssertionError("parser.error should exit")
+
+
+def _batching_metadata_for_args(args: GenerationArgs) -> tuple[str, int]:
+    if args.label_source == LABEL_SOURCE_NEURAL and args.batch_size > 1:
+        return BATCHING_MODE_CENTRAL_INFERENCE_QUEUE, args.batch_size
+    return BATCHING_MODE_SERIAL, 1
+
+
+def _requested_generation_settings(
+    args: GenerationArgs,
+    config: SelfPlayConfig,
+) -> dict[str, object]:
+    batching_mode, inference_batch_size = _batching_metadata_for_args(args)
+    return config.to_dict(
+        batching_mode=batching_mode,
+        inference_batch_size=inference_batch_size,
+    )
+
+
+def _append_relevant_settings(settings: dict[str, object]) -> dict[str, object]:
+    relevant_keys = (
+        "max_plies",
+        "label_source",
+        "mcts",
+        "classical_mcts",
+        "model_checkpoint_id",
+        "seed",
+        "batch_size",
+        "active_games",
+        "batching_mode",
+        "inference_batch_size",
+    )
+    return {key: settings.get(key) for key in relevant_keys}
+
+
+def _validate_append_request(
+    parser: argparse.ArgumentParser,
+    existing: SelfPlayDataset,
+    requested_settings: dict[str, object],
+    checkpoint_id: str | None,
+) -> None:
+    if existing.metadata.model_checkpoint_id != checkpoint_id:
+        parser.error(
+            "cannot append to existing self-play dataset: model checkpoint differs "
+            f"(existing={existing.metadata.model_checkpoint_id!r}, requested={checkpoint_id!r})"
+        )
+    if (
+        requested_settings.get("label_source") == LABEL_SOURCE_NEURAL
+        and existing.metadata.model_checkpoint_id is None
+        and checkpoint_id is None
+    ):
+        parser.error(
+            "cannot append neural self-play without an explicit checkpoint id; "
+            "rerun with --checkpoint or --checkpoint-id so checkpoint continuity is verifiable"
+        )
+    existing_generation_settings = dict(existing.metadata.generation_settings)
+    existing_generation_settings.setdefault(
+        "model_checkpoint_id",
+        existing.metadata.model_checkpoint_id,
+    )
+    existing_settings = _append_relevant_settings(existing_generation_settings)
+    requested_relevant = _append_relevant_settings(requested_settings)
+    for key, existing_value in existing_settings.items():
+        requested_value = requested_relevant[key]
+        if existing_value != requested_value:
+            parser.error(
+                "cannot append to existing self-play dataset: generation setting "
+                f"{key!r} differs (existing={existing_value!r}, requested={requested_value!r})"
+            )
+
+
+def _save_self_play_dataset_atomically(dataset: SelfPlayDataset, output: Path) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(
+        prefix=f".{output.name or 'self-play'}-replace-",
+        dir=str(output.parent),
+    ) as temp_dir:
+        temp_output = Path(temp_dir) / "dataset"
+        save_self_play_dataset(dataset, temp_output)
+        output.mkdir(parents=True, exist_ok=True)
+        for filename in (
+            DEFAULT_DATASET_FILENAME,
+            DEFAULT_METADATA_FILENAME,
+            DEFAULT_GAMES_FILENAME,
+        ):
+            os.replace(temp_output / filename, output / filename)
 
 def _emit_worker_progress(
     task: ChunkTask,
@@ -492,7 +630,8 @@ def _generate_chunk(task: ChunkTask) -> ChunkGenerationResult:
                 config = _self_play_config(
                     task.generation_args,
                     games=task.games,
-                    seed=task.generation_args.seed + task.start_game,
+                    seed=task.generation_args.seed,
+                    start_game_index=task.start_game,
                 )
                 dataset = generate_self_play_dataset(
                     inference,
@@ -652,7 +791,12 @@ def _directory_size(directory: Path) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate vibechess self-play samples.")
-    parser.add_argument("--output", type=Path, default=Path("data/selfplay/smoke"))
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("data/selfplay/smoke"),
+        help="dataset output directory; appends when a complete dataset already exists",
+    )
     parser.add_argument("--checkpoint", type=Path, default=None)
     parser.add_argument("--checkpoint-id", default=None)
     parser.add_argument(
@@ -791,7 +935,28 @@ def main() -> int:
         reuse_simulation_budget=args.reuse_simulation_budget,
         min_reuse_simulations=args.min_reuse_simulations,
     )
-    full_config = _self_play_config(generation_args, games=args.games, seed=args.seed)
+    initial_config = _self_play_config(generation_args, games=args.games, seed=args.seed)
+    existing_dataset = _load_existing_dataset_for_append(parser, args.output)
+    existing_game_count = 0 if existing_dataset is None else existing_dataset.metadata.game_count
+    requested_settings = _requested_generation_settings(generation_args, initial_config)
+    if existing_dataset is not None:
+        _validate_append_request(
+            parser,
+            existing_dataset,
+            requested_settings,
+            checkpoint_id,
+        )
+    run_config = _self_play_config(
+        generation_args,
+        games=args.games,
+        seed=args.seed,
+        start_game_index=existing_game_count,
+    )
+    final_config = _self_play_config(
+        generation_args,
+        games=existing_game_count + args.games,
+        seed=args.seed,
+    )
 
     profile_level = _profile_level()
     progress_reporter = _ProgressReporter(
@@ -803,7 +968,7 @@ def main() -> int:
     try:
         with self_play_profile(profile_level) as main_profiler, profile_scope("self_play.main"):
             with profile_scope("self_play.setup"):
-                progress_reporter.start(args)
+                progress_reporter.start(args, start_game_offset=existing_game_count)
             chunk_results: list[ChunkGenerationResult] = []
             dataset: SelfPlayDataset | None = None
             dataset_metadata: SelfPlayMetadata | None = None
@@ -813,12 +978,16 @@ def main() -> int:
                     inference = _build_inference(generation_args)
                 dataset = generate_self_play_dataset(
                     inference,
-                    config=full_config,
+                    config=run_config,
                     progress=progress_reporter.game_completed,
                 )
             else:
                 workers = min(args.workers, args.games)
-                chunks = _split_games(args.games, workers)
+                local_chunks = _split_games(args.games, workers)
+                chunks = [
+                    (existing_game_count + start_game, games)
+                    for start_game, games in local_chunks
+                ]
                 temp_checkpoint: TemporaryDirectory[str] | None = None
                 if (
                     generation_args.label_source == LABEL_SOURCE_NEURAL
@@ -974,20 +1143,47 @@ def main() -> int:
                             for start_game, result in chunk_results_with_start
                         ]
                     progress_reporter.saving(args.output)
-                    dataset_metadata = save_merged_self_play_shards(
-                        shard_manifests,
-                        args.output,
-                        config=full_config,
-                        generation_settings_extra=parallel_settings,
+                    merge_output = (
+                        args.output
+                        if existing_dataset is None
+                        else Path(shard_temp.name) / "additional"
                     )
+                    additional_metadata = save_merged_self_play_shards(
+                        shard_manifests,
+                        merge_output,
+                        config=run_config,
+                        generation_settings_extra=parallel_settings,
+                        expected_start_game=existing_game_count,
+                    )
+                    if existing_dataset is None:
+                        dataset_metadata = additional_metadata
+                    else:
+                        additional_dataset = load_self_play_dataset(merge_output)
+                        merged_dataset = append_self_play_dataset(
+                            existing_dataset,
+                            additional_dataset,
+                            config=final_config,
+                            generation_settings_extra=parallel_settings,
+                        )
+                        _save_self_play_dataset_atomically(merged_dataset, args.output)
+                        dataset_metadata = merged_dataset.metadata
                 finally:
                     shard_temp.cleanup()
             if dataset_metadata is None:
                 if dataset is None:
                     raise RuntimeError("self-play generation produced no dataset")
                 progress_reporter.saving(args.output)
-                save_self_play_dataset(dataset, args.output)
-                dataset_metadata = dataset.metadata
+                if existing_dataset is None:
+                    save_self_play_dataset(dataset, args.output)
+                    dataset_metadata = dataset.metadata
+                else:
+                    merged_dataset = append_self_play_dataset(
+                        existing_dataset,
+                        dataset,
+                        config=final_config,
+                    )
+                    _save_self_play_dataset_atomically(merged_dataset, args.output)
+                    dataset_metadata = merged_dataset.metadata
             if main_profiler.enabled:
                 main_profiler.stats.add_counter(
                     "dataset.output_bytes",
