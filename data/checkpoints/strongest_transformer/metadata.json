@@ -1,0 +1,20 @@
+{
+  "schema_version": "vibechess-checkpoint-v1",
+  "model_config": {
+    "input_channels": 20,
+    "board_size": 8,
+    "model_dim": 224,
+    "transformer_layers": 6,
+    "attention_heads": 8,
+    "mlp_dim": 848,
+    "policy_hidden_dim": 448,
+    "value_hidden_dim": 256,
+    "action_space_size": 4672
+  },
+  "model_architecture": "transformer",
+  "action_space_version": "az-8x8x73-v1",
+  "encoder_version": "vibechess-board-v1",
+  "training_step": 623015,
+  "optimizer_state_available": false,
+  "notes": "{\"architecture\": \"transformer\", \"batch_size\": 64, \"carry_optimizer_state_across_shards\": true, \"checkpoint_every\": 0, \"dataset\": \"data/pgn/lichess_100k\", \"epochs\": 5, \"input_checkpoint\": null, \"learning_rate\": 0.0003, \"output\": \"data/checkpoints/transformer_01\", \"policy_channels\": 2, \"residual_blocks\": 1, \"residual_channels\": 8, \"seed\": 0, \"skip_shard_checkpoints\": false, \"transformer_heads\": 8, \"transformer_layers\": 6, \"transformer_mlp_dim\": 848, \"transformer_model_dim\": 224, \"transformer_policy_hidden_dim\": 448, \"validation_fraction\": 0.1, \"value_channels\": 1, \"value_hidden_dim\": null, \"warmup\": 500}"
+}
