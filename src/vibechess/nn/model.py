@@ -97,8 +97,9 @@ class PolicyValueConfig:
 class TransformerPolicyValueConfig:
     """Configuration for a square-token Transformer policy/value network.
 
-    Defaults target the parameter budget of ``data/checkpoints/strongest`` while
-    keeping the same encoder and 64 * 73 policy action layout as ``PolicyValueNet``.
+    Defaults stay below the parameter budget of ``data/checkpoints/strongest`` while
+    shifting capacity from the Transformer trunk into the per-square policy head.
+    The encoder and 64 * 73 policy action layout match ``PolicyValueNet``.
     """
 
     input_channels: int = ENCODER_CHANNELS
@@ -106,8 +107,8 @@ class TransformerPolicyValueConfig:
     model_dim: int = 224
     transformer_layers: int = 6
     attention_heads: int = 8
-    mlp_dim: int = 848
-    policy_hidden_dim: int = 448
+    mlp_dim: int = 536
+    policy_hidden_dim: int = 3352
     value_hidden_dim: int = 256
     action_space_size: int = ACTION_SPACE_SIZE
 

@@ -194,11 +194,18 @@ def test_transformer_default_matches_strongest_checkpoint_parameter_budget() -> 
         value_hidden_dim=128,
     )
     strongest_params = parameter_count(PolicyValueNet(strongest_config).parameters())
-    transformer_params = parameter_count(PolicyValueTransformerNet().parameters())
+    transformer = PolicyValueTransformerNet()
+    transformer_params = transformer.parameters()
+    transformer_policy_params = (
+        parameter_count(transformer_params["policy_hidden"])
+        + parameter_count(transformer_params["policy_head"])
+    )
 
     assert strongest_params == 3_776_941
-    assert transformer_params == 3_763_722
-    assert abs(transformer_params - strongest_params) / strongest_params < 0.02
+    assert parameter_count(transformer_params) == 3_788_586
+    assert 995_000 <= transformer_policy_params <= 1_000_000
+    assert parameter_count(transformer_params) <= 3_800_000
+    assert abs(parameter_count(transformer_params) - strongest_params) / strongest_params < 0.02
 
 
 def test_inference_wrapper_masks_policy_to_legal_moves() -> None:

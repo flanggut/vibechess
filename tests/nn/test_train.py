@@ -418,8 +418,8 @@ def test_train_script_consumes_dataset_and_writes_checkpoint(tmp_path: Path) -> 
         "value_hidden_dim": 8,
         "transformer_heads": 8,
         "transformer_layers": 6,
-        "transformer_mlp_dim": 848,
-        "transformer_policy_hidden_dim": 448,
+        "transformer_mlp_dim": 536,
+        "transformer_policy_hidden_dim": 3352,
         "transformer_model_dim": 224,
         "warmup": 3,
     }

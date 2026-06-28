@@ -114,8 +114,8 @@ def main() -> None:
     parser.add_argument("--transformer-model-dim", type=int, default=224)
     parser.add_argument("--transformer-layers", type=int, default=6)
     parser.add_argument("--transformer-heads", type=int, default=8)
-    parser.add_argument("--transformer-mlp-dim", type=int, default=848)
-    parser.add_argument("--transformer-policy-hidden-dim", type=int, default=448)
+    parser.add_argument("--transformer-mlp-dim", type=int, default=536)
+    parser.add_argument("--transformer-policy-hidden-dim", type=int, default=3352)
     args = parser.parse_args()
 
     train_config = TrainingConfig(
