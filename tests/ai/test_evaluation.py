@@ -268,6 +268,44 @@ def test_checkpoint_evaluation_derives_per_game_seeds_from_base_seed(
     assert serial_records[1]["moves_uci"] != serial_records[3]["moves_uci"]
 
 
+
+def test_checkpoint_evaluation_parallel_progress_updates_per_game(
+    tmp_path: Path,
+) -> None:
+    checkpoint_dir = tmp_path / "checkpoint"
+    save_tiny_checkpoint(checkpoint_dir)
+    progress_events: list[tuple[int, int, int | None, int | None]] = []
+
+    evaluate_checkpoint_against_baselines(
+        checkpoint_dir,
+        match_config=MatchConfig(games=4, max_plies=1),
+        neural_config=NeuralMCTSConfig(simulations=1, seed=7),
+        baselines=("random",),
+        criteria=PromotionCriteria(
+            min_games_per_baseline=1,
+            min_score_rate_vs_random=0.0,
+        ),
+        workers=2,
+        progress=lambda progress: progress_events.append(
+            (
+                progress.games_completed,
+                progress.total_games,
+                progress.worker_games_completed,
+                progress.worker_games,
+            )
+        ),
+    )
+
+    assert [event[0] for event in progress_events] == [1, 2, 3, 4]
+    assert all(event[1] == 4 for event in progress_events)
+    assert sorted(event[2] for event in progress_events if event[2] is not None) == [
+        1,
+        1,
+        2,
+        2,
+    ]
+    assert {event[3] for event in progress_events} == {2}
+
 def test_checkpoint_evaluation_loads_checkpoint_and_writes_report(
     tmp_path: Path,
 ) -> None:
@@ -548,6 +586,8 @@ def test_evaluate_script_progress_reports_effective_workers(tmp_path: Path) -> N
     assert "w02" in result.stderr
     assert "w03" in result.stderr
     assert "w04" not in result.stderr
+    assert "evaluation: completed=1/8" in result.stderr
+    assert "evaluation: completed=3/8" in result.stderr
 
 
 def test_evaluate_script_stdout_prints_one_line_per_game_then_summary(

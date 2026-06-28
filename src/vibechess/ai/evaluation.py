@@ -6,11 +6,13 @@ import json
 import math
 import random
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import ProcessPoolExecutor
-from dataclasses import asdict, dataclass, replace
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from dataclasses import asdict, dataclass, field, replace
 from hashlib import blake2b
+from multiprocessing import Manager
 from pathlib import Path
-from typing import TypeAlias, TypeVar
+from queue import Empty
+from typing import Protocol, TypeAlias, TypeVar, cast
 
 from vibechess.ai.mcts import MCTSPlayer
 from vibechess.ai.neural_mcts import (
@@ -70,6 +72,7 @@ class EvaluationProgress:
     worker_id: int = 0
     worker_start_game: int = 0
     worker_games: int | None = None
+    worker_games_completed: int | None = None
     worker_plies: int | None = None
 
 
@@ -105,6 +108,7 @@ def _emit_evaluation_progress(
             worker_id=context.worker_id,
             worker_start_game=context.worker_start_game,
             worker_games=context.worker_games,
+            worker_games_completed=local_games_completed,
             worker_plies=(
                 local_plies_completed
                 if context.worker_plies is None
@@ -682,6 +686,8 @@ class _EvaluationChunk:
     baseline: str
     start_game: int
     games: int
+    worker_id: int
+    worker_start_game: int
 
 
 
@@ -857,6 +863,7 @@ def _run_batched_neural_decisions(
 class _MatchChunk:
     start_game: int
     games: int
+    worker_id: int
 
 
 def _validate_baselines(baselines: Sequence[str]) -> None:
@@ -872,6 +879,64 @@ def _validate_batching(batch_size: int, active_games: int | None) -> None:
     if active_games is not None and active_games < 1:
         raise ValueError(f"active_games must be at least 1, got {active_games}")
 
+
+class _EvaluationProgressQueue(Protocol):
+    def put(self, item: EvaluationProgress) -> object:
+        ...
+
+    def get_nowait(self) -> EvaluationProgress:
+        ...
+
+
+@dataclass(slots=True)
+class _ParallelProgressAccumulator:
+    total_games: int
+    progress: EvaluationProgressCallback
+    _worker_games_completed: dict[int, int] = field(default_factory=dict)
+    _worker_plies_completed: dict[int, int] = field(default_factory=dict)
+
+    def report(self, event: EvaluationProgress) -> None:
+        reported_worker_games = (
+            event.worker_games_completed
+            if event.worker_games_completed is not None
+            else event.worker_games
+            if event.worker_games is not None
+            else event.games_completed
+        )
+        previous_worker_games = self._worker_games_completed.get(event.worker_id, 0)
+        worker_games_completed = max(previous_worker_games, reported_worker_games)
+        reported_worker_plies = (
+            event.worker_plies if event.worker_plies is not None else event.completed_plies
+        )
+        previous_worker_plies = self._worker_plies_completed.get(event.worker_id, 0)
+        worker_plies = max(previous_worker_plies, reported_worker_plies)
+        self._worker_games_completed[event.worker_id] = worker_games_completed
+        self._worker_plies_completed[event.worker_id] = worker_plies
+        self.progress(
+            replace(
+                event,
+                games_completed=sum(self._worker_games_completed.values()),
+                total_games=self.total_games,
+                completed_plies=sum(self._worker_plies_completed.values()),
+                worker_games_completed=worker_games_completed,
+                worker_plies=worker_plies,
+            )
+        )
+
+
+def _drain_progress_queue(
+    progress_queue: _EvaluationProgressQueue | None,
+    on_progress: Callable[[EvaluationProgress], None] | None,
+) -> None:
+    if progress_queue is None or on_progress is None:
+        return
+    while True:
+        try:
+            event = progress_queue.get_nowait()
+        except Empty:
+            return
+        on_progress(event)
+
 _ChunkT = TypeVar("_ChunkT")
 _ResultT = TypeVar("_ResultT")
 
@@ -883,22 +948,35 @@ def _map_chunks(
     *,
     workers: int,
     on_result: Callable[[_ChunkT, _ResultT], None] | None = None,
+    progress_queue: _EvaluationProgressQueue | None = None,
+    on_progress: Callable[[EvaluationProgress], None] | None = None,
 ) -> list[_ResultT]:
-    """Run ``worker`` over ``chunks`` in a process pool, broadcasting shared args.
-
-    Each entry in ``broadcast_args`` is repeated once per chunk so it is passed
-    positionally to every worker call (matching ``executor.map`` fan-out). Results
-    are returned in chunk order. Shared by the baseline and head-to-head parallel
-    evaluators, which differ only in their worker, chunk type, and aggregation.
-    """
-    broadcasts = [[arg] * len(chunks) for arg in broadcast_args]
-    results: list[_ResultT] = []
+    """Run ``worker`` over ``chunks`` in a process pool, preserving chunk order."""
+    if not chunks:
+        return []
+    results: list[_ResultT | None] = [None] * len(chunks)
+    wait_timeout = 0.1 if progress_queue is not None and on_progress is not None else None
     with ProcessPoolExecutor(max_workers=workers) as executor:
-        for chunk, result in zip(chunks, executor.map(worker, chunks, *broadcasts), strict=True):
-            if on_result is not None:
-                on_result(chunk, result)
-            results.append(result)
-    return results
+        future_to_index = {
+            executor.submit(worker, chunk, *broadcast_args): index
+            for index, chunk in enumerate(chunks)
+        }
+        pending = set(future_to_index)
+        while pending:
+            done, pending = wait(
+                pending,
+                timeout=wait_timeout,
+                return_when=FIRST_COMPLETED,
+            )
+            _drain_progress_queue(progress_queue, on_progress)
+            for future in done:
+                index = future_to_index[future]
+                result = future.result()
+                if on_result is not None:
+                    on_result(chunks[index], result)
+                results[index] = result
+        _drain_progress_queue(progress_queue, on_progress)
+    return [cast(_ResultT, result) for result in results]
 
 
 def _run_parallel_evaluation(
@@ -921,55 +999,49 @@ def _run_parallel_evaluation(
     records_by_baseline: dict[str, list[MatchGameRecord]] = {
         baseline: [] for baseline in selected_baselines
     }
-    completed_games = 0
-    completed_plies = 0
 
-    def report_chunk_progress(
-        chunk: _EvaluationChunk,
-        result: tuple[str, list[MatchGameRecord]],
-    ) -> None:
-        nonlocal completed_games, completed_plies
-        if progress is None:
-            return
-        baseline, chunk_records = result
-        if not chunk_records:
-            return
-        completed_games += len(chunk_records)
-        completed_plies += sum(record.plies for record in chunk_records)
-        progress(
-            EvaluationProgress(
-                games_completed=completed_games,
-                total_games=total_games,
-                completed_plies=completed_plies,
-                game_index=chunk_records[-1].game_index,
-                baseline=baseline,
-                worker_id=chunks.index(chunk),
-                worker_start_game=(
-                    selected_baselines.index(baseline) * match_config.games
-                    + chunk.start_game
-                ),
-                worker_games=chunk.games,
-                worker_plies=sum(record.plies for record in chunk_records),
-            )
+    progress_accumulator = (
+        _ParallelProgressAccumulator(total_games=total_games, progress=progress)
+        if progress is not None
+        else None
+    )
+
+    def run_chunks(
+        progress_queue: _EvaluationProgressQueue | None,
+    ) -> list[tuple[str, list[MatchGameRecord]]]:
+        return _map_chunks(
+            _run_evaluation_chunk,
+            chunks,
+            [
+                checkpoint_dir,
+                match_config,
+                neural_config,
+                mcts_config,
+                random_seed,
+                batch_size,
+                active_games,
+                opening_starts,
+                progress_queue,
+                total_games,
+            ],
+            workers=effective_workers,
+            progress_queue=progress_queue,
+            on_progress=(
+                progress_accumulator.report
+                if progress_accumulator is not None
+                else None
+            ),
         )
 
-    for baseline, records in _map_chunks(
-        _run_evaluation_chunk,
-        chunks,
-        [
-            checkpoint_dir,
-            match_config,
-            neural_config,
-            mcts_config,
-            random_seed,
-            batch_size,
-            active_games,
-            opening_starts,
-        ],
-        workers=effective_workers,
-        on_result=report_chunk_progress,
-    ):
+    if progress_accumulator is None:
+        chunk_results = run_chunks(None)
+    else:
+        with Manager() as manager:
+            chunk_results = run_chunks(manager.Queue())
+
+    for baseline, records in chunk_results:
         records_by_baseline[baseline].extend(records)
+
 
     return {
         baseline: _match_result_from_records("checkpoint", baseline, records_by_baseline[baseline])
@@ -985,13 +1057,16 @@ def _evaluation_chunks(
     total_games = len(baselines) * games_per_baseline
     chunk_size = max(1, math.ceil(total_games / effective_workers))
     chunks: list[_EvaluationChunk] = []
-    for baseline in baselines:
+    for baseline_index, baseline in enumerate(baselines):
+        baseline_offset = baseline_index * games_per_baseline
         for chunk in _match_chunks(games_per_baseline, chunk_size=chunk_size):
             chunks.append(
                 _EvaluationChunk(
                     baseline=baseline,
                     start_game=chunk.start_game,
                     games=chunk.games,
+                    worker_id=len(chunks),
+                    worker_start_game=baseline_offset + chunk.start_game,
                 )
             )
     return chunks
@@ -999,8 +1074,12 @@ def _evaluation_chunks(
 
 def _match_chunks(games: int, *, chunk_size: int) -> list[_MatchChunk]:
     return [
-        _MatchChunk(start_game=start_game, games=min(chunk_size, games - start_game))
-        for start_game in range(0, games, chunk_size)
+        _MatchChunk(
+            start_game=start_game,
+            games=min(chunk_size, games - start_game),
+            worker_id=worker_id,
+        )
+        for worker_id, start_game in enumerate(range(0, games, chunk_size))
     ]
 
 
@@ -1014,6 +1093,8 @@ def _run_evaluation_chunk(
     batch_size: int,
     active_games: int | None,
     opening_starts: Sequence[_GameStart] | None,
+    progress_queue: _EvaluationProgressQueue | None,
+    total_games: int,
 ) -> tuple[str, list[MatchGameRecord]]:
     checkpoint = _checkpoint_player_spec_reusing_loaded_checkpoint(
         checkpoint_dir,
@@ -1021,6 +1102,20 @@ def _run_evaluation_chunk(
         config=neural_config,
     )
     baseline = _baseline_spec(chunk.baseline, mcts_config=mcts_config, random_seed=random_seed)
+    progress_context: _EvaluationProgressContext | None = None
+    if progress_queue is not None:
+
+        def put_progress(progress: EvaluationProgress) -> None:
+            progress_queue.put(progress)
+
+        progress_context = _EvaluationProgressContext(
+            callback=put_progress,
+            total_games=total_games,
+            baseline=chunk.baseline,
+            worker_id=chunk.worker_id,
+            worker_start_game=chunk.worker_start_game,
+            worker_games=chunk.games,
+        )
     records = _run_match_chunk_records(
         checkpoint,
         baseline,
@@ -1030,6 +1125,7 @@ def _run_evaluation_chunk(
         batch_size=batch_size,
         active_games=active_games,
         opening_starts=opening_starts,
+        progress_context=progress_context,
     )
     return chunk.baseline, records
 
@@ -1068,46 +1164,49 @@ def _run_parallel_checkpoint_match(
     chunk_size = max(1, math.ceil(match_config.games / effective_workers))
     chunks = _match_chunks(match_config.games, chunk_size=chunk_size)
     records: list[MatchGameRecord] = []
-    completed_games = 0
-    completed_plies = 0
 
-    def report_chunk_progress(chunk: _MatchChunk, chunk_records: list[MatchGameRecord]) -> None:
-        nonlocal completed_games, completed_plies
-        if progress is None or not chunk_records:
-            return
-        completed_games += len(chunk_records)
-        completed_plies += sum(record.plies for record in chunk_records)
-        progress(
-            EvaluationProgress(
-                games_completed=completed_games,
-                total_games=match_config.games,
-                completed_plies=completed_plies,
-                game_index=chunk_records[-1].game_index,
-                baseline="opponent_checkpoint",
-                worker_id=chunks.index(chunk),
-                worker_start_game=chunk.start_game,
-                worker_games=chunk.games,
-                worker_plies=sum(record.plies for record in chunk_records),
-            )
+    progress_accumulator = (
+        _ParallelProgressAccumulator(total_games=match_config.games, progress=progress)
+        if progress is not None
+        else None
+    )
+
+    def run_chunks(
+        progress_queue: _EvaluationProgressQueue | None,
+    ) -> list[list[MatchGameRecord]]:
+        return _map_chunks(
+            _run_checkpoint_match_chunk,
+            chunks,
+            [
+                checkpoint_dir,
+                opponent_checkpoint_dir,
+                match_config,
+                neural_config,
+                opponent_neural_config,
+                batch_size,
+                active_games,
+                opening_starts,
+                progress_queue,
+                match_config.games,
+            ],
+            workers=effective_workers,
+            progress_queue=progress_queue,
+            on_progress=(
+                progress_accumulator.report
+                if progress_accumulator is not None
+                else None
+            ),
         )
 
-    for chunk_records in _map_chunks(
-        _run_checkpoint_match_chunk,
-        chunks,
-        [
-            checkpoint_dir,
-            opponent_checkpoint_dir,
-            match_config,
-            neural_config,
-            opponent_neural_config,
-            batch_size,
-            active_games,
-            opening_starts,
-        ],
-        workers=effective_workers,
-        on_result=report_chunk_progress,
-    ):
+    if progress_accumulator is None:
+        chunk_results = run_chunks(None)
+    else:
+        with Manager() as manager:
+            chunk_results = run_chunks(manager.Queue())
+
+    for chunk_records in chunk_results:
         records.extend(chunk_records)
+
     return _match_result_from_records("checkpoint", "opponent_checkpoint", records)
 
 
@@ -1121,6 +1220,8 @@ def _run_checkpoint_match_chunk(
     batch_size: int,
     active_games: int | None,
     opening_starts: Sequence[_GameStart] | None,
+    progress_queue: _EvaluationProgressQueue | None,
+    total_games: int,
 ) -> list[MatchGameRecord]:
     checkpoint = _checkpoint_player_spec_reusing_loaded_checkpoint(
         checkpoint_dir,
@@ -1132,6 +1233,20 @@ def _run_checkpoint_match_chunk(
         name="opponent_checkpoint",
         config=opponent_neural_config,
     )
+    progress_context: _EvaluationProgressContext | None = None
+    if progress_queue is not None:
+
+        def put_progress(progress: EvaluationProgress) -> None:
+            progress_queue.put(progress)
+
+        progress_context = _EvaluationProgressContext(
+            callback=put_progress,
+            total_games=total_games,
+            baseline="opponent_checkpoint",
+            worker_id=chunk.worker_id,
+            worker_start_game=chunk.start_game,
+            worker_games=chunk.games,
+        )
     return _run_match_chunk_records(
         checkpoint,
         opponent,
@@ -1141,6 +1256,7 @@ def _run_checkpoint_match_chunk(
         batch_size=batch_size,
         active_games=active_games,
         opening_starts=opening_starts,
+        progress_context=progress_context,
     )
 
 

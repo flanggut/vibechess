@@ -97,12 +97,19 @@ class _ProgressReporter:
 
     def game_completed(self, progress: EvaluationProgress) -> None:
         total_games = progress.worker_games or progress.total_games
-        if len(self._workers_by_id) == 1:
+        if progress.worker_games_completed is not None:
+            games_completed = progress.worker_games_completed
+        elif len(self._workers_by_id) == 1:
             games_completed = progress.games_completed
-            plies = progress.completed_plies
-        else:
+        elif progress.worker_games is not None:
             games_completed = total_games
-            plies = progress.worker_plies or 0
+        else:
+            games_completed = min(progress.games_completed, total_games)
+        plies = (
+            progress.worker_plies
+            if progress.worker_plies is not None
+            else progress.completed_plies
+        )
         self._workers_by_id[progress.worker_id] = _WorkerProgressState(
             worker_id=progress.worker_id,
             start_game=progress.worker_start_game,
