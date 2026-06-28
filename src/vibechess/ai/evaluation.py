@@ -69,6 +69,10 @@ class EvaluationProgress:
     completed_plies: int
     game_index: int
     baseline: str | None = None
+    player_a_score: float = 0.0
+    player_b_score: float = 0.0
+    worker_player_a_score: float | None = None
+    worker_player_b_score: float | None = None
     worker_id: int = 0
     worker_start_game: int = 0
     worker_games: int | None = None
@@ -82,6 +86,8 @@ class _EvaluationProgressContext:
     total_games: int
     completed_offset: int = 0
     plies_offset: int = 0
+    player_a_score_offset: float = 0.0
+    player_b_score_offset: float = 0.0
     baseline: str | None = None
     worker_id: int = 0
     worker_start_game: int = 0
@@ -94,6 +100,7 @@ def _emit_evaluation_progress(
     *,
     local_games_completed: int,
     local_plies_completed: int,
+    local_player_a_score: float,
     game_index: int,
 ) -> None:
     if context is None:
@@ -104,6 +111,12 @@ def _emit_evaluation_progress(
             total_games=context.total_games,
             completed_plies=context.plies_offset + local_plies_completed,
             game_index=game_index,
+            player_a_score=context.player_a_score_offset + local_player_a_score,
+            player_b_score=(
+                context.player_b_score_offset + local_games_completed - local_player_a_score
+            ),
+            worker_player_a_score=local_player_a_score,
+            worker_player_b_score=local_games_completed - local_player_a_score,
             baseline=context.baseline,
             worker_id=context.worker_id,
             worker_start_game=context.worker_start_game,
@@ -366,6 +379,7 @@ def _run_match_records(
 ) -> list[MatchGameRecord]:
     records: list[MatchGameRecord] = []
     completed_plies = 0
+    completed_player_a_score = 0.0
     for game_index in range(start_game, start_game + games):
         game_start = _game_start_for_index(opening_starts, game_index)
         a_is_white = (game_index % 2 == 0) or not config.alternate_colors
@@ -387,11 +401,13 @@ def _run_match_records(
             game_start=game_start,
         )
         records.append(record)
+        completed_player_a_score += record.player_a_score
         completed_plies += record.plies
         _emit_evaluation_progress(
             progress_context,
             local_games_completed=len(records),
             local_plies_completed=completed_plies,
+            local_player_a_score=completed_player_a_score,
             game_index=game_index,
         )
     return records
@@ -725,6 +741,7 @@ def _run_batched_match_records(
     active: dict[int, _BatchedMatchGameState] = {}
     completed: dict[int, MatchGameRecord] = {}
     completed_plies = 0
+    completed_player_a_score = 0.0
     next_game_index = start_game
     end_game_index = start_game + games
 
@@ -753,7 +770,7 @@ def _run_batched_match_records(
             next_game_index += 1
 
     def complete_state(state: _BatchedMatchGameState) -> None:
-        nonlocal completed_plies
+        nonlocal completed_plies, completed_player_a_score
         active.pop(state.game_index, None)
         game = state.game
         if game.outcome is None:
@@ -766,10 +783,12 @@ def _run_batched_match_records(
         )
         completed[state.game_index] = record
         completed_plies += record.plies
+        completed_player_a_score += record.player_a_score
         _emit_evaluation_progress(
             progress_context,
             local_games_completed=len(completed),
             local_plies_completed=completed_plies,
+            local_player_a_score=completed_player_a_score,
             game_index=state.game_index,
         )
     launch_available_games()
@@ -894,6 +913,8 @@ class _ParallelProgressAccumulator:
     progress: EvaluationProgressCallback
     _worker_games_completed: dict[int, int] = field(default_factory=dict)
     _worker_plies_completed: dict[int, int] = field(default_factory=dict)
+    _worker_player_a_score: dict[int, float] = field(default_factory=dict)
+    _worker_player_b_score: dict[int, float] = field(default_factory=dict)
 
     def report(self, event: EvaluationProgress) -> None:
         reported_worker_games = (
@@ -912,12 +933,30 @@ class _ParallelProgressAccumulator:
         worker_plies = max(previous_worker_plies, reported_worker_plies)
         self._worker_games_completed[event.worker_id] = worker_games_completed
         self._worker_plies_completed[event.worker_id] = worker_plies
+        worker_player_a_score = max(
+            self._worker_player_a_score.get(event.worker_id, 0.0),
+            event.worker_player_a_score
+            if event.worker_player_a_score is not None
+            else event.player_a_score,
+        )
+        worker_player_b_score = max(
+            self._worker_player_b_score.get(event.worker_id, 0.0),
+            event.worker_player_b_score
+            if event.worker_player_b_score is not None
+            else event.player_b_score,
+        )
+        self._worker_player_a_score[event.worker_id] = worker_player_a_score
+        self._worker_player_b_score[event.worker_id] = worker_player_b_score
         self.progress(
             replace(
                 event,
                 games_completed=sum(self._worker_games_completed.values()),
                 total_games=self.total_games,
                 completed_plies=sum(self._worker_plies_completed.values()),
+                player_a_score=sum(self._worker_player_a_score.values()),
+                player_b_score=sum(self._worker_player_b_score.values()),
+                worker_player_a_score=worker_player_a_score,
+                worker_player_b_score=worker_player_b_score,
                 worker_games_completed=worker_games_completed,
                 worker_plies=worker_plies,
             )
@@ -1394,6 +1433,8 @@ def evaluate_checkpoint_against_baselines(
         results: dict[str, MatchResult] = {}
         completed_games = 0
         completed_plies = 0
+        completed_player_a_score = 0.0
+        completed_player_b_score = 0.0
         total_games = len(selected_baselines) * resolved_match_config.games
         for baseline in selected_baselines:
             records = _run_match_chunk_records(
@@ -1410,15 +1451,20 @@ def evaluate_checkpoint_against_baselines(
                     total_games=total_games,
                     completed_offset=completed_games,
                     plies_offset=completed_plies,
+                    player_a_score_offset=completed_player_a_score,
+                    player_b_score_offset=completed_player_b_score,
                     baseline=baseline,
                     worker_games=resolved_match_config.games,
                 )
                 if progress is not None
                 else None,
             )
+            baseline_player_a_score = sum(record.player_a_score for record in records)
             results[baseline] = _match_result_from_records("checkpoint", baseline, records)
             completed_games += len(records)
             completed_plies += sum(record.plies for record in records)
+            completed_player_a_score += baseline_player_a_score
+            completed_player_b_score += len(records) - baseline_player_a_score
     else:
         results = _run_parallel_evaluation(
             Path(checkpoint_dir),

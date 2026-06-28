@@ -42,6 +42,7 @@ class ProgressRenderState:
     workers: tuple[WorkerProgressState, ...]
     status: ProgressStatus
     message: str | None = None
+    detail_lines: tuple[str, ...] = ()
     elapsed_seconds: float = 0.0
 
 
@@ -155,6 +156,7 @@ class AnsiProgressRenderer:
         )
         lines = [self._format_worker(worker) for worker in state.workers]
         lines.append(total)
+        lines.extend(state.detail_lines)
         lines.append(header)
         return lines
 

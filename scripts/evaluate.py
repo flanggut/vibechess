@@ -45,6 +45,7 @@ class _ProgressReporter:
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _refresh_stop: threading.Event = field(default_factory=threading.Event, init=False)
     _refresh_thread: threading.Thread | None = field(default=None, init=False)
+    _live_score_message: str | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self._renderer = _AnsiProgressRenderer(
@@ -128,6 +129,15 @@ class _ProgressReporter:
         ]
         if progress.baseline is not None:
             fields.insert(1, f"baseline={progress.baseline}")
+        if progress.baseline == "opponent_checkpoint":
+            self._live_score_message = " ".join(
+                [
+                    "evaluation: score",
+                    f"checkpoint={progress.player_a_score:g}",
+                    f"opponent_checkpoint={progress.player_b_score:g}",
+                    f"completed={progress.games_completed}/{progress.total_games}",
+                ]
+            )
         self._write(" ".join(fields))
 
     def saving(self, output: Path) -> None:
@@ -154,6 +164,9 @@ class _ProgressReporter:
                 ),
                 status=self._status,
                 message=message,
+                detail_lines=(
+                    () if self._live_score_message is None else (self._live_score_message,)
+                ),
                 elapsed_seconds=self._elapsed_seconds(),
             )
             if finish:

@@ -274,7 +274,7 @@ def test_checkpoint_evaluation_parallel_progress_updates_per_game(
 ) -> None:
     checkpoint_dir = tmp_path / "checkpoint"
     save_tiny_checkpoint(checkpoint_dir)
-    progress_events: list[tuple[int, int, int | None, int | None]] = []
+    progress_events: list[tuple[int, int, int | None, int | None, float, float]] = []
 
     evaluate_checkpoint_against_baselines(
         checkpoint_dir,
@@ -292,6 +292,8 @@ def test_checkpoint_evaluation_parallel_progress_updates_per_game(
                 progress.total_games,
                 progress.worker_games_completed,
                 progress.worker_games,
+                progress.player_a_score,
+                progress.player_b_score,
             )
         ),
     )
@@ -305,6 +307,7 @@ def test_checkpoint_evaluation_parallel_progress_updates_per_game(
         2,
     ]
     assert {event[3] for event in progress_events} == {2}
+    assert all(event[4] + event[5] == event[0] for event in progress_events)
 
 def test_checkpoint_evaluation_loads_checkpoint_and_writes_report(
     tmp_path: Path,
@@ -500,6 +503,35 @@ def test_evaluate_script_smoke(tmp_path: Path) -> None:
     assert set(report["matches"]) == {"random"}
     assert report["promotion"]["promoted"] is True
 
+
+
+def test_progress_renderer_keeps_live_detail_line() -> None:
+    progress_module = runpy.run_path(str(Path(__file__).parents[2] / "scripts" / "_progress.py"))
+    renderer = progress_module["AnsiProgressRenderer"](
+        enabled=True,
+        total_games=2,
+        label="evaluation",
+        unit_label="plies",
+    )
+    state = progress_module["ProgressRenderState"](
+        total_games=2,
+        workers=(
+            progress_module["WorkerProgressState"](
+                worker_id=0,
+                start_game=0,
+                total_games=2,
+                games_completed=1,
+                samples=9,
+            ),
+        ),
+        status="running",
+        detail_lines=("evaluation: score checkpoint=0.5 opponent_checkpoint=0.5 completed=1/2",),
+    )
+
+    lines = renderer._format_lines(state)
+
+    assert lines[-2] == "evaluation: score checkpoint=0.5 opponent_checkpoint=0.5 completed=1/2"
+    assert lines[-1].startswith("evaluation status=running games=1/2 plies=9")
 
 def test_evaluate_script_progress_always_writes_stderr_only(tmp_path: Path) -> None:
     checkpoint_dir = tmp_path / "checkpoint"
@@ -790,6 +822,8 @@ def test_evaluate_script_neural_vs_neural_smoke_defaults_opponent_settings(
             "0.25",
             "--seed",
             "13",
+            "--progress",
+            "always",
             "--output",
             str(output),
         ],
@@ -805,6 +839,8 @@ def test_evaluate_script_neural_vs_neural_smoke_defaults_opponent_settings(
     assert "winner_player=draw" in stdout_lines[0]
     assert len([line for line in stdout_lines if line.startswith("game ")]) == 2
     assert stdout_lines[-1].startswith("total games=2 score=1-1 ")
+    assert "evaluation: score checkpoint=0.5 opponent_checkpoint=0.5 completed=1/2" in result.stderr
+    assert "evaluation: score checkpoint=1 opponent_checkpoint=1 completed=2/2" in result.stderr
     assert report["mode"] == "neural_vs_neural"
     assert "promotion" not in report
     assert "criteria" not in report
