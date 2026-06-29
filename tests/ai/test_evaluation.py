@@ -663,6 +663,42 @@ def test_evaluate_script_stdout_prints_one_line_per_game_then_summary(
     assert stdout_lines[-1].startswith("total games=12 ")
 
 
+def test_evaluate_script_can_suppress_individual_game_outcomes(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "checkpoint"
+    save_tiny_checkpoint(checkpoint_dir)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/evaluate.py",
+            "--checkpoint",
+            str(checkpoint_dir),
+            "--baseline",
+            "random",
+            "--opening-count",
+            "1",
+            "--max-plies",
+            "1",
+            "--neural-simulations",
+            "1",
+            "--min-games-per-baseline",
+            "1",
+            "--min-score-rate-vs-random",
+            "0.0",
+            "--no-print-game-outcomes",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    stdout_lines = result.stdout.strip().splitlines()
+    assert not any(line.startswith("game ") for line in stdout_lines)
+    assert stdout_lines[0].startswith("promotion promoted=True reasons=")
+    assert stdout_lines[-1].startswith("total games=2 ")
+
+
 def test_evaluate_script_game_summary_labels_checkpoint_winner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

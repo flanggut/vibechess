@@ -393,7 +393,7 @@ def main() -> None:
         progress_reporter.done()
     finally:
         progress_reporter.cleanup()
-    _print_report_summary(report)
+    _print_report_summary(report, print_game_outcomes=args.print_game_outcomes)
     if args.opponent_checkpoint is None:
         promotion = report["promotion"]
         if not isinstance(promotion, dict):
@@ -629,6 +629,12 @@ def _parse_args() -> argparse.Namespace:
         help="progress output mode; auto writes to stderr only when stderr is a TTY",
     )
     parser.add_argument(
+        "--print-game-outcomes",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="print one stdout line for each completed game; disable with --no-print-game-outcomes",
+    )
+    parser.add_argument(
         "--require-promotion",
         action="store_true",
         help="Exit non-zero if early criteria are not met",
@@ -739,11 +745,16 @@ def _progress_enabled(mode: str) -> bool:
     return sys.stderr.isatty()
 
 
-def _print_report_summary(report: Mapping[str, object]) -> None:
+def _print_report_summary(
+    report: Mapping[str, object],
+    *,
+    print_game_outcomes: bool = True,
+) -> None:
     if "match" in report:
         match = _expect_mapping(report.get("match"), "match")
         match_items = [("opponent_checkpoint", match)]
-        _print_game_summaries(match_items)
+        if print_game_outcomes:
+            _print_game_summaries(match_items)
         _print_match_total("opponent_checkpoint", match)
         return
 
@@ -752,7 +763,8 @@ def _print_report_summary(report: Mapping[str, object]) -> None:
         (str(name), _expect_mapping(match, f"matches.{name}"))
         for name, match in matches.items()
     ]
-    _print_game_summaries(match_items)
+    if print_game_outcomes:
+        _print_game_summaries(match_items)
     promotion = _expect_mapping(report.get("promotion"), "promotion")
     print(
         "promotion "
