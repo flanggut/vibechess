@@ -1303,6 +1303,102 @@ def test_self_play_script_appends_existing_output_like_longer_run(tmp_path: Path
     _assert_self_play_datasets_equivalent(appended_dataset, expected_dataset)
 
 
+def test_self_play_script_appends_when_only_active_games_differs(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "append-active-games-output"
+    base_args = [
+        sys.executable,
+        "scripts/self_play.py",
+        "--max-plies",
+        "1",
+        "--simulations",
+        "1",
+        "--checkpoint-id",
+        "shared-active-games",
+        "--batch-size",
+        "2",
+        "--seed",
+        "17",
+        "--progress",
+        "never",
+        "--output",
+        str(output),
+    ]
+
+    first = subprocess.run(
+        [*base_args, "--games", "1", "--active-games", "1"],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert first.returncode == 0, first.stderr
+
+    second = subprocess.run(
+        [*base_args, "--games", "2", "--active-games", "2"],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert second.returncode == 0, second.stderr
+
+    appended_dataset = load_self_play_dataset(output)
+    assert appended_dataset.metadata.game_count == 3
+    assert appended_dataset.metadata.sample_count == 3
+    assert [record.game_index for record in appended_dataset.games] == [0, 1, 2]
+
+
+def test_self_play_script_appends_when_batching_and_workers_differ(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "append-batching-workers-output"
+    base_args = [
+        sys.executable,
+        "scripts/self_play.py",
+        "--max-plies",
+        "1",
+        "--simulations",
+        "1",
+        "--checkpoint-id",
+        "shared-batching-workers",
+        "--seed",
+        "19",
+        "--progress",
+        "never",
+        "--output",
+        str(output),
+    ]
+
+    first = subprocess.run(
+        [*base_args, "--games", "1", "--batch-size", "1", "--workers", "1"],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert first.returncode == 0, first.stderr
+
+    second = subprocess.run(
+        [*base_args, "--games", "2", "--batch-size", "2", "--workers", "2"],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert second.returncode == 0, second.stderr
+
+    appended_dataset = load_self_play_dataset(output)
+    assert appended_dataset.metadata.game_count == 3
+    assert appended_dataset.metadata.sample_count == 3
+    assert [record.game_index for record in appended_dataset.games] == [0, 1, 2]
+
+
 def test_self_play_script_parallel_append_uses_global_chunk_indexes(tmp_path: Path) -> None:
     output = tmp_path / "parallel-append-output"
     expected_output = tmp_path / "parallel-append-expected-output"

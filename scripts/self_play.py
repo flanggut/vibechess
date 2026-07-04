@@ -491,20 +491,35 @@ def _requested_generation_settings(
     )
 
 
+def _append_relevant_search_settings(settings: object) -> object:
+    if not isinstance(settings, dict):
+        return settings
+    return {
+        key: value
+        for key, value in settings.items()
+        if key != "seed"
+    }
+
+
 def _append_relevant_settings(settings: dict[str, object]) -> dict[str, object]:
-    relevant_keys = (
-        "max_plies",
-        "label_source",
-        "mcts",
-        "classical_mcts",
-        "model_checkpoint_id",
-        "seed",
-        "batch_size",
-        "active_games",
-        "batching_mode",
-        "inference_batch_size",
-    )
-    return {key: settings.get(key) for key in relevant_keys}
+    label_source = settings.get("label_source")
+    relevant: dict[str, object] = {
+        "max_plies": settings.get("max_plies"),
+        "label_source": label_source,
+        "model_checkpoint_id": settings.get("model_checkpoint_id"),
+    }
+    if label_source == LABEL_SOURCE_NEURAL:
+        relevant["mcts"] = _append_relevant_search_settings(settings.get("mcts"))
+    elif label_source == LABEL_SOURCE_CLASSICAL:
+        relevant["classical_mcts"] = _append_relevant_search_settings(
+            settings.get("classical_mcts")
+        )
+    else:
+        relevant["mcts"] = _append_relevant_search_settings(settings.get("mcts"))
+        relevant["classical_mcts"] = _append_relevant_search_settings(
+            settings.get("classical_mcts")
+        )
+    return relevant
 
 
 def _validate_append_request(
@@ -535,7 +550,7 @@ def _validate_append_request(
     existing_settings = _append_relevant_settings(existing_generation_settings)
     requested_relevant = _append_relevant_settings(requested_settings)
     for key, existing_value in existing_settings.items():
-        requested_value = requested_relevant[key]
+        requested_value = requested_relevant.get(key)
         if existing_value != requested_value:
             parser.error(
                 "cannot append to existing self-play dataset: generation setting "
