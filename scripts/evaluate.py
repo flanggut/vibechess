@@ -393,7 +393,7 @@ def main() -> None:
         progress_reporter.done()
     finally:
         progress_reporter.cleanup()
-    _print_report_summary(report, print_game_outcomes=args.print_game_outcomes)
+    _print_report_summary(report)
     if args.opponent_checkpoint is None:
         promotion = report["promotion"]
         if not isinstance(promotion, dict):
@@ -629,12 +629,6 @@ def _parse_args() -> argparse.Namespace:
         help="progress output mode; auto writes to stderr only when stderr is a TTY",
     )
     parser.add_argument(
-        "--print-game-outcomes",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="print one stdout line for each completed game; disable with --no-print-game-outcomes",
-    )
-    parser.add_argument(
         "--require-promotion",
         action="store_true",
         help="Exit non-zero if early criteria are not met",
@@ -745,16 +739,9 @@ def _progress_enabled(mode: str) -> bool:
     return sys.stderr.isatty()
 
 
-def _print_report_summary(
-    report: Mapping[str, object],
-    *,
-    print_game_outcomes: bool = True,
-) -> None:
+def _print_report_summary(report: Mapping[str, object]) -> None:
     if "match" in report:
         match = _expect_mapping(report.get("match"), "match")
-        match_items = [("opponent_checkpoint", match)]
-        if print_game_outcomes:
-            _print_game_summaries(match_items)
         _print_match_total("opponent_checkpoint", match)
         return
 
@@ -763,8 +750,6 @@ def _print_report_summary(
         (str(name), _expect_mapping(match, f"matches.{name}"))
         for name, match in matches.items()
     ]
-    if print_game_outcomes:
-        _print_game_summaries(match_items)
     promotion = _expect_mapping(report.get("promotion"), "promotion")
     print(
         "promotion "
@@ -791,38 +776,6 @@ def _print_match_total(name: str, match: Mapping[str, object]) -> None:
         f"total games={games} score={score:g}-{opponent_score:g} "
         f"score_rate={score_rate:.1%} wins={wins} losses={losses} draws={draws}"
     )
-
-
-def _print_game_summaries(match_items: list[tuple[str, Mapping[str, object]]]) -> None:
-    for name, match in match_items:
-        records = _expect_list(match.get("records"), f"{name}.records")
-        for raw_record in records:
-            record = _expect_mapping(raw_record, f"{name}.records[]")
-            print(_format_game_summary(name, record))
-
-
-def _format_game_summary(name: str, record: Mapping[str, object]) -> str:
-    winner = record.get("winner")
-    winner_text = "draw" if winner is None else str(winner)
-    return (
-        f"game index={_expect_int(record.get('game_index'), 'game_index')} "
-        f"checkpoint_color={record.get('player_a_color')} "
-        f"score={_expect_number(record.get('player_a_score'), 'player_a_score'):g} "
-        f"plies={_expect_int(record.get('plies'), 'plies')} "
-        f"outcome={record.get('outcome_reason')} winner={winner_text} "
-        f"winner_player={_winner_player_label(name, record)} "
-        f"moves={len(_expect_list(record.get('moves_uci'), 'moves_uci'))} "
-        f"opening={record.get('opening_index')}"
-    )
-
-
-def _winner_player_label(name: str, record: Mapping[str, object]) -> str:
-    score = _expect_number(record.get("player_a_score"), "player_a_score")
-    if score == 1.0:
-        return "checkpoint"
-    if score == 0.0:
-        return name
-    return "draw"
 
 
 def _expect_mapping(value: object, field: str) -> Mapping[str, object]:

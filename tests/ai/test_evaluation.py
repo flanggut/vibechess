@@ -61,6 +61,14 @@ def save_tiny_checkpoint(checkpoint_dir: Path) -> None:
     )
 
 
+def assert_stdout_omits_game_outcomes(stdout: str) -> list[str]:
+    stdout_lines = stdout.strip().splitlines()
+    assert stdout_lines
+    assert not any(line.startswith("game ") for line in stdout_lines)
+    assert "winner_player=" not in stdout
+    return stdout_lines
+
+
 def test_run_match_records_legal_outcomes_and_alternates_colors() -> None:
     result = run_match(
         PlayerSpec("random-a", lambda: RandomPlayer(seed=1)),
@@ -573,7 +581,9 @@ def test_evaluate_script_progress_always_writes_stderr_only(tmp_path: Path) -> N
     assert "evaluation: completed=2/2" in result.stderr
     assert "evaluation: done" in result.stderr
     assert "evaluation status=" not in result.stdout
-    assert result.stdout.startswith("game index=")
+    stdout_lines = assert_stdout_omits_game_outcomes(result.stdout)
+    assert stdout_lines[0].startswith("promotion promoted=True reasons=")
+    assert stdout_lines[-1].startswith("total games=2 ")
 
 
 def test_evaluate_script_progress_reports_effective_workers(tmp_path: Path) -> None:
@@ -622,7 +632,7 @@ def test_evaluate_script_progress_reports_effective_workers(tmp_path: Path) -> N
     assert "evaluation: completed=3/8" in result.stderr
 
 
-def test_evaluate_script_stdout_prints_one_line_per_game_then_summary(
+def test_evaluate_script_stdout_skips_game_outcomes_then_prints_summary(
     tmp_path: Path,
 ) -> None:
     checkpoint_dir = tmp_path / "checkpoint"
@@ -653,17 +663,12 @@ def test_evaluate_script_stdout_prints_one_line_per_game_then_summary(
     )
 
     assert result.returncode == 0, result.stderr
-    stdout_lines = result.stdout.strip().splitlines()
-    assert len([line for line in stdout_lines if line.startswith("game ")]) == 12
-    assert all(
-        "winner_player=draw" in line
-        for line in stdout_lines
-        if line.startswith("game ")
-    )
+    stdout_lines = assert_stdout_omits_game_outcomes(result.stdout)
+    assert stdout_lines[0].startswith("promotion promoted=True reasons=")
     assert stdout_lines[-1].startswith("total games=12 ")
 
 
-def test_evaluate_script_can_suppress_individual_game_outcomes(tmp_path: Path) -> None:
+def test_evaluate_script_default_stdout_omits_individual_game_outcomes(tmp_path: Path) -> None:
     checkpoint_dir = tmp_path / "checkpoint"
     save_tiny_checkpoint(checkpoint_dir)
 
@@ -685,7 +690,6 @@ def test_evaluate_script_can_suppress_individual_game_outcomes(tmp_path: Path) -
             "1",
             "--min-score-rate-vs-random",
             "0.0",
-            "--no-print-game-outcomes",
         ],
         check=False,
         capture_output=True,
@@ -693,43 +697,9 @@ def test_evaluate_script_can_suppress_individual_game_outcomes(tmp_path: Path) -
     )
 
     assert result.returncode == 0, result.stderr
-    stdout_lines = result.stdout.strip().splitlines()
-    assert not any(line.startswith("game ") for line in stdout_lines)
+    stdout_lines = assert_stdout_omits_game_outcomes(result.stdout)
     assert stdout_lines[0].startswith("promotion promoted=True reasons=")
     assert stdout_lines[-1].startswith("total games=2 ")
-
-
-def test_evaluate_script_game_summary_labels_checkpoint_winner(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.syspath_prepend(str(Path(__file__).parents[2] / "scripts"))
-    namespace = runpy.run_path("scripts/evaluate.py", run_name="evaluate_script_test")
-    format_game_summary = cast(
-        Callable[[str, dict[str, object]], str],
-        namespace["_format_game_summary"],
-    )
-    record = {
-        "game_index": 0,
-        "player_a_color": "white",
-        "player_a_score": 1.0,
-        "plies": 4,
-        "outcome_reason": "checkmate",
-        "winner": "white",
-        "moves_uci": ["f2f3", "e7e5", "g2g4", "d8h4"],
-        "opening_index": None,
-    }
-
-    assert "winner_player=checkpoint" in format_game_summary(
-        "opponent_checkpoint", record
-    )
-    assert "winner_player=opponent_checkpoint" in format_game_summary(
-        "opponent_checkpoint",
-        {**record, "player_a_score": 0.0, "winner": "black"},
-    )
-    assert "winner_player=draw" in format_game_summary(
-        "opponent_checkpoint",
-        {**record, "player_a_score": 0.5, "winner": None},
-    )
 
 
 def test_evaluate_script_rejects_invalid_workers(tmp_path: Path) -> None:
@@ -813,9 +783,8 @@ def test_evaluate_script_neural_vs_neural_uses_unique_paired_openings(
 
     assert result.returncode == 0, result.stderr
     report = json.loads(output.read_text())
-    assert result.stdout.startswith("game index=0 ")
-    assert result.stdout.strip().splitlines()[-1].startswith("total ")
-    assert "winner_player=draw" in result.stdout
+    stdout_lines = assert_stdout_omits_game_outcomes(result.stdout)
+    assert stdout_lines[-1].startswith("total ")
     neural_configs = report["neural_configs"]
     assert neural_configs["checkpoint"]["temperature"] == 0.0
     assert neural_configs["opponent"]["temperature"] == 0.0
@@ -870,10 +839,7 @@ def test_evaluate_script_neural_vs_neural_smoke_defaults_opponent_settings(
 
     assert result.returncode == 0, result.stderr
     report = json.loads(output.read_text())
-    stdout_lines = result.stdout.strip().splitlines()
-    assert stdout_lines[0].startswith("game index=0 ")
-    assert "winner_player=draw" in stdout_lines[0]
-    assert len([line for line in stdout_lines if line.startswith("game ")]) == 2
+    stdout_lines = assert_stdout_omits_game_outcomes(result.stdout)
     assert stdout_lines[-1].startswith("total games=2 score=1-1 ")
     assert "evaluation: score checkpoint=0.5 opponent_checkpoint=0.5 completed=1/2" in result.stderr
     assert "evaluation: score checkpoint=1 opponent_checkpoint=1 completed=2/2" in result.stderr
@@ -950,7 +916,8 @@ def test_evaluate_script_neural_vs_neural_overrides_opponent_settings(
 
     assert result.returncode == 0, result.stderr
     report = json.loads(output.read_text())
-    assert result.stdout.startswith("game ")
+    stdout_lines = assert_stdout_omits_game_outcomes(result.stdout)
+    assert stdout_lines[-1].startswith("total games=2 ")
     neural_configs = report["neural_configs"]
     assert neural_configs["checkpoint"]["simulations"] == 2
     assert neural_configs["checkpoint"]["node_budget"] == 5
@@ -1060,12 +1027,10 @@ def test_evaluate_script_parallel_smoke_stdout_summary(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     report = json.loads(output.read_text())
-    stdout_lines = result.stdout.strip().splitlines()
-    assert stdout_lines[0].startswith("game index=0 ")
+    stdout_lines = assert_stdout_omits_game_outcomes(result.stdout)
     assert any(
         line.startswith("promotion promoted=True reasons=") for line in stdout_lines
     )
-    assert len([line for line in stdout_lines if line.startswith("game ")]) == 2
     assert stdout_lines[-1].startswith("total games=2 ")
     assert set(report["matches"]) == {"random"}
     assert [
