@@ -1203,6 +1203,132 @@ def test_self_play_script_creates_documented_files(tmp_path: Path) -> None:
     assert (output / DEFAULT_METADATA_FILENAME).is_file()
     assert (output / DEFAULT_GAMES_FILENAME).is_file()
 
+
+def _repo_pythonpath_env(repo_root: Path) -> dict[str, str]:
+    pythonpath = os.environ.get("PYTHONPATH")
+    paths = [str(repo_root / "src")]
+    if pythonpath:
+        paths.append(pythonpath)
+    return {**os.environ, "PYTHONPATH": os.pathsep.join(paths)}
+
+
+def _run_self_play_script_from_tmp_cwd(
+    tmp_path: Path,
+    args: Sequence[str],
+) -> subprocess.CompletedProcess[str]:
+    repo_root = Path(__file__).parents[2]
+    return subprocess.run(
+        [sys.executable, str(repo_root / "scripts/self_play.py"), *args],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=_repo_pythonpath_env(repo_root),
+    )
+
+
+def _save_tiny_checkpoint(path: Path) -> None:
+    model_config = PolicyValueConfig(
+        residual_channels=4,
+        residual_blocks=0,
+        policy_channels=1,
+        value_channels=1,
+        value_hidden_dim=4,
+    )
+    save_checkpoint(PolicyValueNet(model_config), path)
+
+
+def test_self_play_script_defaults_output_to_checkpoint_run_when_output_omitted(
+    tmp_path: Path,
+) -> None:
+    checkpoint = tmp_path / "data/checkpoints/transformer_v2_03/checkpoint-final"
+    _save_tiny_checkpoint(checkpoint)
+    expected_output = tmp_path / "data/selfplay/transformer_v2_03"
+
+    result = _run_self_play_script_from_tmp_cwd(
+        tmp_path,
+        [
+            "--checkpoint",
+            str(checkpoint),
+            "--games",
+            "1",
+            "--max-plies",
+            "1",
+            "--simulations",
+            "1",
+            "--progress",
+            "never",
+        ],
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"output={Path('data/selfplay/transformer_v2_03')}" in result.stdout
+    dataset = load_self_play_dataset(expected_output)
+    assert dataset.metadata.model_checkpoint_id == str(checkpoint)
+    assert dataset.metadata.game_count == 1
+    assert dataset.metadata.sample_count == 1
+
+
+def test_self_play_script_preserves_explicit_output_with_checkpoint(
+    tmp_path: Path,
+) -> None:
+    checkpoint = tmp_path / "data/checkpoints/transformer_v2_03/checkpoint-final"
+    _save_tiny_checkpoint(checkpoint)
+    explicit_output = tmp_path / "explicit-selfplay-output"
+
+    result = _run_self_play_script_from_tmp_cwd(
+        tmp_path,
+        [
+            "--checkpoint",
+            str(checkpoint),
+            "--output",
+            str(explicit_output),
+            "--games",
+            "1",
+            "--max-plies",
+            "1",
+            "--simulations",
+            "1",
+            "--progress",
+            "never",
+        ],
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"output={explicit_output}" in result.stdout
+    dataset = load_self_play_dataset(explicit_output)
+    assert dataset.metadata.model_checkpoint_id == str(checkpoint)
+    assert dataset.metadata.game_count == 1
+    assert not (tmp_path / "data/selfplay/transformer_v2_03").exists()
+
+
+def test_self_play_script_defaults_output_to_smoke_without_checkpoint(
+    tmp_path: Path,
+) -> None:
+    expected_output = tmp_path / "data/selfplay/smoke"
+
+    result = _run_self_play_script_from_tmp_cwd(
+        tmp_path,
+        [
+            "--games",
+            "1",
+            "--max-plies",
+            "1",
+            "--simulations",
+            "1",
+            "--progress",
+            "never",
+        ],
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"output={Path('data/selfplay/smoke')}" in result.stdout
+    dataset = load_self_play_dataset(expected_output)
+    assert dataset.metadata.model_checkpoint_id is None
+    assert dataset.metadata.game_count == 1
+
+
 def test_self_play_script_defaults_to_200_simulations(tmp_path: Path) -> None:
     output = tmp_path / "script-default-simulations-output"
     result = subprocess.run(

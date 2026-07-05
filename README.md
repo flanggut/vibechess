@@ -117,6 +117,10 @@ automation: self-play prints a final output summary, while evaluation prints one
 line per evaluated game followed by aggregate match totals. Pass
 `scripts/evaluate.py --output report.json` when the full per-game JSON report is
 needed.
+When `scripts/self_play.py` is run without `--output`, it writes to
+`data/selfplay/<checkpoint-run>` for checkpoints such as
+`data/checkpoints/train-smoke/checkpoint-final`; without `--checkpoint`, it
+falls back to `data/selfplay/smoke`.
 When `scripts/self_play.py --output DIR --games N` points at a complete existing
 self-play dataset, the run appends `N` additional games instead of overwriting it.
 Append runs require the same checkpoint id and content-affecting generation

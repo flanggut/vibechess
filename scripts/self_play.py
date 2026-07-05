@@ -65,6 +65,9 @@ from vibechess.nn.self_play_profile import (
 )
 
 PROFILE_ENV_VAR = "VIBECHESS_SELF_PLAY_PROFILE"
+DEFAULT_SELF_PLAY_OUTPUT = Path("data/selfplay/smoke")
+DEFAULT_SELF_PLAY_OUTPUT_ROOT = Path("data/selfplay")
+
 _PROGRESS_POLL_SECONDS = 0.05
 # How often the elapsed/eta counters are refreshed independently of progress
 # events, so the timer keeps ticking even while a long game is in flight.
@@ -804,13 +807,37 @@ def _directory_size(directory: Path) -> int:
     return _scriptutil.directory_size(directory)
 
 
+def _checkpoint_default_output(checkpoint: Path) -> Path:
+    checkpoint_name = checkpoint.name
+    run_name = (
+        checkpoint.parent.name
+        if checkpoint_name.startswith("checkpoint-") and checkpoint.parent.name
+        else checkpoint_name
+    )
+    if not run_name:
+        return DEFAULT_SELF_PLAY_OUTPUT
+    return DEFAULT_SELF_PLAY_OUTPUT_ROOT / run_name
+
+
+def _resolve_output(output: Path | None, checkpoint: Path | None) -> Path:
+    if output is not None:
+        return output
+    if checkpoint is not None:
+        return _checkpoint_default_output(checkpoint)
+    return DEFAULT_SELF_PLAY_OUTPUT
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate vibechess self-play samples.")
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("data/selfplay/smoke"),
-        help="dataset output directory; appends when a complete dataset already exists",
+        default=None,
+        help=(
+            "dataset output directory; defaults to data/selfplay/<checkpoint run> "
+            "when --checkpoint is provided, otherwise data/selfplay/smoke; appends "
+            "when a complete dataset already exists"
+        ),
     )
     parser.add_argument("--checkpoint", type=Path, default=None)
     parser.add_argument("--checkpoint-id", default=None)
@@ -927,7 +954,7 @@ def main() -> int:
             parser.error("--checkpoint is only supported with --label-source neural")
         if args.checkpoint_id is not None:
             parser.error("--checkpoint-id is only supported with --label-source neural")
-
+    args.output = _resolve_output(args.output, args.checkpoint)
     checkpoint_id = args.checkpoint_id
     if args.checkpoint is not None:
         checkpoint_id = checkpoint_id or str(args.checkpoint)
