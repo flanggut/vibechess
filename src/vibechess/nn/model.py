@@ -13,6 +13,10 @@ from vibechess.nn.encode import (
     ACTION_SPACE_SIZE,
     ENCODER_CHANNELS,
     TENSOR_SHAPE,
+    _KNIGHT_DELTAS,
+    _QUEEN_DIRECTIONS,
+    _UNDERPROMOTION_FILES,
+    _UNDERPROMOTION_OFFSET,
     tensor_shape,
     to_mlx,
 )
@@ -60,6 +64,7 @@ __all__ = [
     "PolicyValueTransformerNet",
     "GeometricAttentionBias",
     "ChessformerEncoderLayer",
+    "SourceDestinationPolicyHead",
     "ChessformerPolicyValueNet",
     "BatchInferenceResult",
     "InferenceResult",
@@ -67,6 +72,57 @@ __all__ = [
     "LegalPolicyResult",
     "PolicyValueInference",
 ]
+
+_INVALID_DESTINATION = -1
+_SUPPRESSED_POLICY_LOGIT = -1.0e9
+_UNDERPROMOTION_PIECE_INDICES = (0, 0, 0, 1, 1, 1, 2, 2, 2)
+
+
+def _destination_square(square: int, file_delta: int, rank_delta: int) -> int:
+    from_file = square & 7
+    from_rank = square >> 3
+    to_file = from_file + file_delta
+    to_rank = from_rank + rank_delta
+    if not 0 <= to_file < 8 or not 0 <= to_rank < 8:
+        return _INVALID_DESTINATION
+    return to_rank * 8 + to_file
+
+
+def _build_action_destinations(underpromotion_rank_delta: int | None) -> tuple[tuple[int, ...], ...]:
+    destinations: list[tuple[int, ...]] = []
+    for square in range(64):
+        planes: list[int] = []
+        for plane in range(ACTION_PLANES):
+            if plane < 56:
+                file_step, rank_step = _QUEEN_DIRECTIONS[plane // 7]
+                distance = plane % 7 + 1
+                planes.append(
+                    _destination_square(square, file_step * distance, rank_step * distance)
+                )
+            elif plane < _UNDERPROMOTION_OFFSET:
+                file_delta, rank_delta = _KNIGHT_DELTAS[plane - 56]
+                planes.append(_destination_square(square, file_delta, rank_delta))
+            elif underpromotion_rank_delta is None:
+                planes.append(_INVALID_DESTINATION)
+            else:
+                file_delta = _UNDERPROMOTION_FILES[(plane - _UNDERPROMOTION_OFFSET) % 3]
+                planes.append(_destination_square(square, file_delta, underpromotion_rank_delta))
+        destinations.append(tuple(planes))
+    return tuple(destinations)
+
+
+_ACTION_DESTINATIONS = _build_action_destinations(None)
+_WHITE_UNDERPROMOTION_DESTINATIONS = _build_action_destinations(1)
+_BLACK_UNDERPROMOTION_DESTINATIONS = _build_action_destinations(-1)
+_ACTION_DESTINATION_INDICES = mx.array(_ACTION_DESTINATIONS, dtype=mx.int32)
+_WHITE_UNDERPROMOTION_DESTINATION_INDICES = mx.array(
+    tuple(row[_UNDERPROMOTION_OFFSET:] for row in _WHITE_UNDERPROMOTION_DESTINATIONS),
+    dtype=mx.int32,
+)
+_BLACK_UNDERPROMOTION_DESTINATION_INDICES = mx.array(
+    tuple(row[_UNDERPROMOTION_OFFSET:] for row in _BLACK_UNDERPROMOTION_DESTINATIONS),
+    dtype=mx.int32,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -333,6 +389,7 @@ class GeometricAttentionBias(nn.Module):  # type: ignore[misc]
         use_average_pool: int,
     ) -> None:
         super().__init__()
+        self.summary1: Any = None
         self.token_count = token_count
         self.attention_heads = attention_heads
         self.dim3 = dim3
@@ -396,8 +453,82 @@ class ChessformerEncoderLayer(nn.Module):  # type: ignore[misc]
         return x + y
 
 
+class SourceDestinationPolicyHead(nn.Module):  # type: ignore[misc]
+    """Attention policy head mapped back into the 64 * 73 action layout."""
+
+    def __init__(self, config: ChessformerPolicyValueConfig) -> None:
+        super().__init__()
+        self.from_query = nn.Linear(config.model_dim, config.policy_dim)
+        self.to_key = nn.Linear(config.model_dim, config.policy_dim)
+        self.underpromotion_hidden = nn.Linear(config.model_dim, config.promotion_hidden_dim)
+        self.underpromotion_bias = nn.Linear(config.promotion_hidden_dim, 3)
+        self.scale = config.policy_dim**-0.5
+
+    def __call__(self, x: MLXArray, black_to_move: MLXArray) -> MLXArray:
+        traversal = mx.matmul(self.from_query(x), mx.swapaxes(self.to_key(x), 1, 2)) * self.scale
+        plane_logits = _map_traversal_to_action_logits(
+            traversal,
+            self._underpromotion_bias_by_destination(x),
+            black_to_move,
+        )
+        return plane_logits.reshape(x.shape[0], ACTION_SPACE_SIZE)
+
+    def _underpromotion_bias_by_destination(self, x: MLXArray) -> MLXArray:
+        hidden = nn.relu(self.underpromotion_hidden(x))
+        return self.underpromotion_bias(hidden)
+
+
+def _map_traversal_to_action_logits(
+    traversal: MLXArray,
+    underpromotion_bias_by_destination: MLXArray,
+    black_to_move: MLXArray,
+) -> MLXArray:
+    """Gather source-destination traversal logits into AlphaZero action planes."""
+
+    valid = _ACTION_DESTINATION_INDICES >= 0
+    destination_indices = mx.maximum(_ACTION_DESTINATION_INDICES, 0)
+    plane_logits = mx.take_along_axis(traversal, destination_indices[None, :, :], axis=2)
+    plane_logits = mx.where(valid[None, :, :], plane_logits, _SUPPRESSED_POLICY_LOGIT)
+
+    black = black_to_move.reshape(black_to_move.shape[0], 1, 1) > 0.5
+    underpromotion_indices = mx.where(
+        black,
+        _BLACK_UNDERPROMOTION_DESTINATION_INDICES[None, :, :],
+        _WHITE_UNDERPROMOTION_DESTINATION_INDICES[None, :, :],
+    )
+    valid_underpromotions = underpromotion_indices >= 0
+    safe_underpromotion_indices = mx.maximum(underpromotion_indices, 0)
+    underpromotion_logits = mx.take_along_axis(
+        traversal,
+        safe_underpromotion_indices,
+        axis=2,
+    )
+
+    bias_planes = []
+    for plane_offset, piece_index in enumerate(_UNDERPROMOTION_PIECE_INDICES):
+        destination = safe_underpromotion_indices[:, :, plane_offset]
+        bias_planes.append(
+            mx.take_along_axis(
+                underpromotion_bias_by_destination[:, :, piece_index],
+                destination,
+                axis=1,
+            )
+        )
+    underpromotion_bias = mx.stack(bias_planes, axis=2)
+    underpromotion_logits = underpromotion_logits + underpromotion_bias
+    underpromotion_logits = mx.where(
+        valid_underpromotions,
+        underpromotion_logits,
+        _SUPPRESSED_POLICY_LOGIT,
+    )
+    return mx.concatenate(
+        [plane_logits[:, :, :_UNDERPROMOTION_OFFSET], underpromotion_logits],
+        axis=2,
+    )
+
+
 class ChessformerPolicyValueNet(nn.Module):  # type: ignore[misc]
-    """Chessformer-style GAB trunk with the existing AlphaZero action contract."""
+    """Chessformer-style GAB trunk with a source-destination policy head."""
 
     def __init__(self, config: ChessformerPolicyValueConfig | None = None) -> None:
         super().__init__()
@@ -417,21 +548,20 @@ class ChessformerPolicyValueNet(nn.Module):  # type: ignore[misc]
         self.layers = [
             ChessformerEncoderLayer(self.config) for _ in range(self.config.transformer_layers)
         ]
-        self.policy_hidden = nn.Linear(self.config.model_dim, self.config.policy_dim)
-        self.policy_head = nn.Linear(self.config.policy_dim, ACTION_PLANES)
+        self.policy_head = SourceDestinationPolicyHead(self.config)
         self.value_hidden = nn.Linear(self.config.model_dim * 2, self.config.value_hidden_dim)
         self.value_head = nn.Linear(self.config.value_hidden_dim, 1)
 
     def __call__(self, inputs: MLXArray) -> PolicyValueOutput:
-        x = _prepare_batch(inputs)
-        batch_size = x.shape[0]
-        x = x.reshape(batch_size, self.token_count, -1)
+        prepared_inputs = _prepare_batch(inputs)
+        batch_size = prepared_inputs.shape[0]
+        black_to_move = prepared_inputs[:, 0, 0, 12]
+        x = prepared_inputs.reshape(batch_size, self.token_count, -1)
         x = self.token_projection(x)
         for layer in self.layers:
             x = layer(x)
 
-        policy = nn.relu(self.policy_hidden(x))
-        policy_logits = self.policy_head(policy).reshape(batch_size, self.config.action_space_size)
+        policy_logits = self.policy_head(x, black_to_move)
 
         value = mx.concatenate([mx.mean(x, axis=1), mx.max(x, axis=1)], axis=1)
         value = nn.relu(self.value_hidden(value))
