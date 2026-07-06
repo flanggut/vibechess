@@ -110,7 +110,10 @@ def main() -> None:
     parser.add_argument(
         "--value-hidden-dim",
         type=int,
-        help="value head hidden dimension; defaults to 8 for resnet and 256 for transformer/chessformer",
+        help=(
+            "value head hidden dimension; defaults to 8 for resnet and 256 "
+            "for transformer/chessformer"
+        ),
     )
     parser.add_argument("--transformer-model-dim", type=int, default=224)
     parser.add_argument("--transformer-layers", type=int, default=6)

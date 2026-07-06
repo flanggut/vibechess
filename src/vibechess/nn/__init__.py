@@ -43,11 +43,11 @@ from vibechess.nn.model import (
     ChessformerPolicyValueConfig,
     ChessformerPolicyValueNet,
     GeometricAttentionBias,
-    SourceDestinationPolicyHead,
     PolicyValueConfig,
     PolicyValueNet,
     PolicyValueOutput,
     PolicyValueTransformerNet,
+    SourceDestinationPolicyHead,
     TransformerPolicyValueConfig,
 )
 from vibechess.nn.train import (

@@ -9,16 +9,18 @@ import mlx.core as mx
 import mlx.nn as _nn
 
 from vibechess.nn.encode import (
+    _KNIGHT_DELTAS,
+    _QUEEN_DIRECTIONS,
+    _UNDERPROMOTION_FILES,
     ACTION_PLANES,
     ACTION_SPACE_SIZE,
     ENCODER_CHANNELS,
     TENSOR_SHAPE,
-    _KNIGHT_DELTAS,
-    _QUEEN_DIRECTIONS,
-    _UNDERPROMOTION_FILES,
-    _UNDERPROMOTION_OFFSET,
     tensor_shape,
     to_mlx,
+)
+from vibechess.nn.encode import (
+    _UNDERPROMOTION_OFFSET as _ENCODE_UNDERPROMOTION_OFFSET,
 )
 
 if TYPE_CHECKING:
@@ -75,6 +77,7 @@ __all__ = [
 
 _INVALID_DESTINATION = -1
 _SUPPRESSED_POLICY_LOGIT = -1.0e9
+_UNDERPROMOTION_OFFSET = _ENCODE_UNDERPROMOTION_OFFSET
 _UNDERPROMOTION_PIECE_INDICES = (0, 0, 0, 1, 1, 1, 2, 2, 2)
 
 
@@ -88,7 +91,9 @@ def _destination_square(square: int, file_delta: int, rank_delta: int) -> int:
     return to_rank * 8 + to_file
 
 
-def _build_action_destinations(underpromotion_rank_delta: int | None) -> tuple[tuple[int, ...], ...]:
+def _build_action_destinations(
+    underpromotion_rank_delta: int | None,
+) -> tuple[tuple[int, ...], ...]:
     destinations: list[tuple[int, ...]] = []
     for square in range(64):
         planes: list[int] = []

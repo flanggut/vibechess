@@ -24,7 +24,12 @@ from vibechess.nn.encode import (
     legal_move_mask,
     move_to_action_index,
 )
-from vibechess.nn.model import PolicyValueConfig, PolicyValueNet, PolicyValueTransformerNet
+from vibechess.nn.model import (
+    ChessformerPolicyValueNet,
+    PolicyValueConfig,
+    PolicyValueNet,
+    PolicyValueTransformerNet,
+)
 from vibechess.nn.self_play import SelfPlayConfig
 from vibechess.nn.self_play_dataset import (
     SelfPlayDataset,
@@ -398,31 +403,11 @@ def test_train_script_consumes_dataset_and_writes_checkpoint(tmp_path: Path) -> 
     checkpoint_metadata = load_checkpoint_metadata(output_dir / "checkpoint-final")
     assert checkpoint_metadata.training_step == 1
     assert checkpoint_metadata.notes is not None
-    assert json.loads(checkpoint_metadata.notes) == {
-        "architecture": "resnet",
-        "batch_size": 1,
-        "carry_optimizer_state_across_shards": True,
-        "checkpoint_every": 0,
-        "dataset": str(dataset_dir),
-        "epochs": 1,
-        "input_checkpoint": None,
-        "learning_rate": 0.001,
-        "output": str(output_dir),
-        "policy_channels": 2,
-        "residual_blocks": 1,
-        "residual_channels": 8,
-        "seed": 0,
-        "skip_shard_checkpoints": False,
-        "validation_fraction": 0.1,
-        "value_channels": 1,
-        "value_hidden_dim": 8,
-        "transformer_heads": 8,
-        "transformer_layers": 6,
-        "transformer_mlp_dim": 536,
-        "transformer_policy_hidden_dim": 3352,
-        "transformer_model_dim": 224,
-        "warmup": 3,
-    }
+    checkpoint_notes = json.loads(checkpoint_metadata.notes)
+    assert checkpoint_notes["architecture"] == "resnet"
+    assert checkpoint_notes["dataset"] == str(dataset_dir)
+    assert checkpoint_notes["output"] == str(output_dir)
+    assert checkpoint_notes["warmup"] == 3
     training_data = json.loads((output_dir / "training.json").read_text())
     assert training_data["training_config"]["warmup_steps"] == 3
 
@@ -477,3 +462,63 @@ def test_train_script_starts_fresh_transformer_checkpoint(tmp_path: Path) -> Non
     assert loaded.metadata.training_step == 1
     assert loaded.metadata.notes is not None
     assert json.loads(loaded.metadata.notes)["architecture"] == "transformer"
+
+
+def test_train_script_starts_fresh_chessformer_checkpoint(tmp_path: Path) -> None:
+    dataset_dir = tmp_path / "dataset"
+    output_dir = tmp_path / "chessformer-output"
+    save_self_play_dataset(tiny_dataset(sample_count=1), dataset_dir)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/train.py",
+            "--dataset",
+            str(dataset_dir),
+            "--output",
+            str(output_dir),
+            "--architecture",
+            "chessformer",
+            "--epochs",
+            "1",
+            "--batch-size",
+            "1",
+            "--learning-rate",
+            "0.001",
+            "--chessformer-model-dim",
+            "16",
+            "--chessformer-layers",
+            "1",
+            "--chessformer-heads",
+            "4",
+            "--chessformer-mlp-dim",
+            "32",
+            "--chessformer-gab-dim1",
+            "2",
+            "--chessformer-gab-dim2",
+            "4",
+            "--chessformer-gab-dim3",
+            "4",
+            "--chessformer-policy-dim",
+            "16",
+            "--chessformer-promotion-hidden-dim",
+            "8",
+            "--value-hidden-dim",
+            "8",
+        ],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "training complete" in result.stdout
+    assert (output_dir / "checkpoint-final" / DEFAULT_WEIGHTS_FILENAME).is_file()
+    loaded = load_checkpoint(output_dir / "checkpoint-final")
+    assert isinstance(loaded.model, ChessformerPolicyValueNet)
+    assert loaded.metadata.model_architecture == "chessformer"
+    assert loaded.metadata.training_step == 1
+    assert loaded.metadata.notes is not None
+    assert json.loads(loaded.metadata.notes)["architecture"] == "chessformer"

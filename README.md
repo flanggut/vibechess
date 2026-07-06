@@ -130,11 +130,14 @@ continuity is explicit.
 
 Checkpoint metadata records `model_architecture`; missing values are treated as
 the historical residual CNN so existing checkpoints stay loadable. Fresh
-Transformer checkpoints use the same encoder and `8 * 8 * 73` policy action
-space and can be started with `scripts/train.py --architecture transformer`.
-The default Transformer uses a global-attention trunk, a roughly one-million-
-parameter per-square policy head, and mean/max-pooled value features while
-staying under the historical 3.8M-parameter budget.
+Transformer and Chessformer checkpoints use the same encoder and `8 * 8 * 73`
+policy action space. Start them with `scripts/train.py --architecture
+transformer` or `scripts/train.py --architecture chessformer`.
+The default Transformer keeps its learned square embedding and per-square policy
+head; the default Chessformer replaces absolute square embeddings with
+Geometric Attention Bias and uses a source-destination policy head mapped back
+to the same action layout. Both defaults stay under the historical
+3.8M-parameter budget.
 
 
 Neural self-play and checkpoint evaluation can opt into visit-budget-aware tree
