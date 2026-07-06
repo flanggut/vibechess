@@ -9,6 +9,7 @@ from pathlib import Path
 
 from vibechess.nn.checkpoint import load_checkpoint
 from vibechess.nn.model import (
+    ChessformerPolicyValueConfig,
     ModelConfig,
     PolicyValueConfig,
     TransformerPolicyValueConfig,
@@ -98,7 +99,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--architecture",
-        choices=("resnet", "transformer"),
+        choices=("resnet", "transformer", "chessformer"),
         default="resnet",
         help="fresh model architecture to train when --input-checkpoint is not set",
     )
@@ -109,13 +110,23 @@ def main() -> None:
     parser.add_argument(
         "--value-hidden-dim",
         type=int,
-        help="value head hidden dimension; defaults to 8 for resnet and 256 for transformer",
+        help="value head hidden dimension; defaults to 8 for resnet and 256 for transformer/chessformer",
     )
     parser.add_argument("--transformer-model-dim", type=int, default=224)
     parser.add_argument("--transformer-layers", type=int, default=6)
     parser.add_argument("--transformer-heads", type=int, default=8)
     parser.add_argument("--transformer-mlp-dim", type=int, default=536)
     parser.add_argument("--transformer-policy-hidden-dim", type=int, default=3352)
+    parser.add_argument("--chessformer-model-dim", type=int, default=224)
+    parser.add_argument("--chessformer-layers", type=int, default=6)
+    parser.add_argument("--chessformer-heads", type=int, default=8)
+    parser.add_argument("--chessformer-mlp-dim", type=int, default=536)
+    parser.add_argument("--chessformer-gab-dim1", type=int, default=8)
+    parser.add_argument("--chessformer-gab-dim2", type=int, default=32)
+    parser.add_argument("--chessformer-gab-dim3", type=int, default=32)
+    parser.add_argument("--chessformer-gab-use-average-pool", type=int, choices=(0, 1), default=1)
+    parser.add_argument("--chessformer-policy-dim", type=int, default=224)
+    parser.add_argument("--chessformer-promotion-hidden-dim", type=int, default=64)
     args = parser.parse_args()
 
     train_config = TrainingConfig(
@@ -160,7 +171,7 @@ def main() -> None:
     else:
         if args.value_hidden_dim is not None:
             value_hidden_dim = args.value_hidden_dim
-        elif args.architecture == "transformer":
+        elif args.architecture in {"transformer", "chessformer"}:
             value_hidden_dim = 256
         else:
             value_hidden_dim = 8
@@ -172,6 +183,20 @@ def main() -> None:
                 attention_heads=args.transformer_heads,
                 mlp_dim=args.transformer_mlp_dim,
                 policy_hidden_dim=args.transformer_policy_hidden_dim,
+                value_hidden_dim=value_hidden_dim,
+            )
+        elif args.architecture == "chessformer":
+            model_config = ChessformerPolicyValueConfig(
+                model_dim=args.chessformer_model_dim,
+                transformer_layers=args.chessformer_layers,
+                attention_heads=args.chessformer_heads,
+                mlp_dim=args.chessformer_mlp_dim,
+                gab_dim1=args.chessformer_gab_dim1,
+                gab_dim2=args.chessformer_gab_dim2,
+                gab_dim3=args.chessformer_gab_dim3,
+                gab_use_average_pool=args.chessformer_gab_use_average_pool,
+                policy_dim=args.chessformer_policy_dim,
+                promotion_hidden_dim=args.chessformer_promotion_hidden_dim,
                 value_hidden_dim=value_hidden_dim,
             )
         else:

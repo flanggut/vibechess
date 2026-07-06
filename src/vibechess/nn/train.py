@@ -18,6 +18,8 @@ import numpy.typing as npt
 from vibechess.nn.checkpoint import CheckpointMetadata, save_checkpoint
 from vibechess.nn.encode import ACTION_SPACE_SIZE, TENSOR_SHAPE
 from vibechess.nn.model import (
+    ChessformerPolicyValueConfig,
+    ChessformerPolicyValueNet,
     ModelConfig,
     PolicyValueConfig,
     PolicyValueModel,
@@ -481,6 +483,8 @@ def _new_model(config: ModelConfig | None) -> PolicyValueModel:
         return PolicyValueNet(config)
     if isinstance(config, TransformerPolicyValueConfig):
         return PolicyValueTransformerNet(config)
+    if isinstance(config, ChessformerPolicyValueConfig):
+        return ChessformerPolicyValueNet(config)
     raise TypeError("unsupported model config type")
 
 

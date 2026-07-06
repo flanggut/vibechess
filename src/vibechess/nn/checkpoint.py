@@ -11,8 +11,11 @@ import mlx.core as mx
 from vibechess import _jsonio
 from vibechess.nn.encode import ACTION_SPACE_VERSION, ENCODER_VERSION
 from vibechess.nn.model import (
+    MODEL_ARCHITECTURE_CHESSFORMER,
     MODEL_ARCHITECTURE_RESNET,
     MODEL_ARCHITECTURE_TRANSFORMER,
+    ChessformerPolicyValueConfig,
+    ChessformerPolicyValueNet,
     ModelConfig,
     PolicyValueConfig,
     PolicyValueModel,
@@ -165,6 +168,10 @@ def _build_model(metadata: CheckpointMetadata) -> PolicyValueModel:
         if not isinstance(metadata.model_config, TransformerPolicyValueConfig):
             raise TypeError("transformer checkpoint metadata requires TransformerPolicyValueConfig")
         return PolicyValueTransformerNet(metadata.model_config)
+    if metadata.model_architecture == MODEL_ARCHITECTURE_CHESSFORMER:
+        if not isinstance(metadata.model_config, ChessformerPolicyValueConfig):
+            raise TypeError("chessformer checkpoint metadata requires ChessformerPolicyValueConfig")
+        return ChessformerPolicyValueNet(metadata.model_config)
     raise ValueError(f"unsupported model architecture: {metadata.model_architecture}")
 
 
@@ -173,6 +180,8 @@ def _model_config_from_dict(architecture: str, data: dict[str, object]) -> Model
         return PolicyValueConfig.from_dict(data)
     if architecture == MODEL_ARCHITECTURE_TRANSFORMER:
         return TransformerPolicyValueConfig.from_dict(data)
+    if architecture == MODEL_ARCHITECTURE_CHESSFORMER:
+        return ChessformerPolicyValueConfig.from_dict(data)
     raise ValueError(f"unsupported model architecture: {architecture}")
 
 
@@ -181,6 +190,8 @@ def _architecture_for_config(config: ModelConfig) -> str:
         return MODEL_ARCHITECTURE_RESNET
     if isinstance(config, TransformerPolicyValueConfig):
         return MODEL_ARCHITECTURE_TRANSFORMER
+    if isinstance(config, ChessformerPolicyValueConfig):
+        return MODEL_ARCHITECTURE_CHESSFORMER
     raise TypeError("unsupported model config type")
 
 
@@ -189,11 +200,17 @@ def _architecture_for_model(model: PolicyValueModel) -> str:
         return MODEL_ARCHITECTURE_RESNET
     if isinstance(model, PolicyValueTransformerNet):
         return MODEL_ARCHITECTURE_TRANSFORMER
+    if isinstance(model, ChessformerPolicyValueNet):
+        return MODEL_ARCHITECTURE_CHESSFORMER
     raise TypeError("unsupported model type")
 
 
 def _validate_model_architecture(architecture: str) -> None:
-    if architecture not in {MODEL_ARCHITECTURE_RESNET, MODEL_ARCHITECTURE_TRANSFORMER}:
+    if architecture not in {
+        MODEL_ARCHITECTURE_RESNET,
+        MODEL_ARCHITECTURE_TRANSFORMER,
+        MODEL_ARCHITECTURE_CHESSFORMER,
+    }:
         raise ValueError(f"unsupported model architecture: {architecture}")
 
 

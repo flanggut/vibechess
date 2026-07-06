@@ -40,6 +40,9 @@ from vibechess.nn.inference import (
     PolicyValueInference,
 )
 from vibechess.nn.model import (
+    ChessformerPolicyValueConfig,
+    ChessformerPolicyValueNet,
+    GeometricAttentionBias,
     PolicyValueConfig,
     PolicyValueNet,
     PolicyValueOutput,
@@ -78,6 +81,9 @@ __all__ = [
     "LegalPolicyResult",
     "LoadedCheckpoint",
     "LossBreakdown",
+    "ChessformerPolicyValueConfig",
+    "ChessformerPolicyValueNet",
+    "GeometricAttentionBias",
     "PolicyValueConfig",
     "PolicyValueInference",
     "PolicyValueNet",
