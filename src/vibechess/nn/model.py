@@ -128,6 +128,19 @@ _BLACK_UNDERPROMOTION_DESTINATION_INDICES = mx.array(
     tuple(row[_UNDERPROMOTION_OFFSET:] for row in _BLACK_UNDERPROMOTION_DESTINATIONS),
     dtype=mx.int32,
 )
+_SAFE_ACTION_DESTINATION_INDICES = mx.maximum(_ACTION_DESTINATION_INDICES, 0)
+_VALID_ACTION_DESTINATION_MASK = _ACTION_DESTINATION_INDICES >= 0
+_SAFE_WHITE_UNDERPROMOTION_DESTINATION_INDICES = mx.maximum(
+    _WHITE_UNDERPROMOTION_DESTINATION_INDICES,
+    0,
+)
+_VALID_WHITE_UNDERPROMOTION_DESTINATION_MASK = _WHITE_UNDERPROMOTION_DESTINATION_INDICES >= 0
+_SAFE_BLACK_UNDERPROMOTION_DESTINATION_INDICES = mx.maximum(
+    _BLACK_UNDERPROMOTION_DESTINATION_INDICES,
+    0,
+)
+_VALID_BLACK_UNDERPROMOTION_DESTINATION_MASK = _BLACK_UNDERPROMOTION_DESTINATION_INDICES >= 0
+_UNDERPROMOTION_PIECE_INDEX_ARRAY = mx.array(_UNDERPROMOTION_PIECE_INDICES, dtype=mx.int32)
 
 
 @dataclass(frozen=True, slots=True)
@@ -490,36 +503,45 @@ def _map_traversal_to_action_logits(
 ) -> MLXArray:
     """Gather source-destination traversal logits into AlphaZero action planes."""
 
-    valid = _ACTION_DESTINATION_INDICES >= 0
-    destination_indices = mx.maximum(_ACTION_DESTINATION_INDICES, 0)
-    plane_logits = mx.take_along_axis(traversal, destination_indices[None, :, :], axis=2)
-    plane_logits = mx.where(valid[None, :, :], plane_logits, _SUPPRESSED_POLICY_LOGIT)
+    plane_logits = mx.take_along_axis(
+        traversal,
+        _SAFE_ACTION_DESTINATION_INDICES[None, :, :],
+        axis=2,
+    )
+    plane_logits = mx.where(
+        _VALID_ACTION_DESTINATION_MASK[None, :, :],
+        plane_logits,
+        _SUPPRESSED_POLICY_LOGIT,
+    )
 
     black = black_to_move.reshape(black_to_move.shape[0], 1, 1) > 0.5
-    underpromotion_indices = mx.where(
+    valid_underpromotions = mx.where(
         black,
-        _BLACK_UNDERPROMOTION_DESTINATION_INDICES[None, :, :],
-        _WHITE_UNDERPROMOTION_DESTINATION_INDICES[None, :, :],
+        _VALID_BLACK_UNDERPROMOTION_DESTINATION_MASK[None, :, :],
+        _VALID_WHITE_UNDERPROMOTION_DESTINATION_MASK[None, :, :],
     )
-    valid_underpromotions = underpromotion_indices >= 0
-    safe_underpromotion_indices = mx.maximum(underpromotion_indices, 0)
+    safe_underpromotion_indices = mx.where(
+        black,
+        _SAFE_BLACK_UNDERPROMOTION_DESTINATION_INDICES[None, :, :],
+        _SAFE_WHITE_UNDERPROMOTION_DESTINATION_INDICES[None, :, :],
+    )
     underpromotion_logits = mx.take_along_axis(
         traversal,
         safe_underpromotion_indices,
         axis=2,
     )
 
-    bias_planes = []
-    for plane_offset, piece_index in enumerate(_UNDERPROMOTION_PIECE_INDICES):
-        destination = safe_underpromotion_indices[:, :, plane_offset]
-        bias_planes.append(
-            mx.take_along_axis(
-                underpromotion_bias_by_destination[:, :, piece_index],
-                destination,
-                axis=1,
-            )
-        )
-    underpromotion_bias = mx.stack(bias_planes, axis=2)
+    batch_size = traversal.shape[0]
+    flattened_bias = underpromotion_bias_by_destination.reshape(batch_size, -1)
+    flattened_bias_indices = (
+        safe_underpromotion_indices * len(_UNDERPROMOTION_PIECE_INDICES[:3])
+        + _UNDERPROMOTION_PIECE_INDEX_ARRAY[None, None, :]
+    )
+    underpromotion_bias = mx.take_along_axis(
+        flattened_bias,
+        flattened_bias_indices.reshape(batch_size, -1),
+        axis=1,
+    ).reshape(batch_size, safe_underpromotion_indices.shape[1], -1)
     underpromotion_logits = underpromotion_logits + underpromotion_bias
     underpromotion_logits = mx.where(
         valid_underpromotions,
