@@ -16,6 +16,9 @@ from vibechess.nn import (
     ENCODER_VERSION,
     TENSOR_SHAPE,
     CheckpointMetadata,
+    ChessformerPolicyValueConfig,
+    ChessformerPolicyValueNet,
+    GeometricAttentionBias,
     PolicyValueConfig,
     PolicyValueInference,
     PolicyValueNet,
@@ -30,6 +33,12 @@ from vibechess.nn import (
     move_to_action_index,
     save_checkpoint,
     tensor_shape,
+)
+from vibechess.nn.model import (
+    _ACTION_DESTINATIONS,
+    _SUPPRESSED_POLICY_LOGIT,
+    _UNDERPROMOTION_OFFSET,
+    _map_traversal_to_action_logits,
 )
 from vibechess.profiling import activate_self_play_profile
 
@@ -55,6 +64,20 @@ def tiny_transformer_config() -> TransformerPolicyValueConfig:
         attention_heads=4,
         mlp_dim=32,
         policy_hidden_dim=32,
+        value_hidden_dim=8,
+    )
+
+def tiny_chessformer_config() -> ChessformerPolicyValueConfig:
+    return ChessformerPolicyValueConfig(
+        model_dim=16,
+        transformer_layers=1,
+        attention_heads=4,
+        mlp_dim=32,
+        gab_dim1=4,
+        gab_dim2=8,
+        gab_dim3=8,
+        policy_dim=16,
+        promotion_hidden_dim=8,
         value_hidden_dim=8,
     )
 
@@ -185,6 +208,67 @@ def test_transformer_policy_value_model_accepts_batched_channel_first_inputs() -
     assert tensor_shape(output.value) == (2,)
 
 
+def test_chessformer_policy_value_model_forward_shapes_and_value_range() -> None:
+    model = ChessformerPolicyValueNet(tiny_chessformer_config())
+    output = model(encode_game(Game.new()))
+    mx.eval(output.policy_logits, output.value)
+
+    assert output.policy_logits.dtype == mx.float32
+    assert output.value.dtype == mx.float32
+    assert tensor_shape(output.policy_logits) == (1, ACTION_SPACE_SIZE)
+    assert tensor_shape(output.value) == (1,)
+    assert -1.0 <= scalar(output.value[0]) <= 1.0
+
+
+def test_chessformer_policy_value_model_accepts_batched_channel_first_inputs() -> None:
+    model = ChessformerPolicyValueNet(tiny_chessformer_config())
+    tensor = encode_game(Game.new())
+    output = model(mx.stack([tensor, tensor]))
+    mx.eval(output.policy_logits, output.value)
+
+    assert output.policy_logits.dtype == mx.float32
+    assert output.value.dtype == mx.float32
+    assert tensor_shape(output.policy_logits) == (2, ACTION_SPACE_SIZE)
+    assert tensor_shape(output.value) == (2,)
+    assert -1.0 <= scalar(output.value[0]) <= 1.0
+    assert -1.0 <= scalar(output.value[1]) <= 1.0
+
+
+def test_geometric_attention_bias_returns_per_head_square_bias() -> None:
+    bias = GeometricAttentionBias(
+        token_count=64,
+        model_dim=16,
+        attention_heads=4,
+        dim1=4,
+        dim2=8,
+        dim3=8,
+        use_average_pool=0,
+    )
+    tokens = mx.arange(2 * 64 * 16, dtype=mx.float32).reshape(2, 64, 16) / 100.0
+
+    output = bias(tokens)
+    mx.eval(output)
+
+    assert output.dtype == mx.float32
+    assert tensor_shape(output) == (2, 4, 64, 64)
+
+
+def test_chessformer_attention_layer_preserves_token_batch_shape() -> None:
+    config = tiny_chessformer_config()
+    model = ChessformerPolicyValueNet(config)
+    tokens = mx.arange(2 * 64 * config.model_dim, dtype=mx.float32).reshape(
+        2,
+        64,
+        config.model_dim,
+    )
+
+    output = model.layers[0](tokens)
+    mx.eval(output)
+
+    assert output.dtype == mx.float32
+    assert tensor_shape(output) == (2, 64, config.model_dim)
+
+
 def test_transformer_default_matches_strongest_checkpoint_parameter_budget() -> None:
     strongest_config = PolicyValueConfig(
         residual_channels=96,
@@ -206,6 +290,61 @@ def test_transformer_default_matches_strongest_checkpoint_parameter_budget() -> 
     assert 995_000 <= transformer_policy_params <= 1_000_000
     assert parameter_count(transformer_params) <= 3_800_000
     assert abs(parameter_count(transformer_params) - strongest_params) / strongest_params < 0.02
+
+
+def test_chessformer_default_stays_under_parameter_budget() -> None:
+    assert parameter_count(ChessformerPolicyValueNet().parameters()) < 3_800_000
+
+
+def test_source_destination_mapping_gathers_reachable_destinations_and_suppresses_invalid() -> None:
+    traversal = mx.arange(64 * 64, dtype=mx.float32).reshape(1, 64, 64)
+    underpromotion_bias = mx.zeros((1, 64, 3), dtype=mx.float32)
+
+    logits = _map_traversal_to_action_logits(
+        traversal,
+        underpromotion_bias,
+        mx.array([0.0], dtype=mx.float32),
+    )
+    mx.eval(logits)
+
+    assert _ACTION_DESTINATIONS[0][0] == 8
+    assert scalar(logits[0, 0, 0]) == 8.0
+    assert _ACTION_DESTINATIONS[0][56] == 17
+    assert scalar(logits[0, 0, 56]) == 17.0
+    assert _ACTION_DESTINATIONS[0][42] == -1
+    assert scalar(logits[0, 0, 42]) == _SUPPRESSED_POLICY_LOGIT
+
+
+def test_source_destination_mapping_separates_underpromotion_bias_by_side_and_piece() -> None:
+    traversal_values = np.arange(2 * 64 * 64, dtype=np.float32).reshape(2, 64, 64)
+    bias_values = np.zeros((2, 64, 3), dtype=np.float32)
+    white_source = 48
+    white_destination = 56
+    black_source = 8
+    black_destination = 0
+    bias_values[0, white_destination] = (0.25, 0.5, 0.75)
+    bias_values[1, black_destination] = (1.25, 1.5, 1.75)
+
+    logits = _map_traversal_to_action_logits(
+        mx.array(traversal_values),
+        mx.array(bias_values),
+        mx.array([0.0, 1.0], dtype=mx.float32),
+    )
+    mx.eval(logits)
+
+    assert _ACTION_DESTINATIONS[white_source][_UNDERPROMOTION_OFFSET] == -1
+    assert scalar(logits[0, white_source, _UNDERPROMOTION_OFFSET]) == pytest.approx(
+        traversal_values[0, white_source, white_destination] + 0.25
+    )
+    assert scalar(logits[0, white_source, _UNDERPROMOTION_OFFSET + 3]) == pytest.approx(
+        traversal_values[0, white_source, white_destination] + 0.5
+    )
+    assert scalar(logits[0, white_source, _UNDERPROMOTION_OFFSET + 6]) == pytest.approx(
+        traversal_values[0, white_source, white_destination] + 0.75
+    )
+    assert scalar(logits[1, black_source, _UNDERPROMOTION_OFFSET]) == pytest.approx(
+        traversal_values[1, black_source, black_destination] + 1.25
+    )
 
 
 def test_inference_wrapper_masks_policy_to_legal_moves() -> None:
@@ -566,6 +705,28 @@ def test_transformer_checkpoint_save_load_round_trips_weights_and_metadata(
     assert bool(mx.allclose(before.policy_logits, after.policy_logits).item())
     assert bool(mx.allclose(before.value, after.value).item())
 
+def test_chessformer_checkpoint_save_load_returns_model_and_metadata(
+    tmp_path: Path,
+) -> None:
+    config = tiny_chessformer_config()
+    model = ChessformerPolicyValueNet(config)
+    tensor = encode_game(Game.new())
+    before = model(tensor)
+    mx.eval(before.policy_logits, before.value)
+    metadata = CheckpointMetadata.initial(config, training_step=7, notes="chessformer unit test")
+
+    saved_metadata = save_checkpoint(model, tmp_path, metadata=metadata)
+    loaded = load_checkpoint(tmp_path)
+    after = loaded.model(tensor)
+    mx.eval(after.policy_logits, after.value)
+
+    assert saved_metadata == metadata
+    assert loaded.metadata == metadata
+    assert isinstance(loaded.model, ChessformerPolicyValueNet)
+    assert loaded.metadata.model_architecture == "chessformer"
+    assert bool(mx.allclose(before.policy_logits, after.policy_logits).item())
+    assert bool(mx.allclose(before.value, after.value).item())
+
 
 def test_checkpoint_metadata_sidecar_schema(tmp_path: Path) -> None:
     config = tiny_config()
@@ -605,6 +766,9 @@ def test_metadata_integer_fields_reject_booleans() -> None:
 
     with pytest.raises(TypeError, match="model_dim"):
         TransformerPolicyValueConfig.from_dict({"model_dim": True})
+
+    with pytest.raises(TypeError, match="gab_use_average_pool"):
+        ChessformerPolicyValueConfig.from_dict({"gab_use_average_pool": True})
 
     data = CheckpointMetadata.initial(tiny_config()).to_dict()
     data["training_step"] = False

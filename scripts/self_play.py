@@ -834,9 +834,9 @@ def main() -> int:
         type=Path,
         default=None,
         help=(
-            "dataset output directory; defaults to data/selfplay/<checkpoint run> "
-            "when --checkpoint is provided, otherwise data/selfplay/smoke; appends "
-            "when a complete dataset already exists"
+            "dataset output directory; appends when a complete dataset already exists; "
+            "defaults to data/selfplay/<checkpoint run> when --checkpoint is provided, "
+            "otherwise data/selfplay/smoke"
         ),
     )
     parser.add_argument("--checkpoint", type=Path, default=None)
