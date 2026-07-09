@@ -470,6 +470,63 @@ def test_checkpoint_head_to_head_api_defaults_opponent_config_to_main(
     assert neural_configs["opponent"] == neural_configs["checkpoint"]
 
 
+def test_evaluate_script_omitted_ply_and_simulation_flags_build_300_configs(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    script_path = Path(__file__).parents[2] / "scripts" / "evaluate.py"
+    monkeypatch.syspath_prepend(str(script_path.parent))
+    script = runpy.run_path(str(script_path))
+    script_globals = script["main"].__globals__
+    captured_match_configs: list[MatchConfig] = []
+    captured_neural_configs: list[NeuralMCTSConfig] = []
+    captured_opponent_neural_configs: list[NeuralMCTSConfig] = []
+
+    def fake_evaluate_checkpoints_head_to_head(
+        _checkpoint: Path,
+        _opponent_checkpoint: Path,
+        *,
+        match_config: MatchConfig,
+        neural_config: NeuralMCTSConfig,
+        opponent_neural_config: NeuralMCTSConfig,
+        **_kwargs: Any,
+    ) -> dict[str, object]:
+        captured_match_configs.append(match_config)
+        captured_neural_configs.append(neural_config)
+        captured_opponent_neural_configs.append(opponent_neural_config)
+        return {"mode": "neural_vs_neural", "match": {}}
+
+    monkeypatch.setitem(
+        script_globals,
+        "evaluate_checkpoints_head_to_head",
+        fake_evaluate_checkpoints_head_to_head,
+    )
+    monkeypatch.setitem(script_globals, "_print_report_summary", lambda _report: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "evaluate.py",
+            "--checkpoint",
+            "checkpoint",
+            "--opponent-checkpoint",
+            "opponent",
+            "--progress",
+            "never",
+        ],
+    )
+
+    script["main"]()
+    capsys.readouterr()
+
+    assert len(captured_match_configs) == 1
+    assert len(captured_neural_configs) == 1
+    assert len(captured_opponent_neural_configs) == 1
+    assert captured_match_configs[0].max_plies == 300
+    assert captured_neural_configs[0].simulations == 300
+    assert captured_opponent_neural_configs[0].simulations == 300
+
+
 def test_evaluate_script_smoke(tmp_path: Path) -> None:
     checkpoint_dir = tmp_path / "checkpoint"
     output = tmp_path / "report.json"

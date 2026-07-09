@@ -31,6 +31,8 @@ from vibechess.ai.evaluation import (
 )
 
 _PROGRESS_REFRESH_SECONDS = 1.0
+DEFAULT_EVALUATION_MAX_PLIES = 300
+DEFAULT_EVALUATION_NEURAL_SIMULATIONS = 300
 
 
 @dataclass(slots=True)
@@ -467,7 +469,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-plies",
         type=int,
-        default=40,
+        default=DEFAULT_EVALUATION_MAX_PLIES,
         help="Maximum played plies after opening",
     )
     parser.add_argument(
@@ -506,7 +508,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--neural-simulations",
         type=int,
-        default=1,
+        default=DEFAULT_EVALUATION_NEURAL_SIMULATIONS,
         help="Neural MCTS simulations",
     )
     parser.add_argument(

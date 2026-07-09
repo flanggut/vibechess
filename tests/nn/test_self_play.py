@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import os
 import re
+import runpy
 import subprocess
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import mlx.core as mx
@@ -1329,29 +1331,61 @@ def test_self_play_script_defaults_output_to_smoke_without_checkpoint(
     assert dataset.metadata.game_count == 1
 
 
-def test_self_play_script_defaults_to_200_simulations(tmp_path: Path) -> None:
-    output = tmp_path / "script-default-simulations-output"
-    result = subprocess.run(
+def test_self_play_script_omitted_ply_and_simulation_flags_build_300_config(
+    tmp_path: Path,
+    monkeypatch: Any,
+    capsys: Any,
+) -> None:
+    script_path = Path(__file__).parents[2] / "scripts" / "self_play.py"
+    monkeypatch.syspath_prepend(str(script_path.parent))
+    script = runpy.run_path(str(script_path))
+    script_globals = script["main"].__globals__
+    captured_configs: list[SelfPlayConfig] = []
+    metadata = SimpleNamespace(
+        game_count=1,
+        sample_count=0,
+        schema_version=SELF_PLAY_DATASET_SCHEMA_VERSION,
+    )
+    dataset = SimpleNamespace(metadata=metadata)
+
+    def fake_generate_self_play_dataset(
+        _inference: object,
+        *,
+        config: SelfPlayConfig,
+        progress: object | None = None,
+    ) -> object:
+        del progress
+        captured_configs.append(config)
+        return dataset
+
+    monkeypatch.setitem(
+        script_globals,
+        "generate_self_play_dataset",
+        fake_generate_self_play_dataset,
+    )
+    monkeypatch.setitem(script_globals, "_build_inference", lambda _generation_args: None)
+    monkeypatch.setitem(script_globals, "save_self_play_dataset", lambda _dataset, _output: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
         [
-            sys.executable,
-            "scripts/self_play.py",
-            "--max-plies",
-            "0",
+            "self_play.py",
+            "--games",
+            "1",
             "--output",
-            str(output),
+            str(tmp_path / "script-defaults-output"),
+            "--progress",
+            "never",
         ],
-        cwd=Path(__file__).parents[2],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=30,
     )
 
-    assert result.returncode == 0, result.stderr
-    dataset = load_self_play_dataset(output)
-    mcts_settings = dataset.metadata.generation_settings["mcts"]
-    assert isinstance(mcts_settings, dict)
-    assert mcts_settings["simulations"] == 200
+    assert script["main"]() == 0
+    capsys.readouterr()
+
+    assert len(captured_configs) == 1
+    config = captured_configs[0]
+    assert config.max_plies == 300
+    assert config.mcts.simulations == 300
 
 
 def _assert_self_play_datasets_equivalent(left: Any, right: Any) -> None:

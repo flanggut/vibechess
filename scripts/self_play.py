@@ -67,6 +67,9 @@ from vibechess.nn.self_play_profile import (
 PROFILE_ENV_VAR = "VIBECHESS_SELF_PLAY_PROFILE"
 DEFAULT_SELF_PLAY_OUTPUT = Path("data/selfplay/smoke")
 DEFAULT_SELF_PLAY_OUTPUT_ROOT = Path("data/selfplay")
+DEFAULT_SELF_PLAY_MAX_PLIES = 300
+DEFAULT_SELF_PLAY_SIMULATIONS = 300
+
 
 _PROGRESS_POLL_SECONDS = 0.05
 # How often the elapsed/eta counters are refreshed independently of progress
@@ -848,8 +851,8 @@ def main() -> int:
         help="search source for policy labels and self-play moves",
     )
     parser.add_argument("--games", type=int, default=1)
-    parser.add_argument("--max-plies", type=int, default=16)
-    parser.add_argument("--simulations", type=int, default=200)
+    parser.add_argument("--max-plies", type=int, default=DEFAULT_SELF_PLAY_MAX_PLIES)
+    parser.add_argument("--simulations", type=int, default=DEFAULT_SELF_PLAY_SIMULATIONS)
     parser.add_argument(
         "--reuse-simulation-budget",
         action="store_true",
