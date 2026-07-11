@@ -29,13 +29,13 @@ from vibechess.nn.encode import (
     ACTION_SPACE_VERSION,
     ENCODER_VERSION,
     encode_board_np,
-    legal_move_mask_from_board_moves_np,
     move_to_action_index,
 )
 from vibechess.nn.self_play_dataset import (
     SelfPlayDataset,
     SelfPlayGameRecord,
     SelfPlayMetadata,
+    SparseLegalMasks,
     SparsePolicyTargets,
     save_self_play_dataset,
 )
@@ -256,7 +256,7 @@ class _ShardBuilder:
     def __init__(self, config: PgnIngestConfig) -> None:
         self.config = config
         self.positions: list[npt.NDArray[np.float32]] = []
-        self.legal_masks: list[npt.NDArray[np.float32]] = []
+        self.legal_masks: list[npt.NDArray[np.int32]] = []
         self.policies: list[PolicyTargetRow] = []
         self.outcomes: list[float] = []
         self.games: list[SelfPlayGameRecord] = []
@@ -272,14 +272,19 @@ class _ShardBuilder:
         state = _TrainingReplayState.from_game(pgn.initial_game)
         sides: list[Color] = []
         positions: list[npt.NDArray[np.float32]] = []
-        legal_masks: list[npt.NDArray[np.float32]] = []
+        legal_masks: list[npt.NDArray[np.int32]] = []
         policies: list[PolicyTargetRow] = []
         for ply in traced.plies:
             _validate_trace_matches_state(state, ply)
             if ply.move not in ply.legal_moves:
                 raise ValueError("PGN trace move is not legal in parser-provided legal moves")
             positions.append(state.encode_position())
-            legal_masks.append(legal_move_mask_from_board_moves_np(ply.board, ply.legal_moves))
+            legal_masks.append(
+                np.asarray(
+                    [move_to_action_index(move, ply.board) for move in ply.legal_moves],
+                    dtype=np.int32,
+                )
+            )
             policies.append(_one_hot_policy_row(ply.board, ply.move))
             sides.append(ply.board.side_to_move)
             state.advance(ply.move)
@@ -300,7 +305,7 @@ class _ShardBuilder:
         shard_dir = output_dir / shard_name
         dataset = SelfPlayDataset(
             positions=np.stack(self.positions).astype(np.float32, copy=False),
-            legal_masks=np.stack(self.legal_masks).astype(np.float32, copy=False),
+            legal_action_masks=SparseLegalMasks.from_rows(self.legal_masks),
             policy_targets=SparsePolicyTargets.from_rows(self.policies),
             outcomes=np.asarray(self.outcomes, dtype=np.float32),
             metadata=_metadata(

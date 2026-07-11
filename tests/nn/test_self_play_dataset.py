@@ -24,6 +24,7 @@ from vibechess.nn.self_play_dataset import (
     POLICY_TARGET_FORMAT_SPARSE_CSR,
     SELF_PLAY_DATASET_SCHEMA_VERSION,
     SELF_PLAY_DATASET_SCHEMA_VERSION_V1,
+    SELF_PLAY_DATASET_SCHEMA_VERSION_V2,
     TEMP_SHARD_DATASET_FILENAME,
     SelfPlayDataset,
     SelfPlayGameRecord,
@@ -106,18 +107,21 @@ def test_self_play_dataset_accepts_sparse_targets_and_exposes_dense_compatibilit
     np.testing.assert_array_equal(dataset.mcts_policies, dense_dataset.mcts_policies)
 
 
-def test_metadata_parses_v1_dense_and_v2_sparse_formats() -> None:
+def test_metadata_parses_v1_dense_and_v2_v3_sparse_formats() -> None:
     base = _one_move_dataset().metadata.to_dict()
     v1 = dict(base)
     v1["schema_version"] = SELF_PLAY_DATASET_SCHEMA_VERSION_V1
     v1.pop("policy_target_format", None)
+    v2 = {**base, "schema_version": SELF_PLAY_DATASET_SCHEMA_VERSION_V2}
 
     parsed_v1 = SelfPlayMetadata.from_dict(v1)
-    parsed_v2 = SelfPlayMetadata.from_dict(base)
+    parsed_v2 = SelfPlayMetadata.from_dict(v2)
+    parsed_v3 = SelfPlayMetadata.from_dict(base)
 
     assert parsed_v1.policy_target_format == POLICY_TARGET_FORMAT_DENSE
     assert parsed_v2.policy_target_format == POLICY_TARGET_FORMAT_SPARSE_CSR
-    with pytest.raises(ValueError, match="unsupported v2 policy target format"):
+    assert parsed_v3.policy_target_format == POLICY_TARGET_FORMAT_SPARSE_CSR
+    with pytest.raises(ValueError, match="unsupported v3 policy target format"):
         SelfPlayMetadata.from_dict({**base, "policy_target_format": "unknown"})
 
 
@@ -132,6 +136,9 @@ def test_self_play_dataset_module_saves_and_loads_round_trip(tmp_path: Path) -> 
     assert loaded.metadata.model_checkpoint_id == "shared"
     with np.load(tmp_path / DEFAULT_DATASET_FILENAME) as tensors:
         assert "mcts_policies" not in tensors.files
+        assert "legal_masks" not in tensors.files
+        assert "legal_offsets" in tensors.files
+        assert "legal_indices" in tensors.files
         assert "policy_offsets" in tensors.files
         assert "policy_indices" in tensors.files
         assert "policy_probabilities" in tensors.files
@@ -344,6 +351,67 @@ def test_load_self_play_dataset_accepts_legacy_v1_dense_npz(tmp_path: Path) -> N
     np.testing.assert_array_equal(loaded.mcts_policies, dataset.mcts_policies)
     np.testing.assert_array_equal(loaded.policy_targets.to_dense(), dataset.mcts_policies)
 
+def test_load_self_play_dataset_accepts_legacy_v2_sparse_policy_npz(tmp_path: Path) -> None:
+    dataset = _one_move_dataset(checkpoint_id="legacy-v2")
+    metadata = {
+        **dataset.metadata.to_dict(),
+        "schema_version": SELF_PLAY_DATASET_SCHEMA_VERSION_V2,
+    }
+    (tmp_path / DEFAULT_METADATA_FILENAME).write_text(json.dumps(metadata) + "\n")
+    (tmp_path / DEFAULT_GAMES_FILENAME).write_text(
+        "".join(json.dumps(record.to_dict()) + "\n" for record in dataset.games)
+    )
+    np.savez_compressed(
+        tmp_path / DEFAULT_DATASET_FILENAME,
+        positions=dataset.positions,
+        legal_masks=dataset.legal_masks,
+        policy_offsets=dataset.policy_targets.offsets,
+        policy_indices=dataset.policy_targets.indices,
+        policy_probabilities=dataset.policy_targets.probabilities,
+        outcomes=dataset.outcomes,
+    )
+
+    loaded = load_self_play_dataset(tmp_path)
+
+    assert loaded.metadata.schema_version == SELF_PLAY_DATASET_SCHEMA_VERSION_V2
+    np.testing.assert_array_equal(loaded.legal_masks, dataset.legal_masks)
+    np.testing.assert_array_equal(loaded.mcts_policies, dataset.mcts_policies)
+
+def test_append_and_save_upgrades_legacy_v2_dataset_to_v3(tmp_path: Path) -> None:
+    legacy = _one_move_dataset(checkpoint_id="shared")
+    metadata = {
+        **legacy.metadata.to_dict(),
+        "schema_version": SELF_PLAY_DATASET_SCHEMA_VERSION_V2,
+    }
+    (tmp_path / DEFAULT_METADATA_FILENAME).write_text(json.dumps(metadata) + "\n")
+    (tmp_path / DEFAULT_GAMES_FILENAME).write_text(
+        "".join(json.dumps(record.to_dict()) + "\n" for record in legacy.games)
+    )
+    np.savez_compressed(
+        tmp_path / DEFAULT_DATASET_FILENAME,
+        positions=legacy.positions,
+        legal_masks=legacy.legal_masks,
+        policy_offsets=legacy.policy_targets.offsets,
+        policy_indices=legacy.policy_targets.indices,
+        policy_probabilities=legacy.policy_targets.probabilities,
+        outcomes=legacy.outcomes,
+    )
+
+    upgraded = append_self_play_dataset(
+        load_self_play_dataset(tmp_path),
+        _one_move_dataset(checkpoint_id="shared"),
+        config=SelfPlayConfig(games=2, max_plies=1, model_checkpoint_id="shared"),
+    )
+    save_self_play_dataset(upgraded, tmp_path)
+
+    stored = load_self_play_dataset(tmp_path)
+    assert stored.metadata.schema_version == SELF_PLAY_DATASET_SCHEMA_VERSION
+    assert stored.metadata.sample_count == 2
+    with np.load(tmp_path / DEFAULT_DATASET_FILENAME) as tensors:
+        assert "legal_masks" not in tensors.files
+        assert "legal_offsets" in tensors.files
+        assert "legal_indices" in tensors.files
+
 
 @pytest.mark.parametrize(
     ("invalid_value", "error"),
@@ -423,7 +491,8 @@ def test_load_self_play_dataset_rejects_corrupt_sparse_rows(
     np.savez_compressed(
         tmp_path / DEFAULT_DATASET_FILENAME,
         positions=dataset.positions,
-        legal_masks=dataset.legal_masks,
+        legal_offsets=dataset.legal_action_masks.offsets,
+        legal_indices=dataset.legal_action_masks.indices,
         policy_offsets=np.asarray([0, indices.shape[0]], dtype=np.int64),
         policy_indices=indices,
         policy_probabilities=probabilities,

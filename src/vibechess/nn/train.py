@@ -578,7 +578,10 @@ class _Batch:
     def from_dataset(cls, dataset: SelfPlayDataset, indices: npt.NDArray[np.int64]) -> _Batch:
         return cls(
             positions=mx.array(dataset.positions[indices], dtype=mx.float32),
-            legal_masks=mx.array(dataset.legal_masks[indices], dtype=mx.float32),
+            legal_masks=mx.array(
+                dataset.legal_action_masks.dense_rows(indices),
+                dtype=mx.float32,
+            ),
             policy_targets=mx.array(dataset.policy_targets.dense_rows(indices), dtype=mx.float32),
             value_targets=mx.array(dataset.outcomes[indices], dtype=mx.float32),
         )
@@ -618,7 +621,7 @@ def _validate_dataset_has_samples(dataset: SelfPlayDataset) -> None:
         raise ValueError("training requires at least one self-play sample")
     if dataset.positions.shape != (dataset.metadata.sample_count, *TENSOR_SHAPE):
         raise ValueError("dataset positions shape does not match metadata")
-    if dataset.legal_masks.shape != (dataset.metadata.sample_count, ACTION_SPACE_SIZE):
+    if dataset.legal_action_masks.sample_count != dataset.metadata.sample_count:
         raise ValueError("dataset legal_masks shape does not match metadata")
     if dataset.policy_targets.sample_count != dataset.metadata.sample_count:
         raise ValueError("dataset mcts_policies shape does not match metadata")
@@ -626,13 +629,9 @@ def _validate_dataset_has_samples(dataset: SelfPlayDataset) -> None:
         raise ValueError("dataset outcomes shape does not match metadata")
     if not np.isfinite(dataset.positions).all():
         raise ValueError("dataset positions must be finite")
-    if not np.isfinite(dataset.legal_masks).all():
-        raise ValueError("dataset legal_masks must be finite")
     _validate_policy_targets(dataset)
     if not np.isfinite(dataset.outcomes).all():
         raise ValueError("dataset outcomes must be finite")
-    if not np.all((dataset.legal_masks == 0.0) | (dataset.legal_masks == 1.0)):
-        raise ValueError("dataset legal_masks must be binary")
     if np.any(dataset.outcomes < -1.0) or np.any(dataset.outcomes > 1.0):
         raise ValueError("dataset outcomes must be in [-1, 1]")
 
@@ -648,7 +647,8 @@ def _validate_policy_targets(dataset: SelfPlayDataset) -> None:
             raise ValueError("dataset mcts_policies action index out of range")
         if np.unique(indices).shape[0] != indices.shape[0]:
             raise ValueError("dataset mcts_policies contains duplicate action indices")
-        if indices.size and np.any(dataset.legal_masks[row_index, indices] <= 0.0):
+        legal_indices = dataset.legal_action_masks.row(row_index)
+        if indices.size and not np.all(np.isin(indices, legal_indices)):
             raise ValueError("dataset mcts_policies must put probability only on legal actions")
         if not np.isclose(float(probabilities.sum()), 1.0, rtol=1.0e-5, atol=1.0e-6):
             raise ValueError("dataset mcts_policies rows must sum to 1")

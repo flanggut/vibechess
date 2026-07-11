@@ -27,11 +27,9 @@ from vibechess.engine.move import Move
 from vibechess.engine.outcome import Outcome, OutcomeReason
 from vibechess.engine.piece import Color
 from vibechess.nn.encode import (
-    ACTION_SPACE_SIZE,
     TENSOR_SHAPE,
     encode_game_np,
     legal_action_indices,
-    legal_move_mask_from_action_indices_np,
     move_to_action_index,
 )
 from vibechess.nn.inference import PolicyValueInference
@@ -43,6 +41,7 @@ from vibechess.nn.self_play_dataset import (
     SelfPlayDataset,
     SelfPlayGameRecord,
     SelfPlayMetadata,
+    SparseLegalMasks,
     SparsePolicyTargets,
     _outcome_values,
     load_self_play_dataset,
@@ -193,7 +192,7 @@ def _generate_serial_self_play_dataset(
     progress: Callable[[SelfPlayProgress], None] | None = None,
 ) -> SelfPlayDataset:
     positions: list[npt.NDArray[np.float32]] = []
-    legal_masks: list[npt.NDArray[np.float32]] = []
+    legal_masks: list[npt.NDArray[np.int32]] = []
     policy_builder = SparsePolicyTargetBuilder()
     outcome_values: list[float] = []
     game_records: list[SelfPlayGameRecord] = []
@@ -227,10 +226,8 @@ def _generate_serial_self_play_dataset(
                         action_indices = legal_action_indices(game, legal)
                         with profile_scope("record.position_encode_np"):
                             positions.append(encode_game_np(game))
-                        with profile_scope("record.legal_mask_np"):
-                            legal_masks.append(
-                                legal_move_mask_from_action_indices_np(action_indices)
-                            )
+                        with profile_scope("record.legal_actions"):
+                            legal_masks.append(np.asarray(action_indices, dtype=np.int32))
                         with profile_scope("record.policy_target"):
                             policy_builder.append_from_visits(
                                 board=game.board,
@@ -339,7 +336,7 @@ class _BatchedGameState:
     player: NeuralMCTSPlayer
     game_sides: list[Color] = field(default_factory=list)
     positions: list[npt.NDArray[np.float32]] = field(default_factory=list)
-    legal_masks: list[npt.NDArray[np.float32]] = field(default_factory=list)
+    legal_masks: list[npt.NDArray[np.int32]] = field(default_factory=list)
     policy_builder: SparsePolicyTargetBuilder = field(default_factory=SparsePolicyTargetBuilder)
 
 
@@ -381,8 +378,8 @@ def _record_batched_decision(
     action_indices = legal_action_indices(state.game, legal)
     with profile_scope("record.position_encode_np"):
         state.positions.append(encode_game_np(state.game))
-    with profile_scope("record.legal_mask_np"):
-        state.legal_masks.append(legal_move_mask_from_action_indices_np(action_indices))
+    with profile_scope("record.legal_actions"):
+        state.legal_masks.append(np.asarray(action_indices, dtype=np.int32))
     with profile_scope("record.policy_target"):
         state.policy_builder.append_from_visits(
             board=state.game.board,
@@ -425,7 +422,7 @@ def _append_completed_batched_state(
     state: _BatchedGameState,
     *,
     positions: list[npt.NDArray[np.float32]],
-    legal_masks: list[npt.NDArray[np.float32]],
+    legal_masks: list[npt.NDArray[np.int32]],
     policy_builder: SparsePolicyTargetBuilder,
     outcome_values: list[float],
     game_records: list[SelfPlayGameRecord],
@@ -451,7 +448,7 @@ def _flush_completed_batched_states(
     next_output_game_index: int,
     config: SelfPlayConfig,
     positions: list[npt.NDArray[np.float32]],
-    legal_masks: list[npt.NDArray[np.float32]],
+    legal_masks: list[npt.NDArray[np.int32]],
     policy_builder: SparsePolicyTargetBuilder,
     outcome_values: list[float],
     game_records: list[SelfPlayGameRecord],
@@ -490,7 +487,7 @@ def _generate_batched_neural_self_play_dataset(
     progress: Callable[[SelfPlayProgress], None] | None = None,
 ) -> SelfPlayDataset:
     positions: list[npt.NDArray[np.float32]] = []
-    legal_masks: list[npt.NDArray[np.float32]] = []
+    legal_masks: list[npt.NDArray[np.int32]] = []
     policy_builder = SparsePolicyTargetBuilder()
     outcome_values: list[float] = []
     game_records: list[SelfPlayGameRecord] = []
@@ -618,7 +615,7 @@ def _self_play_dataset_from_samples(
     batching_mode: str,
     inference_batch_size: int,
     positions: list[npt.NDArray[np.float32]],
-    legal_masks: list[npt.NDArray[np.float32]],
+    legal_masks: list[npt.NDArray[np.int32]],
     policy_targets: SparsePolicyTargets,
     outcome_values: list[float],
     game_records: list[SelfPlayGameRecord],
@@ -633,11 +630,11 @@ def _self_play_dataset_from_samples(
     )
     with profile_scope("dataset.stack_positions"):
         stacked_positions = _stack_or_empty(positions, TENSOR_SHAPE)
-    with profile_scope("dataset.stack_legal_masks"):
-        stacked_legal_masks = _stack_or_empty(legal_masks, (ACTION_SPACE_SIZE,))
+    with profile_scope("dataset.build_sparse_legal_masks"):
+        sparse_legal_masks = SparseLegalMasks.from_rows(legal_masks)
     return SelfPlayDataset(
         positions=stacked_positions,
-        legal_masks=stacked_legal_masks,
+        legal_action_masks=sparse_legal_masks,
         policy_targets=policy_targets,
         outcomes=outcomes,
         metadata=metadata,

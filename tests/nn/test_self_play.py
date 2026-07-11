@@ -26,7 +26,6 @@ from vibechess.nn.encode import (
     ENCODER_VERSION,
     TENSOR_SHAPE,
     legal_action_indices,
-    legal_move_mask_from_action_indices_np,
     legal_move_mask_from_legal_moves_np,
     move_to_action_index,
 )
@@ -799,17 +798,7 @@ def test_self_play_profile_counts_serial_neural_search_categories() -> None:
     assert "board.apply_move" in zones
 
 
-def test_serial_recording_reuses_precomputed_legal_masks(monkeypatch: Any) -> None:
-    recorded_legal_counts: list[int] = []
-
-    def spy_legal_mask(action_indices: Sequence[int]) -> Any:
-        recorded_legal_counts.append(len(action_indices))
-        return legal_move_mask_from_action_indices_np(action_indices)
-
-    monkeypatch.setattr(
-        self_play, "legal_move_mask_from_action_indices_np", spy_legal_mask
-    )
-
+def test_serial_recording_keeps_legal_masks_sparse_until_requested() -> None:
     dataset = generate_self_play_dataset(
         FakeInference(),
         SelfPlayConfig(
@@ -820,12 +809,14 @@ def test_serial_recording_reuses_precomputed_legal_masks(monkeypatch: Any) -> No
         ),
     )
 
+    assert dataset._legal_masks_cache is None
+    assert dataset.legal_action_masks.sample_count == 2
+    assert dataset.legal_action_masks.indices.size == 40
     start = Game.new()
     np.testing.assert_array_equal(
         dataset.legal_masks[0],
         legal_move_mask_from_legal_moves_np(start, start.legal_moves),
     )
-    assert recorded_legal_counts == [20, 20]
     assert dataset.positions.shape == (2, *TENSOR_SHAPE)
     assert dataset.legal_masks.shape == (2, ACTION_SPACE_SIZE)
     assert np.allclose(dataset.mcts_policies.sum(axis=1), 1.0)
@@ -1051,7 +1042,8 @@ def test_load_self_play_dataset_rejects_policy_on_illegal_action(tmp_path: Path)
     np.savez_compressed(
         tmp_path / DEFAULT_DATASET_FILENAME,
         positions=dataset.positions,
-        legal_masks=dataset.legal_masks,
+        legal_offsets=dataset.legal_action_masks.offsets,
+        legal_indices=dataset.legal_action_masks.indices,
         policy_offsets=np.asarray([0, 1], dtype=np.int64),
         policy_indices=np.asarray([illegal_index], dtype=np.int32),
         policy_probabilities=np.asarray([1.0], dtype=np.float32),

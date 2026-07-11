@@ -127,6 +127,9 @@ Append runs require the same checkpoint id and content-affecting generation
 settings; mismatches fail before dataset files are replaced. Neural append runs
 without a persisted checkpoint must pass `--checkpoint-id` so checkpoint
 continuity is explicit.
+New writes use the v3 dataset schema: legal-action masks are stored as sparse CSR
+rows and densified only per training batch. The loader remains compatible with
+v1/v2 datasets, and appending to either legacy schema rewrites the result as v3.
 
 Checkpoint metadata records `model_architecture`; missing values are treated as
 the historical residual CNN so existing checkpoints stay loadable. Fresh
