@@ -3,16 +3,23 @@
   "model_config": {
     "input_channels": 20,
     "board_size": 8,
-    "residual_channels": 96,
-    "residual_blocks": 8,
-    "policy_channels": 8,
-    "value_channels": 4,
-    "value_hidden_dim": 128,
+    "model_dim": 224,
+    "transformer_layers": 6,
+    "attention_heads": 8,
+    "mlp_dim": 536,
+    "gab_dim1": 8,
+    "gab_dim2": 32,
+    "gab_dim3": 32,
+    "gab_use_average_pool": 1,
+    "policy_dim": 224,
+    "promotion_hidden_dim": 64,
+    "value_hidden_dim": 256,
     "action_space_size": 4672
   },
+  "model_architecture": "chessformer",
   "action_space_version": "az-8x8x73-v1",
   "encoder_version": "vibechess-board-v1",
-  "training_step": 1943858,
+  "training_step": 1895672,
   "optimizer_state_available": false,
-  "notes": "{\"batch_size\": 64, \"carry_optimizer_state_across_shards\": true, \"checkpoint_every\": 0, \"dataset\": \"data/selfplay/res8_sp_10k_iter_4\", \"epochs\": 4, \"input_checkpoint\": \"data/checkpoints/res8_10k_iter_3.1/checkpoint-final\", \"learning_rate\": 3e-05, \"output\": \"data/checkpoints/res8_10k_iter_4\", \"policy_channels\": 2, \"residual_blocks\": 1, \"residual_channels\": 8, \"seed\": 0, \"skip_shard_checkpoints\": false, \"validation_fraction\": 0.1, \"value_channels\": 1, \"value_hidden_dim\": 8, \"warmup\": 0}"
+  "notes": "{\"architecture\": \"resnet\", \"batch_size\": 64, \"carry_optimizer_state_across_shards\": true, \"checkpoint_every\": 0, \"chessformer_gab_dim1\": 8, \"chessformer_gab_dim2\": 32, \"chessformer_gab_dim3\": 32, \"chessformer_gab_use_average_pool\": 1, \"chessformer_heads\": 8, \"chessformer_layers\": 6, \"chessformer_mlp_dim\": 536, \"chessformer_model_dim\": 224, \"chessformer_policy_dim\": 224, \"chessformer_promotion_hidden_dim\": 64, \"dataset\": \"data/selfplay/chessformer_05\", \"epochs\": 10, \"input_checkpoint\": \"data/checkpoints/chessformer_05/checkpoint-final\", \"learning_rate\": 7e-05, \"output\": \"data/checkpoints/chessformer_06\", \"policy_channels\": 2, \"residual_blocks\": 1, \"residual_channels\": 8, \"seed\": 0, \"skip_shard_checkpoints\": false, \"transformer_heads\": 8, \"transformer_layers\": 6, \"transformer_mlp_dim\": 536, \"transformer_model_dim\": 224, \"transformer_policy_hidden_dim\": 3352, \"validation_fraction\": 0.1, \"value_channels\": 1, \"value_hidden_dim\": null, \"warmup\": 0}"
 }
