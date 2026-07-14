@@ -75,7 +75,7 @@ struct ControlsView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .frame(width: 280, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private var humanColorBinding: Binding<BackendColor> {

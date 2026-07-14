@@ -9,6 +9,8 @@ struct VibeChessMacApp: App {
         WindowGroup("vibechess") {
             VibeChessMacRootView()
         }
+        .defaultSize(width: 1_100, height: 760)
+        .windowResizability(.contentMinSize)
     }
 }
 
@@ -21,22 +23,54 @@ struct VibeChessMacRootView: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 20) {
-            BoardView(appState: appState, squareSize: 58)
+        GeometryReader { geometry in
+            let mode = RootLayoutMetrics.mode(for: geometry.size.width)
+            let boardSide = RootLayoutMetrics.boardSide(in: geometry.size, mode: mode)
 
-            VStack(alignment: .leading, spacing: 14) {
-                ControlsView(appState: appState)
-                MoveListView(appState: appState)
+            switch mode {
+            case .wide:
+                HStack(alignment: .top, spacing: RootLayoutMetrics.contentSpacing) {
+                    BoardView(appState: appState, squareSize: boardSide / 8)
+
+                    ScrollView {
+                        sidePanel
+                    }
+                    .frame(width: RootLayoutMetrics.sidePanelWidth, height: boardSide)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                .padding(RootLayoutMetrics.outerPadding)
+
+            case .compact:
+                ScrollView {
+                    VStack(spacing: RootLayoutMetrics.contentSpacing) {
+                        BoardView(appState: appState, squareSize: boardSide / 8)
+
+                        sidePanel
+                            .frame(maxWidth: RootLayoutMetrics.compactPanelMaxWidth)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(RootLayoutMetrics.outerPadding)
+                }
             }
         }
-        .padding(24)
-        .frame(minWidth: 980, minHeight: 560)
+        .frame(
+            minWidth: RootLayoutMetrics.minimumWindowWidth,
+            minHeight: RootLayoutMetrics.minimumWindowHeight
+        )
         .task {
             guard appState.backendState == nil else {
                 return
             }
             await appState.newGame()
         }
+    }
+
+    private var sidePanel: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ControlsView(appState: appState)
+            MoveListView(appState: appState)
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     @MainActor
@@ -46,6 +80,42 @@ struct VibeChessMacRootView: View {
         } catch {
             return AppState(backend: UnavailableBackend(errorDescription: String(describing: error)))
         }
+    }
+}
+
+enum RootLayoutMode: Equatable {
+    case compact
+    case wide
+}
+
+/// Window-size-driven layout values kept independent from SwiftUI rendering for focused tests.
+enum RootLayoutMetrics {
+    static let minimumWindowWidth: CGFloat = 520
+    static let minimumWindowHeight: CGFloat = 520
+    static let wideBreakpoint: CGFloat = 940
+    static let outerPadding: CGFloat = 20
+    static let contentSpacing: CGFloat = 20
+    static let sidePanelWidth: CGFloat = 320
+    static let compactPanelMaxWidth: CGFloat = 560
+    static let maximumBoardSide: CGFloat = 720
+
+    static func mode(for containerWidth: CGFloat) -> RootLayoutMode {
+        containerWidth >= wideBreakpoint ? .wide : .compact
+    }
+
+    static func boardSide(in containerSize: CGSize, mode: RootLayoutMode) -> CGFloat {
+        let availableWidth = max(0, containerSize.width - outerPadding * 2)
+        let widthLimit: CGFloat
+
+        switch mode {
+        case .wide:
+            widthLimit = max(0, availableWidth - contentSpacing - sidePanelWidth)
+        case .compact:
+            widthLimit = availableWidth
+        }
+
+        let availableHeight = max(0, containerSize.height - outerPadding * 2)
+        return min(widthLimit, availableHeight, maximumBoardSide).rounded(.down)
     }
 }
 
