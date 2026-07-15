@@ -6,39 +6,19 @@ import Testing
     _ = VibeChessMacRootView(appState: AppState(backend: RootViewTestBackend()))
 }
 
-@Test func rootLayoutSwitchesBetweenCompactAndWideModesAtBreakpoint() {
+@Test func rootLayoutFitsBoardInsideDetailAreaAcrossWindowSizes() {
     #expect(
-        RootLayoutMetrics.mode(for: RootLayoutMetrics.wideBreakpoint - 1) == .compact
+        RootLayoutMetrics.boardSide(in: .init(width: 520, height: 520)) == 472
     )
     #expect(
-        RootLayoutMetrics.mode(for: RootLayoutMetrics.wideBreakpoint) == .wide
-    )
-}
-
-@Test func rootLayoutKeepsBoardVisibleAndBoundedAcrossWindowSizes() {
-    #expect(
-        RootLayoutMetrics.boardSide(
-            in: .init(width: 520, height: 520),
-            mode: .compact
-        ) == 480
+        RootLayoutMetrics.boardSide(in: .init(width: 720, height: 680)) == 632
     )
     #expect(
-        RootLayoutMetrics.boardSide(
-            in: .init(width: 720, height: 680),
-            mode: .compact
-        ) == 640
+        RootLayoutMetrics.boardSide(in: .init(width: 1_100, height: 760)) == 712
     )
     #expect(
-        RootLayoutMetrics.boardSide(
-            in: .init(width: 1_100, height: 760),
-            mode: .wide
-        ) == 720
-    )
-    #expect(
-        RootLayoutMetrics.boardSide(
-            in: .init(width: 2_000, height: 1_200),
-            mode: .wide
-        ) == RootLayoutMetrics.maximumBoardSide
+        RootLayoutMetrics.boardSide(in: .init(width: 2_000, height: 1_200))
+            == RootLayoutMetrics.maximumBoardSide
     )
 }
 

@@ -5,77 +5,138 @@ struct ControlsView: View {
     @ObservedObject var appState: AppState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        Form {
             if let errorMessage = appState.errorMessage {
-                ErrorBanner(message: errorMessage) {
-                    appState.clearError()
+                Section {
+                    ErrorBanner(message: errorMessage) {
+                        appState.clearError()
+                    }
                 }
             }
 
-            StatusPanel(appState: appState)
+            statusSection
+            gameSection
+            computerSection
 
-            GroupBox("Game") {
-                VStack(alignment: .leading, spacing: 10) {
-                    Button("Start / Reset Game") {
-                        Task { await appState.newGame() }
-                    }
-                    .disabled(appState.isThinking)
-                    .keyboardShortcut("r", modifiers: [.command])
-
-                    Button("Undo Last Full Move") {
-                        Task { await appState.undo() }
-                    }
-                    .disabled(!appState.canUndo)
-                    .keyboardShortcut("z", modifiers: [.command])
-
-                    Picker("Human", selection: humanColorBinding) {
-                        Text("White").tag(BackendColor.white)
-                        Text("Black").tag(BackendColor.black)
-                    }
-                    .pickerStyle(.segmented)
-                    .disabled(appState.isThinking)
-
-                    Button("Flip Board") {
-                        appState.flipBoard()
-                    }
-                    .disabled(appState.isThinking)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            GroupBox("AI") {
-                VStack(alignment: .leading, spacing: 10) {
-                    Picker("Player", selection: aiKindBinding) {
-                        Text("Random").tag(BackendPlayerKind.random)
-                        Text("MCTS").tag(BackendPlayerKind.mcts)
-                        Text("Neural").tag(BackendPlayerKind.neural)
-                    }
-                    .pickerStyle(.segmented)
-                    .disabled(appState.isThinking)
-
-                    Stepper(value: simulationsBinding, in: 1...10_000, step: 1) {
-                        Text("Simulations: \(simulationsBinding.wrappedValue)")
-                    }
-                    .disabled(appState.isThinking)
-
-                    TextField("Time limit seconds (optional)", text: timeLimitBinding)
-                        .textFieldStyle(.roundedBorder)
-                        .disabled(appState.isThinking)
-
-                    TextField("Node budget (optional)", text: nodeBudgetBinding)
-                        .textFieldStyle(.roundedBorder)
-                        .disabled(appState.isThinking)
-
-                    if aiKindBinding.wrappedValue == .neural {
-                        TextField("Checkpoint path", text: checkpointPathBinding)
-                            .textFieldStyle(.roundedBorder)
-                            .disabled(appState.isThinking)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+            Section("Moves") {
+                MoveListView(appState: appState)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .controlSize(.small)
+        .navigationTitle("Game")
+        .accessibilityLabel("Game controls")
+    }
+
+    private var statusSection: some View {
+        Section("Status") {
+            Text(AppStatusPresenter.statusText(
+                state: appState.backendState,
+                isThinking: appState.isThinking,
+                humanColor: appState.humanColor
+            ))
+            .font(.headline)
+            .fixedSize(horizontal: false, vertical: true)
+
+            LabeledContent(
+                "Human",
+                value: AppStatusPresenter.colorName(appState.humanColor)
+            )
+            LabeledContent(
+                "Board",
+                value: "\(AppStatusPresenter.colorName(appState.boardOrientation)) at bottom"
+            )
+
+            if appState.isThinking {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Thinking…")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var gameSection: some View {
+        Section("Game") {
+            Button {
+                Task { await appState.newGame() }
+            } label: {
+                Label("New Game", systemImage: "arrow.clockwise")
+            }
+            .disabled(appState.isThinking)
+            .keyboardShortcut("r", modifiers: [.command])
+
+            Button {
+                Task { await appState.undo() }
+            } label: {
+                Label("Undo Full Move", systemImage: "arrow.uturn.backward")
+            }
+            .disabled(!appState.canUndo)
+            .keyboardShortcut("z", modifiers: [.command])
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Play as")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Picker("Play as", selection: humanColorBinding) {
+                    Text("White").tag(BackendColor.white)
+                    Text("Black").tag(BackendColor.black)
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+            }
+            .disabled(appState.isThinking)
+
+            Button {
+                appState.flipBoard()
+            } label: {
+                Label("Flip Board", systemImage: "arrow.triangle.2.circlepath")
+            }
+            .disabled(appState.isThinking)
+        }
+    }
+
+    private var computerSection: some View {
+        Section("Computer") {
+            Picker("Player", selection: aiKindBinding) {
+                Text("Random").tag(BackendPlayerKind.random)
+                Text("MCTS").tag(BackendPlayerKind.mcts)
+                Text("Neural").tag(BackendPlayerKind.neural)
+            }
+            .pickerStyle(.menu)
+
+            Stepper(value: simulationsBinding, in: 1...10_000, step: 1) {
+                LabeledContent(
+                    "Simulations",
+                    value: simulationsBinding.wrappedValue.formatted()
+                )
+            }
+
+            LabeledContent("Time limit") {
+                TextField("None", text: timeLimitBinding)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 96)
+            }
+
+            LabeledContent("Node budget") {
+                TextField("None", text: nodeBudgetBinding)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 96)
+            }
+
+            if aiKindBinding.wrappedValue == .neural {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Checkpoint")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextField("Checkpoint path", text: checkpointPathBinding)
+                }
+            }
+        }
+        .disabled(appState.isThinking)
     }
 
     private var humanColorBinding: Binding<BackendColor> {
@@ -132,34 +193,6 @@ struct ControlsView: View {
     }
 }
 
-private struct StatusPanel: View {
-    @ObservedObject var appState: AppState
-
-    var body: some View {
-        GroupBox("Status") {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(AppStatusPresenter.statusText(
-                    state: appState.backendState,
-                    isThinking: appState.isThinking,
-                    humanColor: appState.humanColor
-                ))
-                .font(.headline)
-
-                Text("Human: \(AppStatusPresenter.colorName(appState.humanColor))")
-                    .foregroundStyle(.secondary)
-
-                Text("Board: \(AppStatusPresenter.colorName(appState.boardOrientation)) at bottom")
-                    .foregroundStyle(.secondary)
-
-                if appState.isThinking {
-                    ProgressView("Thinking…")
-                        .controlSize(.small)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-}
 
 private struct ErrorBanner: View {
     var message: String

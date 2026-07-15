@@ -4,34 +4,26 @@ import SwiftUI
 struct MoveListView: View {
     @ObservedObject var appState: AppState
 
+    @ViewBuilder
     var body: some View {
-        GroupBox("Moves") {
-            if appState.moveHistory.isEmpty {
-                Text("No moves yet.")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 6) {
-                        ForEach(MoveListRows.rows(for: appState.moveHistory)) { row in
-                            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                Text("\(row.number).")
-                                    .font(.body.monospacedDigit())
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 32, alignment: .trailing)
-                                Text(row.whiteMove)
-                                    .font(.body.monospaced())
-                                Text(row.blackMove ?? "")
-                                    .font(.body.monospaced())
-                                    .foregroundStyle(row.blackMove == nil ? .clear : .primary)
-                                Spacer(minLength: 0)
-                            }
-                            .accessibilityElement(children: .combine)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+        if appState.moveHistory.isEmpty {
+            Text("No moves yet")
+                .foregroundStyle(.secondary)
+        } else {
+            ForEach(MoveListRows.rows(for: appState.moveHistory)) { row in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("\(row.number).")
+                        .font(.callout.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, alignment: .trailing)
+                    Text(row.whiteMove)
+                        .font(.callout.monospaced())
+                    Text(row.blackMove ?? "")
+                        .font(.callout.monospaced())
+                        .foregroundStyle(row.blackMove == nil ? .clear : .primary)
+                    Spacer(minLength: 0)
                 }
-                .frame(minHeight: 120, maxHeight: 220)
+                .accessibilityElement(children: .combine)
             }
         }
     }

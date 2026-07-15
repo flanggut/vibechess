@@ -91,8 +91,9 @@ swift run VibeChessMacApp
 Run it from a checkout where `uv run vibechess gui-server` works. The Swift app
 renders backend state and sends moves; Python remains responsible for legality,
 outcomes, and AI selection.
-The window keeps the board and controls side by side when space permits, then switches to a
-vertically scrollable stacked layout at compact sizes.
+The macOS window uses a resizable native sidebar for status, game and AI options, and move
+history. The chessboard stays centered in the main detail area; use the toolbar sidebar control
+to show or hide the options.
 
 ## Data and training workflow
 
