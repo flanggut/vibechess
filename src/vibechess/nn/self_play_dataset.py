@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+import encodings.cp437  # noqa: F401  (see below)
 import json
 import subprocess
 import zipfile
 from dataclasses import dataclass, field, replace
+
+# numpy writes .npz member names without the ZIP UTF-8 flag, so ``zipfile``
+# decodes them with cp437 (zipfile: ``filename.decode(metadata_encoding or
+# 'cp437')``). That codec is normally imported lazily on first use, but a
+# long-running self-play process (after ProcessPoolExecutor/SyncManager have
+# started and torn down) can reach npz reads in a state where importing
+# ``encodings.cp437`` fails with ``LookupError: unknown encoding: cp437``.
+# Importing it eagerly here, while the import system is healthy, caches the
+# codec in the registry so every later ``zipfile``/``np.load`` npz read works.
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
